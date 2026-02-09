@@ -1,0 +1,64 @@
+# =============================================================================
+# Wildfire MLOps Pipeline - CI/CD
+# =============================================================================
+# Runs on every push and pull request:
+#   1. Builds the Docker image (ensures dependency installation works)
+#   2. Validates DAG can be imported without errors (inside Docker)
+#   3. Runs full pytest suite (inside Docker)
+#   4. Checks code style with ruff (inside Docker)
+# =============================================================================
+
+name: Pipeline CI
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - 'Data-Pipeline/**'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'Data-Pipeline/**'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: Data-Pipeline
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker Image
+        uses: docker/build-push-action@v5
+        with:
+          context: Data-Pipeline
+          file: Data-Pipeline/docker/Dockerfile
+          push: false
+          load: true
+          tags: wildfire-pipeline:test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Validate DAG imports
+        run: |
+          docker run --rm \
+            -e AIRFLOW__CORE__LOAD_EXAMPLES=false \
+            wildfire-pipeline:test \
+            python3 dags/wildfire_dag.py
+
+      - name: Run pytest suite
+        run: |
+          docker run --rm \
+            wildfire-pipeline:test \
+            pytest tests/ -v --tb=short
+
+      - name: Lint with ruff
+        run: |
+          docker run --rm \
+            wildfire-pipeline:test \
+            ruff check scripts/ dags/ tests/ --output-format=github

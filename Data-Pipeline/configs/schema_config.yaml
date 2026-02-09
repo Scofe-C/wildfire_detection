@@ -1,0 +1,490 @@
+# =============================================================================
+# Wildfire MLOps - Dynamic Feature Registry
+# =============================================================================
+# This file is the SINGLE SOURCE OF TRUTH for the unified schema.
+# To add a new feature: add an entry under the appropriate group.
+# To remove a feature: set enabled: false (do NOT delete — preserve audit trail).
+# All pipeline stages read this config to determine which columns to produce,
+# validate, and export.
+# =============================================================================
+
+# --- Pipeline Configuration ---
+pipeline:
+  name: "wildfire_data_pipeline"
+  version: "1.0.0"
+  default_resolution_km: 64
+  supported_resolutions_km: [64, 10, 1]
+  # H3 resolution mapping (approximate edge length):
+  #   H3 res 2 → ~86 km (used for 64 km default)
+  #   H3 res 4 → ~8 km  (used for 10 km option)
+  #   H3 res 7 → ~1.2 km (used for 1 km option)
+  h3_resolution_map:
+    64: 2
+    10: 4
+    1: 7
+  temporal_aggregation_hours: 6
+  time_windows_utc: ["00:00", "06:00", "12:00", "18:00"]
+  geographic_scope:
+    california:
+      bbox: [-124.48, 32.53, -114.13, 42.01]  # [west, south, east, north]
+      fips_codes: ["06"]
+    texas:
+      bbox: [-106.65, 25.84, -93.51, 36.50]
+      fips_codes: ["48"]
+
+# --- Data Sources ---
+data_sources:
+  firms:
+    base_url: "https://firms.modaps.eosdis.nasa.gov/api/area"
+    sensors: ["VIIRS_SNPP_NRT", "VIIRS_NOAA20_NRT", "MODIS_NRT"]
+    api_key_env_var: "FIRMS_MAP_KEY"
+    rate_limit:
+      max_requests_per_10min: 5000
+      backoff_base_seconds: 5
+      backoff_max_seconds: 300
+      jitter: true
+    output_format: "csv"
+    timeout_seconds: 30
+    max_retries: 3
+
+  open_meteo:
+    base_url: "https://api.open-meteo.com/v1/forecast"
+    historical_url: "https://archive-api.open-meteo.com/v1/archive"
+    rate_limit:
+      max_requests_per_day: 10000
+      backoff_base_seconds: 2
+      backoff_max_seconds: 120
+    timeout_seconds: 20
+    max_retries: 3
+    coordinate_precision: 3  # Decimal places to round lat/lon
+
+  nws:
+    base_url: "https://api.weather.gov"
+    user_agent: "WildfireMLOps/1.0 (university-project)"
+    timeout_seconds: 15
+    max_retries: 2
+    # NWS is the FALLBACK for Open-Meteo, not a primary source
+    role: "fallback"
+
+  landfire:
+    products:
+      fbfm40:
+        description: "40 Scott & Burgan Fire Behavior Fuel Models"
+        download_url: "https://landfire.gov/bulk/downloadfile.php?ESSION_ID=&TYPE=landfire&FNAME=LF2022_FBFM40_230_CONUS.zip"
+      canopy_cover:
+        description: "Forest Canopy Cover percentage"
+        download_url: "https://landfire.gov/bulk/downloadfile.php?FNAME=LF2022_CC_230_CONUS.zip"
+      vegetation_type:
+        description: "Existing Vegetation Type"
+        download_url: "https://landfire.gov/bulk/downloadfile.php?FNAME=LF2022_EVT_230_CONUS.zip"
+    native_crs: "EPSG:5070"  # Albers Equal Area
+    native_resolution_m: 30
+
+  srtm:
+    source: "USGS SRTM 30m"
+    ee_asset: "USGS/SRTMGL1_003"  # Google Earth Engine asset ID
+    native_crs: "EPSG:4326"
+    native_resolution_m: 30
+
+  nifc:
+    perimeters_url: "https://data-nifc.opendata.arcgis.com/datasets/nifc::interagencyfireperimeterhistory-all-years-view/about"
+    cal_fire_url: "https://data.ca.gov/dataset/california-fire-perimeters-all"
+
+# --- Feature Registry ---
+# Each feature has: name, type, source, group, enabled, nullable, validation rules
+# The pipeline only processes features where enabled: true
+features:
+  # --- Identifier Columns ---
+  identifiers:
+    - name: "grid_id"
+      type: "string"
+      description: "H3 hexagonal index at the configured resolution"
+      source: "computed"
+      enabled: true
+      nullable: false
+
+    - name: "latitude"
+      type: "float64"
+      description: "H3 cell centroid latitude (WGS84)"
+      source: "computed"
+      enabled: true
+      nullable: false
+      validation:
+        min: 25.0
+        max: 43.0
+
+    - name: "longitude"
+      type: "float64"
+      description: "H3 cell centroid longitude (WGS84)"
+      source: "computed"
+      enabled: true
+      nullable: false
+      validation:
+        min: -125.0
+        max: -93.0
+
+    - name: "timestamp"
+      type: "datetime64[ns]"
+      description: "Canonical timestamp for the 6-hour aggregation window"
+      source: "computed"
+      enabled: true
+      nullable: false
+
+    - name: "resolution_km"
+      type: "int32"
+      description: "Grid resolution in kilometers"
+      source: "computed"
+      enabled: true
+      nullable: false
+      validation:
+        allowed_values: [1, 10, 64]
+
+  # --- Weather Features (Open-Meteo / NWS fallback) ---
+  weather:
+    - name: "temperature_2m"
+      type: "float32"
+      description: "Air temperature at 2m above ground (°C)"
+      source: "open_meteo"
+      open_meteo_param: "temperature_2m"
+      enabled: true
+      nullable: true
+      validation:
+        min: -50.0
+        max: 65.0
+      fill_strategy: "forward_fill"
+
+    - name: "relative_humidity_2m"
+      type: "float32"
+      description: "Relative humidity at 2m (%)"
+      source: "open_meteo"
+      open_meteo_param: "relative_humidity_2m"
+      enabled: true
+      nullable: true
+      validation:
+        min: 0.0
+        max: 100.0
+      fill_strategy: "forward_fill"
+
+    - name: "wind_speed_10m"
+      type: "float32"
+      description: "Wind speed at 10m above ground (km/h)"
+      source: "open_meteo"
+      open_meteo_param: "wind_speed_10m"
+      enabled: true
+      nullable: true
+      validation:
+        min: 0.0
+        max: 250.0
+      fill_strategy: "forward_fill"
+
+    - name: "wind_direction_10m"
+      type: "float32"
+      description: "Wind direction at 10m (degrees, 0=N, 90=E)"
+      source: "open_meteo"
+      open_meteo_param: "wind_direction_10m"
+      enabled: true
+      nullable: true
+      validation:
+        min: 0.0
+        max: 360.0
+      fill_strategy: "forward_fill"
+
+    - name: "precipitation"
+      type: "float32"
+      description: "Total precipitation in aggregation window (mm)"
+      source: "open_meteo"
+      open_meteo_param: "precipitation"
+      enabled: true
+      nullable: true
+      validation:
+        min: 0.0
+        max: 500.0
+      fill_strategy: "zero"
+
+    - name: "soil_moisture_0_to_7cm"
+      type: "float32"
+      description: "Volumetric soil moisture 0-7cm depth (m³/m³)"
+      source: "open_meteo"
+      open_meteo_param: "soil_moisture_0_to_7cm"
+      enabled: true
+      nullable: true
+      validation:
+        min: 0.0
+        max: 1.0
+      fill_strategy: "forward_fill"
+
+    - name: "vpd"
+      type: "float32"
+      description: "Vapor Pressure Deficit (kPa)"
+      source: "open_meteo"
+      open_meteo_param: "vapor_pressure_deficit"
+      enabled: true
+      nullable: true
+      validation:
+        min: 0.0
+        max: 15.0
+      fill_strategy: "forward_fill"
+
+    - name: "fire_weather_index"
+      type: "float32"
+      description: "Canadian Fire Weather Index from Open-Meteo"
+      source: "open_meteo"
+      open_meteo_param: "fire_weather_index"
+      enabled: true
+      nullable: true
+      validation:
+        min: 0.0
+        max: 150.0
+      fill_strategy: "forward_fill"
+
+  # --- Vegetation / Fuel Features (LANDFIRE + MODIS) ---
+  vegetation:
+    - name: "fuel_model_fbfm40"
+      type: "int16"
+      description: "Scott & Burgan 40 fuel model code (categorical)"
+      source: "landfire"
+      enabled: true
+      nullable: true
+      validation:
+        min: 91
+        max: 204
+      aggregation: "mode"
+
+    - name: "canopy_cover_pct"
+      type: "float32"
+      description: "Forest canopy cover percentage"
+      source: "landfire"
+      enabled: true
+      nullable: true
+      validation:
+        min: 0.0
+        max: 100.0
+      aggregation: "mean"
+
+    - name: "vegetation_type"
+      type: "int16"
+      description: "LANDFIRE Existing Vegetation Type code (categorical)"
+      source: "landfire"
+      enabled: true
+      nullable: true
+      aggregation: "mode"
+
+    - name: "ndvi"
+      type: "float32"
+      description: "Normalized Difference Vegetation Index (-1 to 1)"
+      source: "modis"
+      enabled: true
+      nullable: true
+      validation:
+        min: -1.0
+        max: 1.0
+      fill_strategy: "forward_fill"
+
+  # --- Topographic Features (SRTM) ---
+  topography:
+    - name: "elevation_m"
+      type: "float32"
+      description: "Mean elevation within grid cell (meters)"
+      source: "srtm"
+      enabled: true
+      nullable: true
+      validation:
+        min: -100.0
+        max: 4500.0
+      aggregation: "mean"
+
+    - name: "slope_degrees"
+      type: "float32"
+      description: "Mean terrain slope within grid cell (degrees)"
+      source: "srtm"
+      enabled: true
+      nullable: true
+      validation:
+        min: 0.0
+        max: 90.0
+      aggregation: "mean"
+
+    - name: "aspect_degrees"
+      type: "float32"
+      description: "Dominant terrain aspect within grid cell (degrees, 0=N)"
+      source: "srtm"
+      enabled: true
+      nullable: true
+      validation:
+        min: 0.0
+        max: 360.0
+      aggregation: "circular_mean"
+
+  # --- Fire Context Features (FIRMS) ---
+  fire_context:
+    - name: "active_fire_count"
+      type: "int32"
+      description: "Number of FIRMS fire detections in cell within time window"
+      source: "firms"
+      enabled: true
+      nullable: false
+      default_value: 0
+      validation:
+        min: 0
+
+    - name: "mean_frp"
+      type: "float32"
+      description: "Mean Fire Radiative Power in cell (MW), clipped at 99.5th pctile"
+      source: "firms"
+      enabled: true
+      nullable: true
+      default_value: 0.0
+      validation:
+        min: 0.0
+        max: 5000.0
+
+    - name: "median_frp"
+      type: "float32"
+      description: "Median Fire Radiative Power in cell (MW) — robust alternative"
+      source: "firms"
+      enabled: true
+      nullable: true
+      default_value: 0.0
+      validation:
+        min: 0.0
+        max: 5000.0
+
+    - name: "max_confidence"
+      type: "int8"
+      description: "Maximum detection confidence in cell (0-100 for VIIRS, l/n/h for MODIS)"
+      source: "firms"
+      enabled: true
+      nullable: true
+      default_value: 0
+      validation:
+        min: 0
+        max: 100
+
+    - name: "nearest_fire_distance_km"
+      type: "float32"
+      description: "Distance from cell centroid to nearest active fire detection (km)"
+      source: "firms"
+      enabled: true
+      nullable: true
+      default_value: -1.0  # -1 means no active fires in region
+      validation:
+        min: -1.0
+
+    - name: "fire_detected_binary"
+      type: "int8"
+      description: "Binary label: 1 if any fire detected in cell, 0 otherwise"
+      source: "firms"
+      enabled: true
+      nullable: false
+      default_value: 0
+      validation:
+        allowed_values: [0, 1]
+
+  # --- Derived Features (Computed in processing) ---
+  derived:
+    - name: "days_since_last_precipitation"
+      type: "int16"
+      description: "Days since last precipitation > 1mm in cell"
+      source: "computed"
+      enabled: true
+      nullable: true
+      validation:
+        min: 0
+        max: 365
+
+    - name: "cumulative_wind_run_24h"
+      type: "float32"
+      description: "Cumulative wind distance over 24 hours (km)"
+      source: "computed"
+      enabled: true
+      nullable: true
+      validation:
+        min: 0.0
+
+    - name: "drought_index_proxy"
+      type: "float32"
+      description: "Composite drought proxy from soil moisture + temp + precip history"
+      source: "computed"
+      enabled: true
+      nullable: true
+      validation:
+        min: 0.0
+        max: 1.0
+
+  # --- Data Quality Metadata ---
+  metadata:
+    - name: "data_quality_flag"
+      type: "int8"
+      description: "0=all sources present, 1=weather forward-filled, 2=weather from NWS fallback, 3=partial data"
+      source: "computed"
+      enabled: true
+      nullable: false
+      default_value: 0
+
+    - name: "dominant_fuel_fraction"
+      type: "float32"
+      description: "Fraction of cell covered by the dominant fuel model (homogeneity indicator)"
+      source: "computed"
+      enabled: true
+      nullable: true
+      validation:
+        min: 0.0
+        max: 1.0
+
+# --- Anomaly Detection Configuration ---
+anomaly_detection:
+  method: "seasonal_baseline"
+  # Seasonal periods for California/Texas fire context
+  seasons:
+    fire_season:
+      months: [6, 7, 8, 9, 10, 11]
+    off_season:
+      months: [12, 1, 2, 3, 4, 5]
+  # Z-score thresholds per season (compared to same-season historical baseline)
+  z_score_threshold:
+    fire_season: 4.0
+    off_season: 3.5
+  # Minimum historical days needed to compute a reliable baseline
+  min_baseline_days: 30
+  # Features to monitor for anomalies
+  monitored_features:
+    - "temperature_2m"
+    - "relative_humidity_2m"
+    - "wind_speed_10m"
+    - "precipitation"
+    - "active_fire_count"
+    - "mean_frp"
+  # Alert configuration
+  alerts:
+    slack_webhook_env_var: "SLACK_WEBHOOK_URL"
+    email_recipients: []
+    alert_on_soft_failure: true  # Alert but don't block pipeline
+
+# --- Validation Configuration ---
+validation:
+  # Maximum allowed null rate per column before failing
+  max_null_rate: 0.15
+  # Expected row count tolerance (±%)
+  row_count_tolerance_pct: 5
+  # Great Expectations datasource name
+  ge_datasource: "wildfire_datasource"
+
+# --- GCS Configuration ---
+storage:
+  gcs_bucket_env_var: "GCS_BUCKET_NAME"
+  paths:
+    raw: "data/raw"
+    processed: "data/processed"
+    static: "data/static"
+    models: "models"
+  parquet_partition_columns: ["resolution_km", "date"]
+
+# --- DVC Configuration ---
+dvc:
+  remote_name: "gcs_remote"
+  # DVC remote URL is: gs://{GCS_BUCKET}/dvc-store
+  tracked_paths:
+    - "data/raw"
+    - "data/processed"
+    - "data/static"
+    - "models"

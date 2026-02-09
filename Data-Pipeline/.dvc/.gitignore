@@ -1,0 +1,13 @@
+# =============================================================================
+# DVC Configuration
+# =============================================================================
+# Remote storage: Google Cloud Storage
+# Setup:
+#   1. dvc init
+#   2. dvc remote add -d gcs_remote gs://<your-bucket>/dvc-store
+#   3. dvc remote modify gcs_remote credentialpath gcp-key.json
+#   4. dvc push
+# =============================================================================
+/config.local
+/tmp
+/cache

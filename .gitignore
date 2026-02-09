@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Environment
+.env
+*.env.local
+venv/
+.venv/
+
+# GCP credentials (NEVER commit)
+gcp-key.json
+*.json.key
+
+# Data (tracked by DVC, not Git)
+**/data/raw/
+**/data/processed/
+**/data/static/
+
+# Airflow
+airflow.db
+airflow.cfg
+airflow-webserver.pid
+**/logs/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local testing only
+wildfire_local_test_dag.py
