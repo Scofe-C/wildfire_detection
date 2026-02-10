@@ -81,12 +81,3 @@ wildfire_detection/
 - **CI/CD:** GitHub Actions
 - **Cloud:** Google Cloud Platform (GCS, future: Cloud Run, Spot VMs)
 
-## Team
-
-| Person | Role |
-|--------|------|
-| A | FIRMS ingestion & processing |
-| B | Weather ingestion & processing |
-| C | Static layers & grid system |
-| D | Fusion, validation & anomaly detection |
-| E | Airflow, Docker, DVC, CI/CD, GCP |
