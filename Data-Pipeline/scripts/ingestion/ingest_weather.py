@@ -2,10 +2,10 @@
 Weather Data Ingestion
 ======================
 Fetches weather data from Open-Meteo API (primary) with NWS API fallback.
-Handles rate limiting, coordinate snapping, and outputs raw JSON/CSV
+Handles rate limiting, coordinate snapping, and outputs raw HOURLY CSV
 to the staging area.
 
-Owner: Person B
+Owner: Mohammed
 Dependencies: requests, pandas, numpy
 
 Primary: Open-Meteo (https://open-meteo.com/en/docs)
@@ -16,14 +16,23 @@ Key behaviors:
     - Falls back to NWS API if Open-Meteo fails for a grid cell
     - Rounds coordinates to 3 decimal places for consistency
     - Tags data quality: 0=Open-Meteo fresh, 1=forward-filled, 2=NWS fallback
-"""
+    - Outputs RAW HOURLY data only - no aggregation or derived features
 
-import io
+Processing Pipeline:
+    1. ingest_weather.py (this file) → raw hourly data
+    2. process_weather.py → 6-hour aggregation + derived features
+"""
+import sys
+from pathlib import Path
+
+# Add project root to Python path
+project_root = Path(__file__).resolve().parent.parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
 import logging
-import os
 import time
 from datetime import datetime, timedelta
-from pathlib import Path
 from typing import Optional
 
 import numpy as np
@@ -35,24 +44,18 @@ from scripts.utils.schema_loader import get_registry
 
 logger = logging.getLogger(__name__)
 
-# Open-Meteo hourly variables that map to our schema weather features
+# Open-Meteo hourly variables - corresponds to 8 weather features in unified schema
 OPEN_METEO_HOURLY_PARAMS = [
-    "temperature_2m",
-    "relative_humidity_2m",
-    "wind_speed_10m",
-    "wind_direction_10m",
-    "precipitation",
-    "soil_moisture_0_to_7cm",
-    "vapor_pressure_deficit",
-]
-
-# Open-Meteo daily variables
-OPEN_METEO_DAILY_PARAMS = [
-    "fire_weather_index_max",
+    "temperature_2m",           # Temperature at 2m (°C)
+    "relative_humidity_2m",     # Relative humidity (%)
+    "wind_speed_10m",           # Wind speed at 10m (km/h)
+    "wind_direction_10m",       # Wind direction (degrees)
+    "precipitation",            # Precipitation (mm)
+    "soil_moisture_3_to_9cm",   # Soil moisture 3-9cm (m³/m³) ← UPDATED
+    "vapor_pressure_deficit",   # VPD (kPa)
 ]
 
 # Maximum coordinates per Open-Meteo request
-# Open-Meteo supports multi-location in a single request
 OPEN_METEO_MAX_LOCATIONS = 50
 
 
@@ -63,19 +66,33 @@ def fetch_weather_data(
     output_dir: Optional[str] = None,
     config_path: Optional[str] = None,
 ) -> Path:
-    """Fetch weather data for all grid cell centroids.
-
+    """
+    Fetch raw hourly weather data for all grid cell centroids.
+    
     This is the main entry point called by the Airflow task.
+    Outputs raw hourly data - no aggregation or feature engineering.
 
     Args:
         grid_centroids: DataFrame with columns [grid_id, latitude, longitude].
         execution_date: Pipeline execution timestamp.
-        lookback_hours: Hours of historical data to fetch.
+        lookback_hours: Hours of historical data to fetch (default: 24).
         output_dir: Local directory to write raw output.
         config_path: Optional schema config override.
 
     Returns:
-        Path to the output CSV file.
+        Path to the output CSV file in data/raw/weather/
+        
+    Output CSV Schema:
+        - grid_id: H3 hexagon identifier
+        - timestamp: UTC timestamp (hourly)
+        - temperature_2m: Temperature (°C)
+        - relative_humidity_2m: Relative humidity (%)
+        - wind_speed_10m: Wind speed (km/h)
+        - wind_direction_10m: Wind direction (degrees)
+        - precipitation: Precipitation (mm)
+        - soil_moisture_3_to_9cm: Soil moisture (m³/m³) ← UPDATED
+        - vapor_pressure_deficit: VPD (kPa)
+        - data_quality_flag: 0=Open-Meteo, 2=NWS fallback
     """
     registry = get_registry(config_path)
     om_config = registry.get_source_config("open_meteo")
@@ -83,7 +100,7 @@ def fetch_weather_data(
 
     coord_precision = om_config.get("coordinate_precision", 3)
 
-    # Round coordinates for consistency (prevents cache misses from float noise)
+    # Round coordinates to 3 decimal places (~100m) to prevent cache misses
     grid_centroids = grid_centroids.copy()
     grid_centroids["latitude"] = grid_centroids["latitude"].round(coord_precision)
     grid_centroids["longitude"] = grid_centroids["longitude"].round(coord_precision)
@@ -155,7 +172,7 @@ def fetch_weather_data(
         logger.error("All weather API requests failed.")
         combined = pd.DataFrame()
 
-    # Write output
+    # Write output to data/raw/weather/
     if output_dir is None:
         output_dir = (
             Path(__file__).resolve().parent.parent.parent / "data" / "raw" / "weather"
@@ -195,7 +212,8 @@ def _fetch_open_meteo_batch(
     timeout: int = 20,
     max_retries: int = 3,
 ) -> Optional[pd.DataFrame]:
-    """Fetch weather data from Open-Meteo for a batch of locations.
+    """
+    Fetch weather data from Open-Meteo for a batch of locations.
 
     Open-Meteo supports multiple latitude/longitude pairs in a single request.
 
@@ -216,7 +234,6 @@ def _fetch_open_meteo_batch(
         "latitude": lats,
         "longitude": lons,
         "hourly": ",".join(OPEN_METEO_HOURLY_PARAMS),
-        "daily": ",".join(OPEN_METEO_DAILY_PARAMS),
         "start_date": start_date.strftime("%Y-%m-%d"),
         "end_date": end_date.strftime("%Y-%m-%d"),
         "timezone": "UTC",
@@ -256,20 +273,25 @@ def _fetch_open_meteo_batch(
 def _parse_open_meteo_response(
     data: dict, batch: pd.DataFrame
 ) -> pd.DataFrame:
-    """Parse Open-Meteo JSON response into a flat DataFrame.
+    """
+    Parse Open-Meteo JSON response into a flat DataFrame.
 
     Open-Meteo returns an array of results when multiple coordinates
-    are requested. Each result contains hourly and daily arrays.
+    are requested. Each result contains hourly arrays.
     """
     records = []
 
     # Handle single vs. multi-location response
-    if isinstance(data.get("hourly"), dict):
-        # Single location — wrap in list for uniform processing
+    # Multi-location returns a list directly
+    if isinstance(data, list):
+        results = data
+    # Single location returns a dict with "hourly" key
+    elif isinstance(data, dict) and "hourly" in data:
         results = [data]
     else:
-        # Multi-location — data is a list
-        results = data if isinstance(data, list) else [data]
+        # Unexpected format
+        logger.warning(f"Unexpected Open-Meteo response format: {type(data)}")
+        return pd.DataFrame()
 
     grid_ids = batch["grid_id"].tolist()
 
@@ -279,7 +301,6 @@ def _parse_open_meteo_response(
 
         grid_id = grid_ids[idx]
         hourly = result.get("hourly", {})
-        daily = result.get("daily", {})
 
         timestamps = hourly.get("time", [])
 
@@ -296,17 +317,6 @@ def _parse_open_meteo_response(
 
             records.append(record)
 
-        # Map daily fire_weather_index to the hourly timestamps
-        # (apply the daily max to all hours of that day)
-        fwi_values = daily.get("fire_weather_index_max", [])
-        fwi_dates = daily.get("time", [])
-        fwi_map = dict(zip(fwi_dates, fwi_values))
-
-        for record in records:
-            if record["grid_id"] == grid_id:
-                date_str = record["timestamp"][:10]  # Extract YYYY-MM-DD
-                record["fire_weather_index"] = fwi_map.get(date_str)
-
     if not records:
         return pd.DataFrame()
 
@@ -321,7 +331,8 @@ def _fetch_nws_fallback(
     grid_id: str,
     config_path: Optional[str] = None,
 ) -> Optional[pd.DataFrame]:
-    """Fetch weather data from NWS API as fallback.
+    """
+    Fetch weather data from NWS API as fallback.
 
     NWS API is free, requires no key, but has a two-step process:
     1. Get the grid point metadata: /points/{lat},{lon}
@@ -385,9 +396,8 @@ def _fetch_nws_fallback(
                     period.get("windDirection")
                 ),
                 "precipitation": None,  # NWS doesn't provide exact precip in forecast
-                "soil_moisture_0_to_7cm": None,  # Not available from NWS
-                "vpd": None,  # Not available from NWS
-                "fire_weather_index": None,  # Not available from NWS
+                "soil_moisture_3_to_9cm": None,  # Not available from NWS ← UPDATED
+                "vapor_pressure_deficit": None,  # Not available from NWS
             }
             records.append(record)
 
@@ -437,3 +447,54 @@ def _parse_nws_wind_direction(direction: Optional[str]) -> Optional[float]:
         "W": 270, "WNW": 292.5, "NW": 315, "NNW": 337.5,
     }
     return direction_map.get(direction)
+
+
+if __name__ == "__main__":
+    """
+    Standalone test script for weather ingestion.
+    In production, this is called by Airflow DAG.
+    """
+    import logging
+    
+    # Setup logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+    
+    # Create sample grid centroids for California
+    sample_centroids = pd.DataFrame({
+        'grid_id': ['8a283082a5a7fff', '8a283082a5b7fff', '8a283082a5c7fff'],
+        'latitude': [34.0522, 36.7783, 37.7749],   # LA, Fresno, SF
+        'longitude': [-118.2437, -119.4179, -122.4194]
+    })
+    
+    print(f"\n🔥 Testing weather ingestion for {len(sample_centroids)} grid cells...")
+    
+    # Fetch weather for last 24 hours
+    execution_date = datetime.utcnow()
+    
+    try:
+        output_path = fetch_weather_data(
+            grid_centroids=sample_centroids,
+            execution_date=execution_date,
+            lookback_hours=24,
+            output_dir=None,  # Will use default: data/raw/weather/
+            config_path=None  # Will use default config
+        )
+        
+        print(f"\n✅ Success! Weather data saved to: {output_path}")
+        
+        # Display sample of results
+        df = pd.read_csv(output_path)
+        print(f"\nFetched {len(df)} hourly records")
+        print(f"Grid cells: {df['grid_id'].nunique()}")
+        print(f"Time range: {df['timestamp'].min()} to {df['timestamp'].max()}")
+        print(f"\nColumns: {list(df.columns)}")
+        print(f"\nSample data (first 5 rows):")
+        print(df.head())
+        
+    except Exception as e:
+        print(f"\n❌ Error: {e}")
+        import traceback
+        traceback.print_exc()
