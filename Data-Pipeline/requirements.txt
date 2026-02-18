@@ -1,49 +1,63 @@
 # =============================================================================
-# Wildfire MLOps Pipeline - Python Dependencies
+# Wildfire MLOps Pipeline — Python Dependencies
 # =============================================================================
-# Pin major.minor versions for reproducibility.
-# Install: pip install -r requirements.txt
+# Unpinned here; use with constraints.txt for reproducible installs:
+#   pip install -r requirements.txt -c constraints.txt
+#
+# Install:
+#   pip install -r requirements.txt -c constraints.txt
+#
+# Why constraints.txt instead of pinning here:
+#   Airflow 2.8.1 ships its own constraint file per Python version.
+#   Hard-pinning conflicts with it on macOS Arm64 (M-series) and some
+#   Windows/conda environments. The constraint file bounds the dangerous
+#   packages (pyarrow, numpy) while letting the resolver handle the rest.
+#   pyarrow IS hard-pinned in constraints.txt because Parquet schema
+#   encoding changed between major versions — all team members must match.
 # =============================================================================
 
-# --- Airflow ---
-apache-airflow==2.8.1
+# --- Airflow (postgres backend required for LocalExecutor) ---
+apache-airflow[postgres]==2.8.1
 
-# --- Data Processing ---
-pandas==2.2.0
-numpy==1.26.3
-pyarrow==15.0.0
+# --- Data stack ---
+pandas
+numpy
+packaging
+pyarrow
 
-# --- Geospatial ---
-h3==3.7.7
-geopandas==0.14.2
-shapely==2.0.2
-rasterio==1.3.9
-fiona==1.9.5
+# --- Parquet ---
+# (pyarrow covers this; fastparquet is optional alternative)
 
-# --- API & HTTP ---
-requests==2.31.0
+# --- Geo stack (compatible with GDAL 3.8 base image) ---
+h3
+geopandas
+shapely
+rasterio
+fiona
 
-# --- Configuration ---
-pyyaml==6.0.1
+# --- HTTP / config ---
+requests
+pyyaml
+python-json-logger
 
-# --- Data Validation ---
-great-expectations==0.18.8
+# --- Database ---
+psycopg2-binary
 
-# --- Data Version Control ---
-dvc==3.38.1
-dvc-gs==3.0.1
+# --- Data quality ---
+great-expectations
 
-# --- Testing ---
-pytest==8.0.0
-pytest-cov==4.1.0
-pytest-mock==3.12.0
-
-# --- Logging & Monitoring ---
-python-json-logger==2.0.7
+# --- MLOps / Versioning ---
+dvc
+dvc-gs
 
 # --- GCP ---
-google-cloud-storage==2.14.0
-google-auth==2.27.0
+google-cloud-storage
+google-auth
 
-# --- Code Quality ---
-ruff==0.2.0
+# --- Testing ---
+pytest
+pytest-cov
+pytest-mock
+
+# --- Code quality ---
+ruff

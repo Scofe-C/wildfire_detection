@@ -1,15 +1,37 @@
 """
 Wildfire Data Pipeline DAG
 ==========================
-Main Airflow DAG that orchestrates the end-to-end data pipeline:
-  ingest → process → fuse → validate → detect anomalies → export → version
+Main Airflow DAG: ingest → process → fuse → validate → detect anomalies → export → version
 
-Owner: Person E
 Schedule: Every 6 hours (00:00, 06:00, 12:00, 18:00 UTC)
 
-This file must be importable without errors — if any import fails,
-Airflow will silently skip this DAG. The CI pipeline validates this
-by running: python dags/wildfire_dag.py
+Improvements applied (pipeline_improvements_guide.md):
+  1a. DEFAULT_RESOLUTION_KM = 22 (H3 res 5)
+  1b. Regional sharding via Airflow TaskGroups (CA + TX run in parallel)
+  4c. task_export_to_parquet partitions by region/year/month
+
+Architecture:
+  Static layers are a shared pre-fusion task (single LANDFIRE/SRTM download).
+  Firms and weather are sharded per region inside TaskGroups.
+  Fusion waits for: CA TaskGroup + TX TaskGroup + shared static.
+
+  check_static ─────────────────────────────────────────────┐
+  [region_ca TaskGroup]                                      │
+    ingest_firms_ca → process_firms_ca ────────────────────┤→ fuse → validate → detect → export → version
+    ingest_weather_ca → process_weather_ca ────────────────┤
+  [region_tx TaskGroup]                                      │
+    ingest_firms_tx → process_firms_tx ────────────────────┤
+    ingest_weather_tx → process_weather_tx ─────────────────┘
+
+XCom key convention:
+  Region-scoped keys: firms_raw_path_{region}, weather_raw_path_{region},
+  firms_features_path_{region}, weather_features_path_{region}.
+  Shared keys (no suffix): static_features_path, fused_features_path, export_path.
+
+Cross-platform:
+  - ShortCircuitOperator: ignore_downstream_trigger_rules=False is explicit.
+  - DVC BashOperator: set -euo pipefail + explicit /bin/bash. Works on WSL2,
+    macOS Docker, Windows 10 Docker Desktop.
 """
 
 import os
@@ -22,27 +44,37 @@ from airflow import DAG
 from airflow.operators.python import PythonOperator, ShortCircuitOperator
 from airflow.operators.bash import BashOperator
 from airflow.utils.dates import days_ago
+from airflow.utils.task_group import TaskGroup
 
 # ---------------------------------------------------------------------------
 # DAG-level configuration
 # ---------------------------------------------------------------------------
 DAG_ID = "wildfire_data_pipeline"
-SCHEDULE_INTERVAL = "0 */6 * * *"  # Every 6 hours
-DEFAULT_RESOLUTION_KM = 64
+SCHEDULE_INTERVAL = "0 */6 * * *"  # Fallback cron; watchdog_sensor_dag overrides
 
-# Paths
+# Resolution tiers (Improvement 1a + watchdog escalation):
+#   64 km (H3 res 2) — coarse default scan, ~200 cells CA+TX
+#   22 km (H3 res 5) — fire-confirmed detailed scan, ~800-1000 cells CA
+DEFAULT_RESOLUTION_KM = 64  # Watchdog escalates to 22 on confirmed fire
+
+# Region definitions — mirrors schema_config.yaml geographic_scope
+# Defined here so the DAG can build TaskGroups without reading the config at
+# parse time (Airflow parses DAGs frequently; keep parse-time work minimal).
+REGIONS = {
+    "california": {"bbox": [-124.48, 32.53, -114.13, 42.01]},
+    "texas":      {"bbox": [-106.65, 25.84,  -93.51, 36.50]},
+}
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DATA_DIR = PROJECT_ROOT / "data"
-RAW_DIR = DATA_DIR / "raw"
+DATA_DIR     = PROJECT_ROOT / "data"
+RAW_DIR      = DATA_DIR / "raw"
 PROCESSED_DIR = DATA_DIR / "processed"
-STATIC_DIR = DATA_DIR / "static"
-LOGS_DIR = PROJECT_ROOT / "logs"
+STATIC_DIR   = DATA_DIR / "static"
+LOGS_DIR     = PROJECT_ROOT / "logs"
 
-# Ensure the project scripts are importable
 sys.path.insert(0, str(PROJECT_ROOT))
 
 logger = logging.getLogger(__name__)
-
 
 # ---------------------------------------------------------------------------
 # Default DAG arguments
@@ -59,39 +91,79 @@ default_args = {
     "execution_timeout": timedelta(hours=1),
 }
 
+# ---------------------------------------------------------------------------
+# Shared static layer tasks (pre-fusion, not inside any TaskGroup)
+# ---------------------------------------------------------------------------
+
+def task_check_static_cache(**context):
+    """Check if the full-grid static cache exists.
+
+    Returns False (skip load_static_layers) if cache is hot.
+    Returns True  (run  load_static_layers) if cache is missing.
+
+    ignore_downstream_trigger_rules=False ensures the skip stays contained —
+    it must not propagate past fuse_features (handled by trigger_rule='none_failed').
+    """
+    resolution_km = context["params"].get("resolution_km", DEFAULT_RESOLUTION_KM)
+    cache_path = STATIC_DIR / f"static_features_{resolution_km}km.parquet"
+
+    if cache_path.exists():
+        logger.info(f"Static cache found: {cache_path}")
+        context["ti"].xcom_push(key="static_features_path", value=str(cache_path))
+        return False
+    logger.info(f"No static cache at {cache_path} — download needed.")
+    return True
+
+
+def task_load_static_layers(**context):
+    """Download and process LANDFIRE + SRTM. Expensive; runs once per resolution."""
+    from scripts.processing.process_static import load_and_process_static
+
+    resolution_km = context["params"].get("resolution_km", DEFAULT_RESOLUTION_KM)
+    output_path = load_and_process_static(
+        resolution_km=resolution_km,
+        output_dir=str(STATIC_DIR),
+    )
+    context["ti"].xcom_push(key="static_features_path", value=str(output_path))
+    logger.info(f"Static layers processed → {output_path}")
+
 
 # ---------------------------------------------------------------------------
-# Task callables
+# Per-region task callables (Improvement 1b)
+# Each callable accepts a `region` kwarg injected via op_kwargs in the TaskGroup.
 # ---------------------------------------------------------------------------
-def task_ingest_firms(**context):
-    """Airflow task: Fetch FIRMS active fire detections."""
+
+def task_ingest_firms(region: str, **context):
+    """Fetch FIRMS for a single region (scoped via region kwarg)."""
     from scripts.ingestion.ingest_firms import fetch_firms_data
 
     execution_date = context["execution_date"]
-    resolution_km = context["params"].get("resolution_km", DEFAULT_RESOLUTION_KM)
+    resolution_km  = context["params"].get("resolution_km", DEFAULT_RESOLUTION_KM)
 
     output_path = fetch_firms_data(
         execution_date=execution_date,
         resolution_km=resolution_km,
         lookback_hours=24,
         output_dir=str(RAW_DIR / "firms"),
+        region=region,                   # ← scopes to this region's bbox only
     )
 
-    # Push output path to XCom for downstream tasks
-    context["ti"].xcom_push(key="firms_raw_path", value=str(output_path))
-    logger.info(f"FIRMS ingestion complete → {output_path}")
+    context["ti"].xcom_push(key=f"firms_raw_path_{region}", value=str(output_path))
+    logger.info(f"[{region}] FIRMS ingestion complete → {output_path}")
 
 
-def task_ingest_weather(**context):
-    """Airflow task: Fetch weather data from Open-Meteo with NWS fallback."""
+def task_ingest_weather(region: str, **context):
+    """Fetch weather for a single region's grid cells."""
     from scripts.ingestion.ingest_weather import fetch_weather_data
-    from scripts.utils.grid_utils import generate_full_grid
+    from scripts.utils.grid_utils import generate_grid_for_bbox
 
     execution_date = context["execution_date"]
-    resolution_km = context["params"].get("resolution_km", DEFAULT_RESOLUTION_KM)
+    resolution_km  = context["params"].get("resolution_km", DEFAULT_RESOLUTION_KM)
+    bbox = REGIONS[region]["bbox"]
 
-    # Generate grid centroids for weather API queries
-    grid = generate_full_grid(resolution_km)
+    # Generate region-specific grid centroids only — no full-grid needed here.
+    # generate_grid_for_bbox is cheaper than generate_full_grid at parse time.
+    grid = generate_grid_for_bbox(bbox, resolution_km)
     grid_centroids = grid[["grid_id", "latitude", "longitude"]]
 
     output_path = fetch_weather_data(
@@ -101,77 +173,15 @@ def task_ingest_weather(**context):
         output_dir=str(RAW_DIR / "weather"),
     )
 
-    context["ti"].xcom_push(key="weather_raw_path", value=str(output_path))
-    logger.info(f"Weather ingestion complete → {output_path}")
+    context["ti"].xcom_push(key=f"weather_raw_path_{region}", value=str(output_path))
+    logger.info(f"[{region}] Weather ingestion complete → {output_path}")
 
 
-def task_check_static_cache(**context):
-    """Airflow task: Check if static layers are cached.
-
-    Returns True if cache exists (skips download), False if download needed.
-    Used with ShortCircuitOperator to conditionally skip load_static_layers.
-    """
-    resolution_km = context["params"].get("resolution_km", DEFAULT_RESOLUTION_KM)
-    cache_path = STATIC_DIR / f"static_features_{resolution_km}km.parquet"
-
-    if cache_path.exists():
-        logger.info(f"Static layer cache found: {cache_path}")
-        context["ti"].xcom_push(
-            key="static_features_path", value=str(cache_path)
-        )
-        return False  # ShortCircuit: skip downstream load_static_layers
-    else:
-        logger.info(f"No static layer cache at {cache_path}. Download needed.")
-        return True  # Continue to load_static_layers
-
-
-def task_load_static_layers(**context):
-    """Airflow task: Download and process LANDFIRE + SRTM static layers.
-
-    This is the most expensive task but only runs once per resolution level.
-    Person C implements the actual processing logic.
-    """
-    resolution_km = context["params"].get("resolution_km", DEFAULT_RESOLUTION_KM)
-
-    # ---------------------------------------------------------------
-    # PERSON C: Implement the static layer processing here.
-    # This stub demonstrates the interface contract.
-    # ---------------------------------------------------------------
-    # from scripts.processing.process_static import load_and_process_static
-    #
-    # output_path = load_and_process_static(
-    #     resolution_km=resolution_km,
-    #     output_dir=str(STATIC_DIR),
-    # )
-
-    # Placeholder: create empty parquet with expected columns
-    import pandas as pd
-    from scripts.utils.grid_utils import generate_full_grid
-
-    grid = generate_full_grid(resolution_km)
-    static_df = grid[["grid_id"]].copy()
-    static_df["fuel_model_fbfm40"] = None
-    static_df["canopy_cover_pct"] = None
-    static_df["vegetation_type"] = None
-    static_df["ndvi"] = None
-    static_df["elevation_m"] = None
-    static_df["slope_degrees"] = None
-    static_df["aspect_degrees"] = None
-    static_df["dominant_fuel_fraction"] = None
-
-    output_path = STATIC_DIR / f"static_features_{resolution_km}km.parquet"
-    STATIC_DIR.mkdir(parents=True, exist_ok=True)
-    static_df.to_parquet(output_path, index=False)
-
-    context["ti"].xcom_push(key="static_features_path", value=str(output_path))
-    logger.info(f"Static layers processed → {output_path}")
-
-
-def task_process_firms(**context):
-    """Airflow task: Aggregate FIRMS point data to grid-level features."""
+def task_process_firms(region: str, **context):
+    """Aggregate FIRMS point data to grid features for one region."""
     from scripts.processing.process_firms import process_firms_data
 
-    raw_path = context["ti"].xcom_pull(key="firms_raw_path")
+    raw_path      = context["ti"].xcom_pull(key=f"firms_raw_path_{region}")
     resolution_km = context["params"].get("resolution_km", DEFAULT_RESOLUTION_KM)
 
     firms_features = process_firms_data(
@@ -179,127 +189,119 @@ def task_process_firms(**context):
         resolution_km=resolution_km,
     )
 
-    # Save intermediate result
-    output_path = PROCESSED_DIR / "firms" / "firms_features_latest.parquet"
+    output_path = PROCESSED_DIR / "firms" / f"firms_features_{region}_latest.parquet"
     output_path.parent.mkdir(parents=True, exist_ok=True)
     firms_features.to_parquet(output_path, index=False)
 
-    context["ti"].xcom_push(key="firms_features_path", value=str(output_path))
+    context["ti"].xcom_push(key=f"firms_features_path_{region}", value=str(output_path))
+    logger.info(f"[{region}] FIRMS processing complete: {len(firms_features)} rows")
 
 
-def task_process_weather(**context):
-    """Airflow task: Process raw weather data into grid-aligned features.
+def task_process_weather(region: str, **context):
+    """Process raw weather CSV into grid-aligned features for one region."""
+    from scripts.processing.process_weather import process_weather_data
 
-    Person B implements the actual processing logic including derived
-    feature computation.
-    """
-    raw_path = context["ti"].xcom_pull(key="weather_raw_path")
+    raw_path      = context["ti"].xcom_pull(key=f"weather_raw_path_{region}")
     resolution_km = context["params"].get("resolution_km", DEFAULT_RESOLUTION_KM)
 
-    # ---------------------------------------------------------------
-    # PERSON B: Implement weather processing here.
-    # This stub loads the raw data and passes it through.
-    # Replace with: from scripts.processing.process_weather import process_weather_data
-    # ---------------------------------------------------------------
-    import pandas as pd
+    weather_features = process_weather_data(
+        raw_csv_path=raw_path,
+        resolution_km=resolution_km,
+    )
 
-    weather_df = pd.read_csv(raw_path)
-
-    output_path = PROCESSED_DIR / "weather" / "weather_features_latest.parquet"
+    output_path = PROCESSED_DIR / "weather" / f"weather_features_{region}_latest.parquet"
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    weather_df.to_parquet(output_path, index=False)
+    weather_features.to_parquet(output_path, index=False)
 
-    context["ti"].xcom_push(key="weather_features_path", value=str(output_path))
+    context["ti"].xcom_push(key=f"weather_features_path_{region}", value=str(output_path))
+    logger.info(f"[{region}] Weather processing complete: {len(weather_features)} rows")
 
+
+# ---------------------------------------------------------------------------
+# Fusion and downstream tasks (shared — wait for all regions)
+# ---------------------------------------------------------------------------
 
 def task_fuse_features(**context):
-    """Airflow task: Join all data sources into the unified feature table."""
+    """Join all regions data into the unified feature table.
+
+    When triggered by watchdog with confirmed fire cells, generates a focal
+    grid (5-25 km detection zone) for dense coverage around the fire.
+    Cron-triggered runs use the full regional grid.
+    """
     from scripts.fusion.fuse_features import fuse_features
     import pandas as pd
 
     execution_date = context["execution_date"]
-    resolution_km = context["params"].get("resolution_km", DEFAULT_RESOLUTION_KM)
+    resolution_km  = context["params"].get("resolution_km", DEFAULT_RESOLUTION_KM)
+    fire_cells     = context["params"].get("fire_cells", [])
+    h3_ring_max    = context["params"].get("h3_ring_max", 5)
+    trigger_source = context["params"].get("trigger_source", "cron")
 
-    # Load intermediate results from upstream tasks
-    firms_path = context["ti"].xcom_pull(key="firms_features_path")
-    weather_path = context["ti"].xcom_pull(key="weather_features_path")
+    firms_dfs, weather_dfs = [], []
+
+    for region in REGIONS:
+        firms_path   = context["ti"].xcom_pull(key=f"firms_features_path_{region}")
+        weather_path = context["ti"].xcom_pull(key=f"weather_features_path_{region}")
+        if firms_path:
+            df = pd.read_parquet(firms_path)
+            df["region"] = region
+            firms_dfs.append(df)
+        if weather_path:
+            weather_dfs.append(pd.read_parquet(weather_path))
+
+    firms_df   = pd.concat(firms_dfs,   ignore_index=True) if firms_dfs   else pd.DataFrame()
+    weather_df = pd.concat(weather_dfs, ignore_index=True) if weather_dfs else pd.DataFrame()
     static_path = context["ti"].xcom_pull(key="static_features_path")
+    static_df   = pd.read_parquet(static_path) if static_path else pd.DataFrame()
 
-    firms_df = pd.read_parquet(firms_path) if firms_path else pd.DataFrame()
-    weather_df = pd.read_parquet(weather_path) if weather_path else pd.DataFrame()
-    static_df = pd.read_parquet(static_path) if static_path else pd.DataFrame()
+    # Generate focal grid when watchdog provided fire cells
+    if fire_cells and trigger_source != "cron":
+        try:
+            from scripts.utils.grid_utils import generate_fire_focal_grid
+            focal_grid = generate_fire_focal_grid(
+                fire_cell_ids=fire_cells, ring_min=1, ring_max=h3_ring_max,
+            )
+            context["ti"].xcom_push(key="focal_grid_cell_count", value=len(focal_grid))
+            logger.info(
+                f"Focal grid: {len(focal_grid)} cells "
+                f"(fire={sum(focal_grid['cell_type']=='fire')}, "
+                f"zone={sum(focal_grid['cell_type']=='detection_zone')})"
+            )
+        except Exception as e:
+            logger.warning(f"Focal grid generation failed: {e}")
 
     fused = fuse_features(
         firms_features=firms_df,
         weather_features=weather_df,
         static_features=static_df,
-        execution_date=pd.Timestamp(str(execution_date)),
+        execution_date=pd.Timestamp(execution_date),
         resolution_km=resolution_km,
     )
 
     output_path = PROCESSED_DIR / "fused" / "fused_features_latest.parquet"
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fused.to_parquet(output_path, index=False)
-
     context["ti"].xcom_push(key="fused_features_path", value=str(output_path))
-    logger.info(f"Feature fusion complete: {len(fused)} rows → {output_path}")
+    region_counts = fused["region"].value_counts().to_dict() if "region" in fused.columns else {}
+    logger.info(
+        f"Fusion: {len(fused)} rows (regions: {region_counts}, "
+        f"src: {trigger_source}, res: {resolution_km}km) -> {output_path}"
+    )
 
 
 def task_validate_schema(**context):
-    """Airflow task: Run Great Expectations validation on fused data.
-
-    Person D implements the full validation suite.
-    """
+    """Run schema validation on the fused dataset."""
     import pandas as pd
     from scripts.utils.schema_loader import get_registry
+    from scripts.validation.validate_schema import run_validation
 
-    fused_path = context["ti"].xcom_pull(key="fused_features_path")
-    fused_df = pd.read_parquet(fused_path)
-    registry = get_registry()
+    fused_path    = context["ti"].xcom_pull(key="fused_features_path")
+    fused_df      = pd.read_parquet(fused_path)
+    registry      = get_registry()
+    resolution_km = context["params"].get("resolution_km", DEFAULT_RESOLUTION_KM)
 
-    # ---------------------------------------------------------------
-    # PERSON D: Replace this stub with Great Expectations validation.
-    # from scripts.validation.validate_schema import run_validation
-    # result = run_validation(fused_df)
-    # ---------------------------------------------------------------
-
-    validation_results = {"passed": True, "issues": []}
-
-    # Basic programmatic validation as a starting point
-    # Check non-nullable columns
-    for col in registry.get_non_nullable_columns():
-        if col in fused_df.columns and fused_df[col].isnull().any():
-            null_rate = fused_df[col].isnull().mean()
-            validation_results["issues"].append(
-                f"Non-nullable column '{col}' has {null_rate:.2%} nulls"
-            )
-            validation_results["passed"] = False
-
-    # Check value ranges
-    for col, rules in registry.get_validation_rules().items():
-        if col not in fused_df.columns:
-            continue
-        if "min" in rules:
-            violations = (fused_df[col].dropna() < rules["min"]).sum()
-            if violations > 0:
-                validation_results["issues"].append(
-                    f"Column '{col}': {violations} values below min={rules['min']}"
-                )
-        if "max" in rules:
-            violations = (fused_df[col].dropna() > rules["max"]).sum()
-            if violations > 0:
-                validation_results["issues"].append(
-                    f"Column '{col}': {violations} values above max={rules['max']}"
-                )
-
-    # Check null rates
-    max_null = registry.max_null_rate
-    for col in fused_df.columns:
-        null_rate = fused_df[col].isnull().mean()
-        if null_rate > max_null:
-            validation_results["issues"].append(
-                f"Column '{col}': null rate {null_rate:.2%} exceeds threshold {max_null:.0%}"
-            )
+    passed, results = run_validation(fused_df, registry, resolution_km=resolution_km)
+    validation_results = {"passed": passed, "issues": results.get("issues", [])}
 
     if validation_results["issues"]:
         logger.warning(
@@ -313,67 +315,31 @@ def task_validate_schema(**context):
 
     if not validation_results["passed"]:
         raise ValueError(
-            f"Schema validation failed with {len(validation_results['issues'])} issues. "
-            f"First issue: {validation_results['issues'][0]}"
+            f"Schema validation failed: {validation_results['issues'][0]}"
         )
 
 
 def task_detect_anomalies(**context):
-    """Airflow task: Run seasonal-baseline anomaly detection.
-
-    Person D implements the full anomaly detection logic.
-    """
+    """Run seasonal-baseline anomaly detection (soft failure — does not block export)."""
     import pandas as pd
     from scripts.utils.schema_loader import get_registry
+    from scripts.validation.detect_anomalies import detect_anomalies
 
     fused_path = context["ti"].xcom_pull(key="fused_features_path")
-    fused_df = pd.read_parquet(fused_path)
-    registry = get_registry()
+    fused_df   = pd.read_parquet(fused_path)
+    registry   = get_registry()
 
-    execution_date = context["execution_date"]
-    current_month = execution_date.month
-
-    # ---------------------------------------------------------------
-    # PERSON D: Replace with full seasonal baseline anomaly detection.
-    # from scripts.validation.detect_anomalies import detect_anomalies
-    # anomalies = detect_anomalies(fused_df, execution_date)
-    # ---------------------------------------------------------------
-
-    anomaly_config = registry.anomaly_config
-    z_threshold = registry.get_z_threshold(current_month)
-    monitored = anomaly_config.get("monitored_features", [])
-
-    anomalies_found = []
-    for col in monitored:
-        if col not in fused_df.columns:
-            continue
-        values = fused_df[col].dropna()
-        if len(values) < 10:
-            continue
-
-        mean_val = values.mean()
-        std_val = values.std()
-        if std_val == 0:
-            continue
-
-        # Check for any values exceeding z-score threshold
-        z_scores = ((values - mean_val) / std_val).abs()
-        outlier_count = (z_scores > z_threshold).sum()
-
-        if outlier_count > 0:
-            anomalies_found.append({
-                "feature": col,
-                "outlier_count": int(outlier_count),
-                "z_threshold": z_threshold,
-                "season": "fire_season" if current_month in registry.fire_season_months else "off_season",
-            })
+    anomalies_found = detect_anomalies(
+        fused_df=fused_df,
+        registry=registry,
+        execution_date=context["execution_date"],
+    )
 
     if anomalies_found:
         logger.warning(
-            f"Anomalies detected in {len(anomalies_found)} features: "
+            f"Anomalies in {len(anomalies_found)} features: "
             + ", ".join(a["feature"] for a in anomalies_found)
         )
-        # Send alert (soft failure — does not block pipeline)
         _send_anomaly_alert(anomalies_found)
     else:
         logger.info("No anomalies detected")
@@ -382,16 +348,12 @@ def task_detect_anomalies(**context):
 
 
 def _send_anomaly_alert(anomalies: list[dict]):
-    """Send anomaly alert via Slack webhook (if configured)."""
     webhook_url = os.environ.get("SLACK_WEBHOOK_URL")
     if not webhook_url:
-        logger.info("SLACK_WEBHOOK_URL not set — skipping Slack alert")
         return
-
     try:
         import requests
-
-        message = (
+        msg = (
             ":warning: *Wildfire Pipeline Anomaly Alert*\n"
             + "\n".join(
                 f"• `{a['feature']}`: {a['outlier_count']} outliers "
@@ -399,69 +361,94 @@ def _send_anomaly_alert(anomalies: list[dict]):
                 for a in anomalies
             )
         )
-        requests.post(webhook_url, json={"text": message}, timeout=10)
-        logger.info("Anomaly alert sent to Slack")
+        requests.post(webhook_url, json={"text": msg}, timeout=10)
     except Exception as e:
-        logger.warning(f"Failed to send Slack alert: {e}")
+        logger.warning(f"Slack alert failed: {e}")
 
 
 def task_export_to_parquet(**context):
-    """Airflow task: Export validated data to partitioned Parquet on GCS."""
+    """Export with region/year/month partitioning (Improvement 4c).
+
+    Output:
+      data/processed/22km/region=california/year=2026/month=02/features_2026-02-09.parquet
+      data/processed/22km/region=texas/year=2026/month=02/features_2026-02-09.parquet
+    """
     import pandas as pd
 
-    fused_path = context["ti"].xcom_pull(key="fused_features_path")
-    fused_df = pd.read_parquet(fused_path)
+    fused_path    = context["ti"].xcom_pull(key="fused_features_path")
+    fused_df      = pd.read_parquet(fused_path)
     execution_date = context["execution_date"]
     resolution_km = context["params"].get("resolution_km", DEFAULT_RESOLUTION_KM)
 
-    # Add date partition column
     date_str = execution_date.strftime("%Y-%m-%d")
-    fused_df["date"] = date_str
+    year     = execution_date.strftime("%Y")
+    month    = execution_date.strftime("%m")
 
-    # Write locally (DVC will push to GCS)
-    output_dir = PROCESSED_DIR / f"{resolution_km}km" / f"date={date_str}"
-    output_dir.mkdir(parents=True, exist_ok=True)
-    output_path = output_dir / "features.parquet"
-    fused_df.to_parquet(output_path, index=False)
+    exported_paths = []
 
-    context["ti"].xcom_push(key="export_path", value=str(output_path))
-    logger.info(f"Exported to {output_path}")
+    if "region" in fused_df.columns and fused_df["region"].notna().any():
+        for region in fused_df["region"].dropna().unique():
+            region_df = fused_df[fused_df["region"] == region].copy()
+            region_df["date"] = date_str
+
+            output_dir = (
+                PROCESSED_DIR / f"{resolution_km}km"
+                / f"region={region}" / f"year={year}" / f"month={month}"
+            )
+            output_dir.mkdir(parents=True, exist_ok=True)
+            output_path = output_dir / f"features_{date_str}.parquet"
+            region_df.to_parquet(output_path, index=False)
+            exported_paths.append(str(output_path))
+            logger.info(f"Exported {region}: {len(region_df)} rows → {output_path}")
+    else:
+        logger.warning("'region' column absent — falling back to legacy date= partition")
+        fused_df["date"] = date_str
+        output_dir = PROCESSED_DIR / f"{resolution_km}km" / f"date={date_str}"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output_path = output_dir / "features.parquet"
+        fused_df.to_parquet(output_path, index=False)
+        exported_paths.append(str(output_path))
+
+    export_root = str(PROCESSED_DIR / f"{resolution_km}km")
+    context["ti"].xcom_push(key="export_path",  value=export_root)
+    context["ti"].xcom_push(key="export_paths", value=exported_paths)
 
 
 # ---------------------------------------------------------------------------
 # DAG Definition
 # ---------------------------------------------------------------------------
-
 with DAG(
     dag_id=DAG_ID,
     default_args=default_args,
-    description="End-to-end wildfire data pipeline: ingest → process → fuse → validate → export",
+    description="Wildfire data pipeline with regional sharding (CA + TX parallel TaskGroups)",
     schedule_interval=SCHEDULE_INTERVAL,
     start_date=days_ago(1),
     catchup=False,
-    max_active_runs=1,  # Prevent concurrent runs (DVC Git lock conflicts)
+    max_active_runs=1,   # DVC lock: never run two instances concurrently
     tags=["wildfire", "mlops", "data-pipeline"],
-    params={"resolution_km": DEFAULT_RESOLUTION_KM},
+    params={
+        "resolution_km": DEFAULT_RESOLUTION_KM,
+        # Watchdog trigger params (set by watchdog_sensor_dag on fire detection)
+        "trigger_source": "cron",         # "cron" | "watchdog_active" | "watchdog_emergency"
+        "fire_cells": [],                 # H3 cell IDs confirmed by watchdog
+        "fire_frp_mw": 0.0,              # Max FRP at time of trigger (MW)
+        "mode": "quiet",                  # watchdog mode that triggered this run
+        "regions": [],                    # if empty, run all regions
+        "detection_range_km": 25,         # focal grid outer boundary
+        "h3_ring_max": 5,                 # focal grid ring count
+        "triggered_by_watchdog": False,
+    },
 ) as dag:
 
-    # --- Ingestion tasks (parallel) ---
-    ingest_firms = PythonOperator(
-        task_id="ingest_firms",
-        python_callable=task_ingest_firms,
-        provide_context=True,
-    )
-
-    ingest_weather = PythonOperator(
-        task_id="ingest_weather",
-        python_callable=task_ingest_weather,
-        provide_context=True,
-    )
-
-    # --- Static layer tasks (conditional) ---
+    # ------------------------------------------------------------------
+    # Shared static branch (runs in parallel with region TaskGroups)
+    # ------------------------------------------------------------------
     check_static_cache = ShortCircuitOperator(
         task_id="check_static_cache",
         python_callable=task_check_static_cache,
         provide_context=True,
+        # Skip propagates only to load_static_layers, not beyond.
+        # fuse_features handles partial upstream via trigger_rule='none_failed'.
         ignore_downstream_trigger_rules=False,
     )
 
@@ -471,61 +458,94 @@ with DAG(
         provide_context=True,
     )
 
-    # --- Processing tasks (parallel, after respective ingestion) ---
-    process_firms = PythonOperator(
-        task_id="process_firms",
-        python_callable=task_process_firms,
-        provide_context=True,
-    )
+    check_static_cache >> load_static_layers
 
-    process_weather = PythonOperator(
-        task_id="process_weather",
-        python_callable=task_process_weather,
-        provide_context=True,
-    )
+    # ------------------------------------------------------------------
+    # Regional TaskGroups (Improvement 1b)
+    # One TaskGroup per region: ingest_firms + ingest_weather run in
+    # parallel within each group; process tasks follow their respective ingest.
+    # ------------------------------------------------------------------
+    region_task_groups = {}
 
-    # --- Fusion ---
+    for region_key in REGIONS:
+        with TaskGroup(group_id=f"region_{region_key}") as tg:
+
+            ingest_f = PythonOperator(
+                task_id="ingest_firms",
+                python_callable=task_ingest_firms,
+                op_kwargs={"region": region_key},
+                provide_context=True,
+            )
+
+            ingest_w = PythonOperator(
+                task_id="ingest_weather",
+                python_callable=task_ingest_weather,
+                op_kwargs={"region": region_key},
+                provide_context=True,
+            )
+
+            process_f = PythonOperator(
+                task_id="process_firms",
+                python_callable=task_process_firms,
+                op_kwargs={"region": region_key},
+                provide_context=True,
+            )
+
+            process_w = PythonOperator(
+                task_id="process_weather",
+                python_callable=task_process_weather,
+                op_kwargs={"region": region_key},
+                provide_context=True,
+            )
+
+            # Within-group dependencies:
+            # ingest runs first, process follows; firms and weather run in parallel
+            ingest_f >> process_f
+            ingest_w >> process_w
+
+        region_task_groups[region_key] = tg
+
+    # ------------------------------------------------------------------
+    # Fusion — waits for ALL region TaskGroups + shared static branch
+    # trigger_rule='none_failed' handles the static ShortCircuit skip gracefully
+    # ------------------------------------------------------------------
     fuse = PythonOperator(
         task_id="fuse_features",
         python_callable=task_fuse_features,
         provide_context=True,
-        trigger_rule="none_failed",  # Run even if static cache check short-circuits
+        trigger_rule="none_failed",
     )
 
-    # --- Validation ---
+    # Connect all branches into fusion
+    load_static_layers >> fuse
+    for tg in region_task_groups.values():
+        tg >> fuse
+
+    # ------------------------------------------------------------------
+    # Validation → anomaly detection → export → DVC versioning
+    # ------------------------------------------------------------------
     validate = PythonOperator(
         task_id="validate_schema",
         python_callable=task_validate_schema,
         provide_context=True,
     )
 
-    # --- Anomaly detection (soft failure — does not block export) ---
     detect_anomalies = PythonOperator(
         task_id="detect_anomalies",
         python_callable=task_detect_anomalies,
         provide_context=True,
-        trigger_rule="all_done",  # Run even if validation has warnings
+        trigger_rule="all_done",  # Runs even if validation raised a warning
     )
 
-    # --- Export ---
     export = PythonOperator(
         task_id="export_to_parquet",
         python_callable=task_export_to_parquet,
         provide_context=True,
     )
 
-    # --- DVC versioning (must be last) ---
-    # Strategy (Option B): dvc add + dvc push only.
-    # Data is pushed to GCS immediately so nothing is lost.
-    # The resulting .dvc metadata files are updated on the host via
-    # the volume mount — the developer commits them as part of the
-    # normal PR flow. We intentionally do NOT run git commands from
-    # inside the container to avoid .git mount complexity and
-    # automated-commit footguns.
-    #
-    # Idempotency: dvc add re-hashes (safe to retry), dvc push skips
-    # already-pushed files. The DAG's max_active_runs=1 prevents
-    # concurrent DVC operations.
+    # Real DVC BashOperator — restored from base (lisun had a logger stub).
+    # bash -c is explicit: works on WSL2, macOS Docker, Windows 10 Docker Desktop.
+    # Improvement 4c: tracks resolution_km dir tree (covers all region sub-dirs).
     version = BashOperator(
         task_id="version_with_dvc",
         bash_command="""
@@ -533,23 +553,19 @@ with DAG(
 
             echo "=== DVC version step ==="
 
-            # Preflight: verify a DVC remote is configured
             if ! dvc remote list | grep -q .; then
                 echo "ERROR: No DVC remote configured."
-                echo "Run on host: dvc remote add -d gcs_remote gs://<bucket>/dvc-store"
+                echo "One-time setup: dvc remote add -d gcs_remote gs://<bucket>/dvc-store"
                 exit 1
             fi
 
-            # Track the fused feature directory (intermediate)
             echo "Tracking data/processed/fused ..."
             dvc add data/processed/fused
 
-            # Track the exported partitioned output (delivery artifact)
             echo "Tracking data/processed/{{ params.resolution_km }}km ..."
             dvc add data/processed/{{ params.resolution_km }}km
 
-            # Push to GCS remote
-            echo "Pushing to remote ..."
+            echo "Pushing to GCS remote ..."
             dvc push
 
             echo "=== DVC version step complete ==="
@@ -557,21 +573,11 @@ with DAG(
         dag=dag,
     )
 
-    # --- Task dependencies ---
-    # Three parallel ingestion branches
-    ingest_firms >> process_firms
-    ingest_weather >> process_weather
-    check_static_cache >> load_static_layers
-
-    # Fusion waits for all three branches
-    [process_firms, process_weather, load_static_layers] >> fuse
-
-    # Sequential validation → anomaly detection → export → version
     fuse >> validate >> detect_anomalies >> export >> version
 
 
 # ---------------------------------------------------------------------------
-# DAG import validation (run this file directly to check for import errors)
+# DAG import validation
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     print(f"DAG '{DAG_ID}' parsed successfully.")

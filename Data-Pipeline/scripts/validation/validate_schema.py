@@ -1,0 +1,124 @@
+from __future__ import annotations
+
+from typing import Any, Dict, List, Tuple
+
+import great_expectations as ge
+import pandas as pd
+
+from scripts.utils.grid_utils import generate_full_grid
+
+
+_TYPE_MAP = {
+    "float32": "float",
+    "float64": "float",
+    "int8": "int",
+    "int16": "int",
+    "int32": "int",
+    "int64": "int",
+    "string": "object",
+    "bool": "bool",
+}
+
+_EXPECTED_GRID_COUNT_CACHE: Dict[int, int] = {}
+
+
+def _get_expected_row_count(resolution_km: int) -> int:
+    if resolution_km in _EXPECTED_GRID_COUNT_CACHE:
+        return _EXPECTED_GRID_COUNT_CACHE[resolution_km]
+    grid_gdf = generate_full_grid(resolution_km=resolution_km)
+    expected = int(len(grid_gdf))
+    _EXPECTED_GRID_COUNT_CACHE[resolution_km] = expected
+    return expected
+
+
+def run_validation(
+    df: pd.DataFrame,
+    registry,
+    resolution_km: int,
+    enforce_row_count: bool = True,
+) -> Tuple[bool, Dict[str, Any]]:
+    """
+    Great Expectations validation gate.
+    Returns (passed, results_dict) where results_dict contains issues list.
+    """
+
+    validator = ge.from_pandas(df)
+
+    feature_names: List[str] = registry.get_feature_names()
+    dtype_map: Dict[str, str] = registry.get_dtype_map()
+    rules_map: Dict[str, Dict[str, Any]] = registry.get_validation_rules()
+    non_nullable: List[str] = registry.get_non_nullable_columns()
+
+    max_null_rate: float = float(getattr(registry, "max_null_rate", 0.15))
+    tol_pct: float = float(getattr(registry, "row_count_tolerance_pct", 5)) / 100.0
+
+    # 1) column existence
+    for col in feature_names:
+        validator.expect_column_to_exist(col)
+
+    # 2) types
+    for col, dtype in dtype_map.items():
+        if col not in feature_names:
+            continue
+        ge_type = _TYPE_MAP.get(str(dtype))
+        if ge_type:
+            validator.expect_column_values_to_be_of_type(col, ge_type)
+
+    # 3) rules (min/max, allowed values)
+    for col, rules in rules_map.items():
+        if col not in feature_names:
+            continue
+
+        if ("min" in rules) or ("max" in rules):
+            validator.expect_column_values_to_be_between(
+                col,
+                min_value=rules.get("min"),
+                max_value=rules.get("max"),
+            )
+
+        if "allowed_values" in rules:
+            validator.expect_column_values_to_be_in_set(
+                col,
+                list(rules["allowed_values"]),
+            )
+
+    # 4) null constraints
+    for col in non_nullable:
+        if col in feature_names:
+            validator.expect_column_values_to_not_be_null(col, mostly=1.0)
+
+    mostly = max(0.0, min(1.0, 1.0 - max_null_rate))
+    for col in feature_names:
+        if col in non_nullable:
+            continue
+        if col in df.columns:
+            validator.expect_column_values_to_not_be_null(col, mostly=mostly)
+
+    # 5) grid_id uniqueness (avoid GE error when all-null)
+    if "grid_id" in df.columns:
+        if df["grid_id"].notna().any():
+            validator.expect_column_proportion_of_unique_values_to_be_between(
+                "grid_id",
+                min_value=0.99,
+                max_value=1.0,
+            )
+
+    # 6) row count bounds (production gate; disable in unit tests)
+    if enforce_row_count:
+        expected = _get_expected_row_count(resolution_km)
+        lo = int(expected * (1.0 - tol_pct))
+        hi = int(expected * (1.0 + tol_pct))
+        validator.expect_table_row_count_to_be_between(lo, hi)
+
+    result = validator.validate(result_format="SUMMARY")
+    passed = bool(result.get("success", False))
+
+    issues: List[str] = []
+    for r in result.get("results", []):
+        if not r.get("success", True):
+            exp = r.get("expectation_config", {}).get("expectation_type", "unknown_expectation")
+            kw = r.get("expectation_config", {}).get("kwargs", {})
+            col = kw.get("column", "")
+            issues.append(f"{exp} failed column={col} kwargs={kw}")
+
+    return passed, {"passed": passed, "issues": issues, "ge_summary": result}

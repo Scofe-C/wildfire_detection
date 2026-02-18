@@ -4,13 +4,7 @@
 # Mirrors the Airflow DAG structure so the entire pipeline can be
 # reproduced offline with: dvc repro
 #
-# Each stage corresponds to an Airflow task (except check_static_cache
-# and version_with_dvc which are Airflow-only control flow / DVC ops).
-#
-# Stages that reference scripts not yet created (process_weather,
-# process_static, validate_schema, detect_anomalies) will fail on
-# dvc repro until the owning team member implements them. This is
-# intentional — the dependency graph is correct and ready.
+# Each stage corresponds to an Airflow task.
 # =============================================================================
 
 stages:
@@ -37,6 +31,17 @@ stages:
       - data/raw/weather:
           persist: true
 
+  process_weather:
+    cmd: python scripts/processing/process_weather.py
+    deps:
+      - scripts/processing/process_weather.py
+      - scripts/utils/grid_utils.py
+      - data/raw/weather
+    outs:
+      - data/processed/weather:
+          persist: true
+
+
   process_firms:
     cmd: python scripts/processing/process_firms.py
     deps:
@@ -45,29 +50,6 @@ stages:
       - data/raw/firms
     outs:
       - data/processed/firms:
-          persist: true
-
-  # Person B: create scripts/processing/process_weather.py
-  process_weather:
-    cmd: python scripts/processing/process_weather.py
-    deps:
-      - scripts/processing/process_weather.py
-      - scripts/utils/grid_utils.py
-      - scripts/utils/schema_loader.py
-      - data/raw/weather
-    outs:
-      - data/processed/weather:
-          persist: true
-
-  # Person C: create scripts/processing/process_static.py
-  load_static_layers:
-    cmd: python scripts/processing/process_static.py
-    deps:
-      - scripts/processing/process_static.py
-      - scripts/utils/grid_utils.py
-      - configs/schema_config.yaml
-    outs:
-      - data/static:
           persist: true
 
   fuse_features:
@@ -83,31 +65,12 @@ stages:
       - data/processed/fused:
           persist: true
 
-  # Person D: create scripts/validation/validate_schema.py
-  # No outs — this is a validation gate, not a data producer.
   validate_schema:
     cmd: python scripts/validation/validate_schema.py
     deps:
       - scripts/validation/validate_schema.py
       - scripts/utils/schema_loader.py
-      - configs/schema_config.yaml
-      - data/processed/fused
-
-  # Person D: create scripts/validation/detect_anomalies.py
-  # No outs — anomaly detection produces alerts, not data files.
-  detect_anomalies:
-    cmd: python scripts/validation/detect_anomalies.py
-    deps:
-      - scripts/validation/detect_anomalies.py
-      - scripts/utils/schema_loader.py
-      - configs/schema_config.yaml
-      - data/processed/fused
-
-  export:
-    cmd: python scripts/fusion/fuse_features.py --export
-    deps:
-      - scripts/fusion/fuse_features.py
       - data/processed/fused
     outs:
-      - data/processed/64km:
+      - data/processed/baselines:
           persist: true

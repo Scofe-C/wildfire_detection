@@ -1,38 +1,46 @@
 # =============================================================================
 # Wildfire MLOps - Dynamic Feature Registry
 # =============================================================================
-# This file is the SINGLE SOURCE OF TRUTH for the unified schema.
-# To add a new feature: add an entry under the appropriate group.
-# To remove a feature: set enabled: false (do NOT delete — preserve audit trail).
-# All pipeline stages read this config to determine which columns to produce,
-# validate, and export.
+# SINGLE SOURCE OF TRUTH for the unified schema.
+# To disable a feature: set enabled: false (do NOT delete — preserve audit trail).
+#
+# Improvements applied (pipeline_improvements_guide.md):
+#   1a. H3 Resolution 5 added as new default standard (~22 km², 5.1 km edge)
+#   2b. data_quality_flag expanded to codes 0-5 with HRRR and forward-fill codes
+#   3a. regional_priority metadata added to all features
+#   4c. parquet_partition_columns updated for region/year/month structure
 # =============================================================================
 
-# --- Pipeline Configuration ---
 pipeline:
   name: "wildfire_data_pipeline"
-  version: "1.0.0"
-  default_resolution_km: 64
-  supported_resolutions_km: [64, 10, 1]
-  # H3 resolution mapping (approximate edge length):
-  #   H3 res 2 → ~86 km (used for 64 km default)
-  #   H3 res 4 → ~8 km  (used for 10 km option)
-  #   H3 res 7 → ~1.2 km (used for 1 km option)
+  version: "1.1.0"
+  # --- Improvement 1a ---
+  # Default changed from 64 km (H3 res 2, ~200 cells CA+TX) to 22 km (H3 res 5,
+  # ~800-1000 cells CA alone). Keep 64 in the map for backward cache compat.
+  default_resolution_km: 22
+  supported_resolutions_km: [64, 22, 10, 1]
   h3_resolution_map:
-    64: 2
+    64: 2     # Legacy — backward compat with existing static cache files
+    22: 5     # NEW default: ~22 km² area, 5.1 km edge
     10: 4
     1: 7
   temporal_aggregation_hours: 6
   time_windows_utc: ["00:00", "06:00", "12:00", "18:00"]
   geographic_scope:
     california:
-      bbox: [-124.48, 32.53, -114.13, 42.01]  # [west, south, east, north]
+      bbox: [-124.48, 32.53, -114.13, 42.01]
       fips_codes: ["06"]
+      # Improvement 1c: spatial pruning guard.
+      # Set false for CA if desert zones (Mojave/Owens Valley) drop unexpectedly.
+      # FBFM99 (barren) in those areas sits adjacent to real WUI cells — the
+      # neighbor-check in prune_non_vegetated_cells should catch it, but this
+      # flag lets you disable pruning per-region with zero code change.
+      spatial_pruning_enabled: true
     texas:
       bbox: [-106.65, 25.84, -93.51, 36.50]
       fips_codes: ["48"]
+      spatial_pruning_enabled: true
 
-# --- Data Sources ---
 data_sources:
   firms:
     base_url: "https://firms.modaps.eosdis.nasa.gov/api/area"
@@ -56,15 +64,21 @@ data_sources:
       backoff_max_seconds: 120
     timeout_seconds: 20
     max_retries: 3
-    coordinate_precision: 3  # Decimal places to round lat/lon
+    coordinate_precision: 3
 
   nws:
     base_url: "https://api.weather.gov"
     user_agent: "WildfireMLOps/1.0 (university-project)"
     timeout_seconds: 15
     max_retries: 2
-    # NWS is the FALLBACK for Open-Meteo, not a primary source
     role: "fallback"
+
+  hrrr:
+    # NOAA High-Resolution Rapid Refresh. Deferred to streaming phase.
+    # Placeholder config — sets data_quality_flag=3 when used.
+    base_url: "https://nomads.ncep.noaa.gov/pub/data/nccf/com/hrrr/prod/"
+    update_frequency_minutes: 15
+    role: "rapid_fallback"
 
   landfire:
     products:
@@ -77,12 +91,12 @@ data_sources:
       vegetation_type:
         description: "Existing Vegetation Type"
         download_url: "https://landfire.gov/bulk/downloadfile.php?FNAME=LF2022_EVT_230_CONUS.zip"
-    native_crs: "EPSG:5070"  # Albers Equal Area
+    native_crs: "EPSG:5070"
     native_resolution_m: 30
 
   srtm:
     source: "USGS SRTM 30m"
-    ee_asset: "USGS/SRTMGL1_003"  # Google Earth Engine asset ID
+    ee_asset: "USGS/SRTMGL1_003"
     native_crs: "EPSG:4326"
     native_resolution_m: 30
 
@@ -90,15 +104,18 @@ data_sources:
     perimeters_url: "https://data-nifc.opendata.arcgis.com/datasets/nifc::interagencyfireperimeterhistory-all-years-view/about"
     cal_fire_url: "https://data.ca.gov/dataset/california-fire-perimeters-all"
 
-# --- Feature Registry ---
-# Each feature has: name, type, source, group, enabled, nullable, validation rules
-# The pipeline only processes features where enabled: true
 features:
-  # --- Identifier Columns ---
   identifiers:
     - name: "grid_id"
       type: "string"
       description: "H3 hexagonal index at the configured resolution"
+      source: "computed"
+      enabled: true
+      nullable: false
+
+    - name: "region"
+      type: "string"
+      description: "Geographic region name (california, texas)"
       source: "computed"
       enabled: true
       nullable: false
@@ -137,9 +154,8 @@ features:
       enabled: true
       nullable: false
       validation:
-        allowed_values: [1, 10, 64]
+        allowed_values: [1, 10, 22, 64]
 
-  # --- Weather Features (Open-Meteo / NWS fallback) ---
   weather:
     - name: "temperature_2m"
       type: "float32"
@@ -152,6 +168,9 @@ features:
         min: -50.0
         max: 65.0
       fill_strategy: "forward_fill"
+      regional_priority:
+        california: "standard"
+        texas: "standard"
 
     - name: "relative_humidity_2m"
       type: "float32"
@@ -164,6 +183,9 @@ features:
         min: 0.0
         max: 100.0
       fill_strategy: "forward_fill"
+      regional_priority:
+        california: "critical"   # Offshore flow / Diablo winds key driver
+        texas: "standard"
 
     - name: "wind_speed_10m"
       type: "float32"
@@ -176,6 +198,9 @@ features:
         min: 0.0
         max: 250.0
       fill_strategy: "forward_fill"
+      regional_priority:
+        california: "critical"   # Santa Ana / Diablo wind events
+        texas: "critical"        # Red flag wind events across plains
 
     - name: "wind_direction_10m"
       type: "float32"
@@ -188,6 +213,9 @@ features:
         min: 0.0
         max: 360.0
       fill_strategy: "forward_fill"
+      regional_priority:
+        california: "critical"
+        texas: "standard"
 
     - name: "precipitation"
       type: "float32"
@@ -200,6 +228,9 @@ features:
         min: 0.0
         max: 500.0
       fill_strategy: "zero"
+      regional_priority:
+        california: "standard"
+        texas: "critical"   # TX drought-driven fires; precipitation gap is key
 
     - name: "soil_moisture_0_to_7cm"
       type: "float32"
@@ -212,6 +243,9 @@ features:
         min: 0.0
         max: 1.0
       fill_strategy: "forward_fill"
+      regional_priority:
+        california: "standard"
+        texas: "critical"
 
     - name: "vpd"
       type: "float32"
@@ -224,6 +258,9 @@ features:
         min: 0.0
         max: 15.0
       fill_strategy: "forward_fill"
+      regional_priority:
+        california: "critical"
+        texas: "standard"
 
     - name: "fire_weather_index"
       type: "float32"
@@ -236,8 +273,10 @@ features:
         min: 0.0
         max: 150.0
       fill_strategy: "forward_fill"
+      regional_priority:
+        california: "standard"
+        texas: "standard"
 
-  # --- Vegetation / Fuel Features (LANDFIRE + MODIS) ---
   vegetation:
     - name: "fuel_model_fbfm40"
       type: "int16"
@@ -249,6 +288,9 @@ features:
         min: 91
         max: 204
       aggregation: "mode"
+      regional_priority:
+        california: "critical"
+        texas: "critical"
 
     - name: "canopy_cover_pct"
       type: "float32"
@@ -260,6 +302,9 @@ features:
         min: 0.0
         max: 100.0
       aggregation: "mean"
+      regional_priority:
+        california: "critical"   # Sierra Nevada / coastal forest
+        texas: "standard"
 
     - name: "vegetation_type"
       type: "int16"
@@ -268,6 +313,9 @@ features:
       enabled: true
       nullable: true
       aggregation: "mode"
+      regional_priority:
+        california: "standard"
+        texas: "standard"
 
     - name: "ndvi"
       type: "float32"
@@ -279,8 +327,10 @@ features:
         min: -1.0
         max: 1.0
       fill_strategy: "forward_fill"
+      regional_priority:
+        california: "standard"
+        texas: "critical"   # Key for TX grass fire detection and fuel curing state
 
-  # --- Topographic Features (SRTM) ---
   topography:
     - name: "elevation_m"
       type: "float32"
@@ -292,6 +342,9 @@ features:
         min: -100.0
         max: 4500.0
       aggregation: "mean"
+      regional_priority:
+        california: "critical"
+        texas: "standard"
 
     - name: "slope_degrees"
       type: "float32"
@@ -303,6 +356,9 @@ features:
         min: 0.0
         max: 90.0
       aggregation: "mean"
+      regional_priority:
+        california: "critical"   # Must have for CA forest/canyon fires
+        texas: "standard"        # Flat terrain; slope less determinative in TX
 
     - name: "aspect_degrees"
       type: "float32"
@@ -314,8 +370,10 @@ features:
         min: 0.0
         max: 360.0
       aggregation: "circular_mean"
+      regional_priority:
+        california: "critical"
+        texas: "standard"
 
-  # --- Fire Context Features (FIRMS) ---
   fire_context:
     - name: "active_fire_count"
       type: "int32"
@@ -326,6 +384,9 @@ features:
       default_value: 0
       validation:
         min: 0
+      regional_priority:
+        california: "critical"
+        texas: "critical"
 
     - name: "mean_frp"
       type: "float32"
@@ -337,6 +398,9 @@ features:
       validation:
         min: 0.0
         max: 5000.0
+      regional_priority:
+        california: "critical"
+        texas: "critical"
 
     - name: "median_frp"
       type: "float32"
@@ -348,10 +412,13 @@ features:
       validation:
         min: 0.0
         max: 5000.0
+      regional_priority:
+        california: "standard"
+        texas: "standard"
 
     - name: "max_confidence"
       type: "int8"
-      description: "Maximum detection confidence in cell (0-100 for VIIRS, l/n/h for MODIS)"
+      description: "Maximum detection confidence in cell (0-100 for VIIRS)"
       source: "firms"
       enabled: true
       nullable: true
@@ -359,6 +426,9 @@ features:
       validation:
         min: 0
         max: 100
+      regional_priority:
+        california: "standard"
+        texas: "standard"
 
     - name: "nearest_fire_distance_km"
       type: "float32"
@@ -366,9 +436,12 @@ features:
       source: "firms"
       enabled: true
       nullable: true
-      default_value: -1.0  # -1 means no active fires in region
+      default_value: -1.0
       validation:
         min: -1.0
+      regional_priority:
+        california: "critical"
+        texas: "critical"
 
     - name: "fire_detected_binary"
       type: "int8"
@@ -379,8 +452,10 @@ features:
       default_value: 0
       validation:
         allowed_values: [0, 1]
+      regional_priority:
+        california: "critical"
+        texas: "critical"
 
-  # --- Derived Features (Computed in processing) ---
   derived:
     - name: "days_since_last_precipitation"
       type: "int16"
@@ -391,6 +466,9 @@ features:
       validation:
         min: 0
         max: 365
+      regional_priority:
+        california: "standard"
+        texas: "critical"   # TX drought-driven fires; critical predictor
 
     - name: "cumulative_wind_run_24h"
       type: "float32"
@@ -400,6 +478,9 @@ features:
       nullable: true
       validation:
         min: 0.0
+      regional_priority:
+        california: "critical"
+        texas: "standard"
 
     - name: "drought_index_proxy"
       type: "float32"
@@ -410,12 +491,21 @@ features:
       validation:
         min: 0.0
         max: 1.0
+      regional_priority:
+        california: "standard"
+        texas: "critical"
 
-  # --- Data Quality Metadata ---
   metadata:
     - name: "data_quality_flag"
       type: "int8"
-      description: "0=all sources present, 1=weather forward-filled, 2=weather from NWS fallback, 3=partial data"
+      # --- Improvement 2b: Expanded regional quality flag ---
+      description: >
+        0 = all sources fresh (Open-Meteo primary, all present),
+        1 = Open-Meteo primary used (normal; included for explicit lineage),
+        2 = NWS fallback weather used (Open-Meteo unavailable),
+        3 = HRRR rapid weather used (streaming mode, future phase),
+        4 = weather interpolated or forward-filled (gap > 1 window),
+        5 = partial data (>30% features missing)
       source: "computed"
       enabled: true
       nullable: false
@@ -423,7 +513,7 @@ features:
 
     - name: "dominant_fuel_fraction"
       type: "float32"
-      description: "Fraction of cell covered by the dominant fuel model (homogeneity indicator)"
+      description: "Fraction of cell covered by the dominant fuel model"
       source: "computed"
       enabled: true
       nullable: true
@@ -431,22 +521,17 @@ features:
         min: 0.0
         max: 1.0
 
-# --- Anomaly Detection Configuration ---
 anomaly_detection:
   method: "seasonal_baseline"
-  # Seasonal periods for California/Texas fire context
   seasons:
     fire_season:
       months: [6, 7, 8, 9, 10, 11]
     off_season:
       months: [12, 1, 2, 3, 4, 5]
-  # Z-score thresholds per season (compared to same-season historical baseline)
   z_score_threshold:
     fire_season: 4.0
     off_season: 3.5
-  # Minimum historical days needed to compute a reliable baseline
   min_baseline_days: 30
-  # Features to monitor for anomalies
   monitored_features:
     - "temperature_2m"
     - "relative_humidity_2m"
@@ -454,22 +539,16 @@ anomaly_detection:
     - "precipitation"
     - "active_fire_count"
     - "mean_frp"
-  # Alert configuration
   alerts:
     slack_webhook_env_var: "SLACK_WEBHOOK_URL"
     email_recipients: []
-    alert_on_soft_failure: true  # Alert but don't block pipeline
+    alert_on_soft_failure: true
 
-# --- Validation Configuration ---
 validation:
-  # Maximum allowed null rate per column before failing
   max_null_rate: 0.15
-  # Expected row count tolerance (±%)
   row_count_tolerance_pct: 5
-  # Great Expectations datasource name
   ge_datasource: "wildfire_datasource"
 
-# --- GCS Configuration ---
 storage:
   gcs_bucket_env_var: "GCS_BUCKET_NAME"
   paths:
@@ -477,14 +556,130 @@ storage:
     processed: "data/processed"
     static: "data/static"
     models: "models"
-  parquet_partition_columns: ["resolution_km", "date"]
+  # --- Improvement 4c: Region/year/month partitioning ---
+  # New: data/processed/22km/region=california/year=2026/month=02/features_2026-02-09.parquet
+  # Old: data/processed/64km/date=2026-02-09/features.parquet (still used for 64km cache)
+  parquet_partition_columns: ["region", "year", "month"]
+  parquet_partition_columns_legacy: ["resolution_km", "date"]
 
-# --- DVC Configuration ---
 dvc:
   remote_name: "gcs_remote"
-  # DVC remote URL is: gs://{GCS_BUCKET}/dvc-store
   tracked_paths:
     - "data/raw"
     - "data/processed"
     - "data/static"
     - "models"
+
+# =============================================================================
+# Adaptive Watchdog & Detection Configuration
+# =============================================================================
+# Controls the Cloud Function fire watchdog, adaptive scheduling,
+# resolution tier escalation, false alarm gates, and emergency thresholds.
+# =============================================================================
+
+watchdog:
+  # --- Adaptive polling modes ---
+  # The Cloud Scheduler job frequency is updated by the Cloud Function itself
+  # when transitioning between modes. Intervals in minutes.
+  modes:
+    quiet:
+      description: "Off-season or no recent fire activity"
+      poll_interval_minutes: 30
+      pipeline_interval_hours: 6
+      resolution_km: 64
+    active:
+      description: "Fire season window, no current confirmed fire"
+      poll_interval_minutes: 15
+      pipeline_interval_hours: 2
+      resolution_km: 64
+    emergency:
+      description: "Confirmed active fire with expanding footprint"
+      poll_interval_minutes: 5
+      pipeline_interval_hours: 0.5   # 30-minute full pipeline runs
+      resolution_km: 22
+
+  # Fire season months drive quiet → active transition automatically.
+  # Mirrors anomaly_detection.seasons.fire_season.months above.
+  fire_season_months: [6, 7, 8, 9, 10, 11]
+
+  # --- Detection boundary (H3 ring distance at resolution res 5, ~5.1km edge) ---
+  # ring 1 ≈ 5 km,  ring 5 ≈ 25 km
+  detection:
+    min_range_km: 5
+    max_range_km: 25
+    h3_ring_min: 1    # ring-1 neighbors (~5 km) — spatial corroboration gate
+    h3_ring_max: 5    # ring-5 neighbors (~25 km) — focal grid perimeter
+
+  # --- False alarm prevention gates (applied in sequence) ---
+  false_alarm:
+    # G1: Spatial corroboration — min neighboring cells with fire in same scan
+    min_neighbor_detections: 2
+    # G2: Temporal persistence — min consecutive GOES scans with detection
+    min_consecutive_scans: 2
+    goes_scan_interval_minutes: 10   # GOES CONUS ABI scan cadence
+    # G3: Multi-source cross-reference — max hours to look back for VIIRS confirmation
+    viirs_lookback_hours: 3
+    # G3 bypass — skip VIIRS confirmation if GOES FRP exceeds this (MW)
+    # Rationale: a 50 MW fire is ~100 acres actively burning; VIIRS will catch it next pass
+    viirs_bypass_frp_mw: 50.0
+    # G4: Industrial exclusion — path to GCS config file (updateable without redeployment)
+    industrial_sources_gcs_path: "watchdog/config/industrial_sources.json"
+    # False alarm cooldown — revert to prior mode after this many minutes
+    revert_after_minutes: 30
+
+  # --- Emergency trigger thresholds ---
+  emergency:
+    # Minimum FRP to consider emergency (MW)
+    min_frp_mw: 200.0
+    # Minimum number of consecutive scans showing expansion (new cells)
+    min_expanding_scans: 2
+    # Deactivation: no new cells for this many consecutive scans
+    deactivate_no_expansion_scans: 3
+    # Deactivation: FRP drops below this for this many scans
+    deactivate_frp_mw: 50.0
+    deactivate_low_frp_scans: 2
+
+  # --- GCS state paths (all under gs://{GCS_BUCKET_NAME}/) ---
+  gcs_paths:
+    state: "watchdog/state/current.json"
+    triggers: "watchdog/triggers/"
+    false_alarms: "watchdog/false_alarms/"
+    emergency_log: "watchdog/emergency/"
+    industrial_sources: "watchdog/config/industrial_sources.json"
+
+  # --- FIRMS GOES_NRT quick-check config ---
+  goes_nrt:
+    # Same FIRMS API, different source parameter
+    source: "GOES_NRT"
+    # Lookback window for client-side filtering (minutes)
+    # We always request day_range=1 (API minimum), filter client-side
+    client_filter_minutes: 60
+    # Minimum FRP (MW) to consider a GOES pixel a candidate detection
+    min_frp_mw: 10.0
+    # GOES spatial resolution at CONUS (km) — used for ring-distance calculations
+    goes_pixel_km: 2.0
+
+  # --- GOES-R S3 direct access (lower latency alternative to FIRMS GOES_NRT) ---
+  goes_s3:
+    # Buckets for GOES-West and GOES-East (GOES-19 replaced GOES-16 as East in April 2025)
+    buckets:
+      goes_west: "noaa-goes18"   # GOES-18 covers western CONUS including CA
+      goes_east: "noaa-goes19"   # GOES-19 covers eastern CONUS including TX
+    product: "ABI-L2-FDCC"
+    # Fire-positive mask codes in ABI FDC product
+    fire_codes: [10, 11, 30, 31]    # confirmed fire (good quality + saturated)
+    probable_codes: [13, 14, 15, 33, 34, 35]  # high/medium/low probability
+    use_probable: false             # set true to catch smaller fires (more false alarms)
+
+  # --- Model training sufficiency thresholds (for region manifest) ---
+  training_sufficiency:
+    california:
+      min_fire_event_days: 50
+      min_temporal_coverage_days: 90
+      min_fire_cells: 30
+      min_quality_flag_pct: 0.80   # fraction of rows with flag <= 2
+    texas:
+      min_fire_event_days: 50
+      min_temporal_coverage_days: 90
+      min_fire_cells: 30
+      min_quality_flag_pct: 0.80

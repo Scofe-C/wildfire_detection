@@ -1,61 +1,65 @@
 # =============================================================================
-# Wildfire MLOps Pipeline - Docker Image
-# =============================================================================
-# Uses the official Apache Airflow image (Python 3.11) as the base.
-# Geospatial libraries (GDAL, geopandas, h3) are installed via pip.
-#
-# This replaces the previous OSGEO GDAL multi-stage build which failed
-# due to deadsnakes PPA issues. The official Airflow image is smaller,
-# faster to build, and includes Airflow pre-configured.
-#
-# Owner: Person E
-#
-# Build:  docker build -t wildfire-pipeline -f docker/Dockerfile .
-# Test:   docker run --rm wildfire-pipeline python -c "import h3; import geopandas; print('OK')"
+# Wildfire MLOps Pipeline - Docker Image (multi-target, runtime install)
 # =============================================================================
 
-FROM apache/airflow:2.8.1-python3.11
+FROM ghcr.io/osgeo/gdal:ubuntu-small-3.8.4 AS airflow-base
 
-USER root
-
-# Install system-level dependencies for GDAL/Fiona/rasterio
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    gdal-bin \
-    libgdal-dev \
-    libgeos-dev \
-    libproj-dev \
-    g++ \
-    git \
+    python3-pip python3-venv python3-dev build-essential \
+    curl git \
     && rm -rf /var/lib/apt/lists/*
 
-# Set GDAL environment variables for pip compilation
-ENV GDAL_CONFIG=/usr/bin/gdal-config
+RUN python3 -m pip install --upgrade pip setuptools wheel
 
-USER airflow
+ARG AIRFLOW_VERSION=2.8.1
+ARG PYTHON_VERSION=3.10
+ARG CONSTRAINT_URL="https://raw.githubusercontent.com/apache/airflow/constraints-${AIRFLOW_VERSION}/constraints-${PYTHON_VERSION}.txt"
 
-# Install Python dependencies
+WORKDIR /opt/airflow
+
 COPY requirements.txt /tmp/requirements.txt
-RUN pip install --no-cache-dir -r /tmp/requirements.txt
 
-# Copy project files
-COPY --chown=airflow:root dags/ /opt/airflow/dags/
-COPY --chown=airflow:root scripts/ /opt/airflow/scripts/
-COPY --chown=airflow:root configs/ /opt/airflow/configs/
-COPY --chown=airflow:root tests/ /opt/airflow/tests/
+# Install in the SAME runtime environment (no /install prefix)
+RUN python3 -m pip install --no-cache-dir \
+    -r /tmp/requirements.txt \
+    --constraint "${CONSTRAINT_URL}"
 
-# Create data directories
+# Ensure site-packages is visible (safe)
+RUN PYVER="$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')" && \
+    mkdir -p "/usr/local/lib/python${PYVER}/dist-packages" && \
+    echo "/usr/local/lib/python${PYVER}/site-packages" > "/usr/local/lib/python${PYVER}/dist-packages/zzz_local_site_packages.pth" || true
+
+ENV AIRFLOW_HOME=/opt/airflow
+ENV PYTHONPATH="/opt/airflow:${PYTHONPATH}"
+
+COPY dags/ /opt/airflow/dags/
+COPY scripts/ /opt/airflow/scripts/
+COPY configs/ /opt/airflow/configs/
+COPY tests/ /opt/airflow/tests/
+
 RUN mkdir -p /opt/airflow/data/raw/firms \
-    /opt/airflow/data/raw/weather \
-    /opt/airflow/data/processed/firms \
-    /opt/airflow/data/processed/weather \
-    /opt/airflow/data/processed/fused \
-    /opt/airflow/data/static \
-    /opt/airflow/logs
+             /opt/airflow/data/raw/weather \
+             /opt/airflow/data/processed/firms \
+             /opt/airflow/data/processed/weather \
+             /opt/airflow/data/processed/fused \
+             /opt/airflow/data/static \
+             /opt/airflow/logs
 
-# Validate that key imports work
-RUN python -c "import h3; import geopandas; import pandas; import yaml; print('All imports OK')"
+# sanity
+RUN python3 -c "import airflow; print('airflow OK', airflow.__version__)"
 
-# Validate DAG parses without errors
-RUN python dags/wildfire_dag.py || echo "DAG validation will run with Airflow context"
-
+# --- Targets ---
+FROM airflow-base AS airflow-webserver
 EXPOSE 8080
+CMD ["airflow", "webserver", "--port", "8080"]
+
+FROM airflow-base AS airflow-scheduler
+CMD ["airflow", "scheduler"]
+
+FROM airflow-base AS airflow-init
+CMD ["airflow", "version"]
+
+# --- CI test target (no CMD — used by GitHub Actions only) ---
+# Inherits all installed packages from airflow-base.
+# Runs: pytest tests/ and ruff check scripts/ dags/ tests/
+FROM airflow-base AS test

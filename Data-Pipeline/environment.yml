@@ -1,0 +1,14 @@
+name: wildfire
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pandas
+  - pyarrow
+  - geopandas
+  - shapely
+  - pyproj
+  - requests
+  - pip
+  - pip:
+      - apache-airflow==2.9.3

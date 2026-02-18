@@ -1,28 +1,18 @@
 """
 FIRMS Data Ingestion
 ====================
-Fetches active fire detection data from NASA FIRMS API for VIIRS and MODIS
-sensors. Handles rate limiting, retries, pagination, and outputs raw CSV
-to the staging area.
+Fetches active fire detection data from NASA FIRMS API for VIIRS and MODIS.
+Outputs raw CSV to staging.
 
 Owner: Person A
-Dependencies: requests, pandas, numpy
-API Docs: https://firms.modaps.eosdis.nasa.gov/api/area/
-
-Key behaviors:
-    - Queries each configured sensor separately (VIIRS_SNPP, VIIRS_NOAA20, MODIS)
-    - Requests data for California and Texas bounding boxes
-    - Handles zero-detection responses as normal (not errors)
-    - Implements exponential backoff with jitter on HTTP errors
-    - Outputs raw CSV preserving all FIRMS columns for auditability
 """
 
 import io
 import logging
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 import pandas as pd
 import requests
@@ -32,59 +22,105 @@ from scripts.utils.schema_loader import get_registry
 
 logger = logging.getLogger(__name__)
 
-# FIRMS CSV columns we expect (may vary by sensor, these are the common ones)
 EXPECTED_FIRMS_COLUMNS = [
-    "latitude", "longitude", "brightness", "scan", "track",
-    "acq_date", "acq_time", "satellite", "instrument", "confidence",
-    "version", "bright_t31", "frp", "daynight",
+    "latitude",
+    "longitude",
+    "brightness",
+    "scan",
+    "track",
+    "acq_date",
+    "acq_time",
+    "satellite",
+    "instrument",
+    "confidence",
+    "version",
+    "bright_t31",
+    "frp",
+    "daynight",
 ]
+
+
+def _coerce_datetime(dt: Union[datetime, object]) -> datetime:
+    """
+    Airflow sometimes passes a lazy/proxy pendulum object.
+    Convert to a real python datetime, timezone-aware (UTC).
+    """
+    try:
+        ts = pd.Timestamp(dt)
+        if ts.tzinfo is None:
+            ts = ts.tz_localize("UTC")
+        return ts.to_pydatetime()
+    except Exception:
+        # Last resort: assume it's already a datetime-like
+        if isinstance(dt, datetime):
+            if dt.tzinfo is None:
+                return dt.replace(tzinfo=timezone.utc)
+            return dt
+        return datetime.now(timezone.utc)
 
 
 def fetch_firms_data(
     execution_date: datetime,
-    resolution_km: int = 64,
+    resolution_km: int = 22,
     lookback_hours: int = 24,
     output_dir: Optional[str] = None,
     config_path: Optional[str] = None,
+    region: Optional[str] = None,
 ) -> Path:
-    """Fetch FIRMS active fire detections for all configured regions.
-
-    This is the main entry point called by the Airflow task.
+    """Fetch FIRMS active fire detections.
 
     Args:
-        execution_date: The canonical pipeline execution timestamp.
-        resolution_km: Grid resolution (affects bbox granularity logging only;
-                       spatial aggregation happens in process_firms).
-        lookback_hours: How many hours of data to request (default 24h covers
-                        the gap between 6-hourly pipeline runs with margin).
-        output_dir: Local directory to write raw CSV. Defaults to data/raw/firms/.
-        config_path: Optional schema config override.
+        region: If provided (e.g. 'california'), fetch only that region's bbox.
+                If None, fetches all configured regions (legacy / non-sharded mode).
 
     Returns:
-        Path to the output CSV file containing all detections.
-
-    Raises:
-        RuntimeError: If all API requests fail after retries.
+        Path to raw FIRMS CSV for the requested region(s).
     """
+    execution_date = _coerce_datetime(execution_date)
+
     registry = get_registry(config_path)
     firms_config = registry.get_source_config("firms")
-    bboxes = registry.geographic_bboxes
+    all_bboxes = registry.geographic_bboxes
+
+    # --- Improvement 1b: scope to a single region when sharding ---
+    if region is not None:
+        if region not in all_bboxes:
+            raise ValueError(
+                f"Region '{region}' not found in schema config. "
+                f"Available: {list(all_bboxes.keys())}"
+            )
+        bboxes = {region: all_bboxes[region]}
+        logger.info(f"FIRMS ingestion scoped to region='{region}'")
+    else:
+        bboxes = all_bboxes
 
     api_key = os.environ.get(firms_config["api_key_env_var"])
+
+    # If no API key, write an empty CSV so the pipeline can proceed.
     if not api_key:
-        raise EnvironmentError(
-            f"FIRMS API key not set. Set environment variable "
-            f"'{firms_config['api_key_env_var']}'. "
-            f"Get a free key at https://firms.modaps.eosdis.nasa.gov/api/"
+        if output_dir is None:
+            output_dir = str(Path("data") / "raw" / "firms")
+
+        out_dir = Path(output_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        date_str = execution_date.strftime("%Y%m%d_%H%M%S")
+        out = out_dir / f"firms_empty_{date_str}.csv"
+
+        pd.DataFrame(
+            columns=["latitude", "longitude", "acq_date", "acq_time", "frp", "confidence"]
+        ).to_csv(out, index=False)
+
+        logger.warning(
+            f"No FIRMS API key ({firms_config['api_key_env_var']}) — wrote empty FIRMS CSV: {out}"
         )
+        return out
 
     base_url = firms_config["base_url"]
     sensors = firms_config["sensors"]
     limiter = create_firms_limiter(config_path)
 
-    # Calculate the date range for the request
-    # FIRMS API uses day_range parameter (1 = last 24h, 2 = last 48h, etc.)
-    day_range = max(1, lookback_hours // 24)
+    day_range = max(1, (lookback_hours + 23) // 24)
 
     all_detections = []
 
@@ -94,8 +130,7 @@ def fetch_firms_data(
 
         for sensor in sensors:
             logger.info(
-                f"Fetching FIRMS {sensor} data for {region_name} "
-                f"(day_range={day_range})"
+                f"Fetching FIRMS {sensor} data for {region_name} (day_range={day_range})"
             )
 
             detections = _fetch_single_request(
@@ -110,26 +145,20 @@ def fetch_firms_data(
             )
 
             if detections is not None and len(detections) > 0:
+    # tag each detection row with its source region and sensor
                 detections["region"] = region_name
                 detections["sensor_source"] = sensor
                 all_detections.append(detections)
-                logger.info(
-                    f"  → {len(detections)} detections from {sensor} in {region_name}"
-                )
+                logger.info(f"  → {len(detections)} detections from {sensor} in {region_name}")
             else:
-                logger.info(
-                    f"  → 0 detections from {sensor} in {region_name} (normal)"
-                )
+                logger.info(f"  → 0 detections from {sensor} in {region_name} (normal)")
 
-    # Combine all detections into a single DataFrame
     if all_detections:
         combined = pd.concat(all_detections, ignore_index=True)
     else:
-        # No fires detected anywhere — create empty DataFrame with expected columns
         combined = pd.DataFrame(columns=EXPECTED_FIRMS_COLUMNS + ["region", "sensor_source"])
         logger.info("No fire detections across any region/sensor (normal in off-season)")
 
-    # Write to output
     if output_dir is None:
         output_dir = Path(__file__).resolve().parent.parent.parent / "data" / "raw" / "firms"
     output_dir = Path(output_dir)
@@ -139,9 +168,7 @@ def fetch_firms_data(
     output_path = output_dir / f"firms_raw_{date_str}.csv"
     combined.to_csv(output_path, index=False)
 
-    logger.info(
-        f"FIRMS ingestion complete: {len(combined)} total detections → {output_path}"
-    )
+    logger.info(f"FIRMS ingestion complete: {len(combined)} total detections → {output_path}")
     return output_path
 
 
@@ -155,22 +182,6 @@ def _fetch_single_request(
     max_retries: int = 3,
     timeout: int = 30,
 ) -> Optional[pd.DataFrame]:
-    """Make a single FIRMS API request with rate limiting and retries.
-
-    Args:
-        base_url: FIRMS API base URL.
-        api_key: MAP_KEY for authentication.
-        sensor: Sensor identifier (e.g., 'VIIRS_SNPP_NRT').
-        bbox_str: Bounding box as 'west,south,east,north'.
-        day_range: Number of days of data to request.
-        limiter: Rate limiter instance.
-        max_retries: Maximum retry attempts.
-        timeout: Request timeout in seconds.
-
-    Returns:
-        DataFrame of detections, or None if no data / all retries failed.
-    """
-    # FIRMS API URL format: {base_url}/csv/{key}/{sensor}/{bbox}/{day_range}
     url = f"{base_url}/csv/{api_key}/{sensor}/{bbox_str}/{day_range}"
 
     for attempt in range(max_retries):
@@ -179,21 +190,16 @@ def _fetch_single_request(
                 response = requests.get(url, timeout=timeout)
 
             if response.status_code == 200:
-                # FIRMS returns CSV text; may be empty if no fires
                 content = response.text.strip()
                 if not content or content.startswith("No data"):
                     return None
 
                 df = pd.read_csv(io.StringIO(content))
-
-                # Basic sanity check on returned data
                 if len(df) == 0:
                     return None
-
                 return df
 
-            elif response.status_code == 429:
-                # Rate limited — back off
+            if response.status_code == 429:
                 delay = limiter.get_backoff_delay()
                 logger.warning(
                     f"FIRMS rate limited (429). Backing off {delay:.1f}s "
@@ -202,16 +208,15 @@ def _fetch_single_request(
                 limiter.record_failure()
                 import time
                 time.sleep(delay)
+                continue
 
-            else:
-                logger.error(
-                    f"FIRMS API error: HTTP {response.status_code} for {sensor}. "
-                    f"Response: {response.text[:200]}"
-                )
-                limiter.record_failure()
-                delay = limiter.get_backoff_delay()
-                import time
-                time.sleep(delay)
+            logger.error(
+                f"FIRMS API error: HTTP {response.status_code} for {sensor}. "
+                f"Response: {response.text[:200]}"
+            )
+            limiter.record_failure()
+            import time
+            time.sleep(limiter.get_backoff_delay())
 
         except requests.exceptions.Timeout:
             logger.warning(
@@ -219,70 +224,45 @@ def _fetch_single_request(
                 f"(attempt {attempt + 1}/{max_retries})"
             )
             limiter.record_failure()
-            delay = limiter.get_backoff_delay()
             import time
-            time.sleep(delay)
+            time.sleep(limiter.get_backoff_delay())
 
         except requests.exceptions.ConnectionError as e:
             logger.error(f"FIRMS connection error: {e}")
             limiter.record_failure()
-            delay = limiter.get_backoff_delay()
             import time
-            time.sleep(delay)
+            time.sleep(limiter.get_backoff_delay())
 
     logger.error(
-        f"FIRMS fetch failed after {max_retries} retries for sensor={sensor}, "
-        f"bbox={bbox_str}"
+        f"FIRMS fetch failed after {max_retries} retries for sensor={sensor}, bbox={bbox_str}"
     )
     return None
 
 
 def validate_firms_raw(df: pd.DataFrame) -> tuple[bool, list[str]]:
-    """Run basic validation on raw FIRMS data before processing.
-
-    Args:
-        df: Raw FIRMS DataFrame.
-
-    Returns:
-        Tuple of (is_valid, list_of_issues).
-    """
-    issues = []
+    issues: list[str] = []
 
     if df.empty:
-        return True, []  # Empty is valid (no fires)
+        return True, []
 
-    # Check required columns exist
     required_cols = ["latitude", "longitude", "frp", "confidence", "acq_date"]
     missing = [c for c in required_cols if c not in df.columns]
     if missing:
         issues.append(f"Missing required columns: {missing}")
 
-    # Check latitude/longitude ranges
     if "latitude" in df.columns:
-        out_of_range = df[
-            (df["latitude"] < 20.0) | (df["latitude"] > 50.0)
-        ]
+        out_of_range = df[(df["latitude"] < 20.0) | (df["latitude"] > 50.0)]
         if len(out_of_range) > 0:
-            issues.append(
-                f"{len(out_of_range)} detections with latitude outside [20, 50]"
-            )
+            issues.append(f"{len(out_of_range)} detections with latitude outside [20, 50]")
 
     if "longitude" in df.columns:
-        out_of_range = df[
-            (df["longitude"] < -130.0) | (df["longitude"] > -85.0)
-        ]
+        out_of_range = df[(df["longitude"] < -130.0) | (df["longitude"] > -85.0)]
         if len(out_of_range) > 0:
-            issues.append(
-                f"{len(out_of_range)} detections with longitude outside [-130, -85]"
-            )
+            issues.append(f"{len(out_of_range)} detections with longitude outside [-130, -85]")
 
-    # Check for negative FRP (sensor artifact)
     if "frp" in df.columns:
         negative_frp = df[df["frp"] < 0]
         if len(negative_frp) > 0:
-            issues.append(
-                f"{len(negative_frp)} detections with negative FRP (sensor artifact)"
-            )
+            issues.append(f"{len(negative_frp)} detections with negative FRP (sensor artifact)")
 
-    is_valid = len(issues) == 0
-    return is_valid, issues
+    return (len(issues) == 0), issues

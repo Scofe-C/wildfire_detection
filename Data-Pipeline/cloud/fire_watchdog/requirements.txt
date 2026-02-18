@@ -1,0 +1,15 @@
+# Cloud Function: fire_watchdog
+# ================================
+# Minimal dependency set — keep cold start under 3 seconds.
+# Heavy pipeline deps (geopandas, rasterio, etc.) are NOT included here.
+# The function uses inline logic for all critical paths.
+#
+# google-cloud-storage is pre-installed in the Cloud Function runtime
+# but listed explicitly to pin the version.
+
+google-cloud-storage==2.14.0
+google-auth==2.27.0
+pandas==2.2.0
+requests==2.31.0
+pyyaml==6.0.1
+h3==3.7.7
