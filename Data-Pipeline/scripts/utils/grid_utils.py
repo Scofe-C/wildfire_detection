@@ -54,7 +54,12 @@ def _polyfill_geojson_compat(geojson_poly: dict, res: int) -> list[str]:
                 poly = LatLngPoly(outer)
             except ImportError as e:
                 raise RuntimeError(f"Cannot import LatLngPoly: {e}")
-        return list(h3.polygon_to_cells(poly, res))
+        # Use intersecting mode to match h3 v3 polyfill behavior
+        # (include cells that overlap the boundary, not just center-inside)
+        try:
+            return list(h3.polygon_to_cells(poly, res, containment_mode="intersecting"))
+        except TypeError:
+            return list(h3.polygon_to_cells(poly, res))
 
     if hasattr(h3, "geo_to_cells"):
         return list(h3.geo_to_cells(geojson_poly, res))
@@ -70,10 +75,12 @@ def _cell_to_latlng_compat(cell_id: str) -> tuple[float, float]:
 
 
 def _cell_to_boundary_compat(cell_id: str) -> list[tuple]:
-    """Return boundary coords as GeoJSON-compatible list. Supports h3 3.x and 4.x."""
+    """Return boundary coords as GeoJSON-compatible (lon, lat) list."""
     if hasattr(h3, "h3_to_geo_boundary"):
         return h3.h3_to_geo_boundary(cell_id, geo_json=True)  # 3.x
-    return h3.cell_to_boundary(cell_id, geo_json=True)  # 4.x
+    # h3 4.x: cell_to_boundary returns ((lat, lng), ...) — flip to (lng, lat) for GeoJSON
+    boundary = h3.cell_to_boundary(cell_id)
+    return [(lng, lat) for lat, lng in boundary]
 
 
 def _grid_disk_compat(cell_id: str, k: int) -> set[str]:
@@ -136,6 +143,14 @@ def generate_grid_for_bbox(
     """
     h3_res = km_to_h3_resolution(resolution_km, config_path)
     west, south, east, north = bbox
+
+    # Buffer bbox by ~1 cell diameter so edge cells are included.
+    # h3 v4 polygon_to_cells only returns cells whose CENTER is inside,
+    # unlike v3 which returned all overlapping cells.  Without this buffer,
+    # large cells (res 2 ≈ 86 km) at the boundary are silently dropped.
+    _BUFFER_DEG = {2: 2.5, 4: 0.5, 5: 0.25, 7: 0.05}
+    buf = _BUFFER_DEG.get(h3_res, 0.5)
+    west, south, east, north = west - buf, south - buf, east + buf, north + buf
 
     bbox_polygon = Polygon([
         (west, south), (east, south), (east, north), (west, north), (west, south),
@@ -349,10 +364,15 @@ def points_to_grid_ids(
     ])
 
 
+def _hex_area_compat(res: int) -> float:
+    if hasattr(h3, "hex_area"):
+        return h3.hex_area(res, unit="km^2")
+    return h3.average_hexagon_area(res, unit="km^2")
+
 def get_cell_area_km2(grid_id: str) -> float:
     """Return the approximate area of an H3 cell in square kilometers."""
     res = _h3_get_resolution_compat(grid_id)
-    return h3.hex_area(res, unit="km^2")
+    return _hex_area_compat(res)
 
 
 def get_cell_neighbors(grid_id: str, ring_size: int = 1) -> list[str]:

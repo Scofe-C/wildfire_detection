@@ -16,7 +16,7 @@
 #   encoding changed between major versions — all team members must match.
 # =============================================================================
 
-# --- Airflow (postgres backend required for LocalExecutor) ---
+# --- Airflow ---
 apache-airflow[postgres]==2.8.1
 
 # --- Data stack ---
@@ -25,15 +25,13 @@ numpy
 packaging
 pyarrow
 
-# --- Parquet ---
-# (pyarrow covers this; fastparquet is optional alternative)
-
-# --- Geo stack (compatible with GDAL 3.8 base image) ---
+# --- Geo stack ---
 h3
 geopandas
 shapely
 rasterio
 fiona
+rasterstats
 
 # --- HTTP / config ---
 requests
@@ -44,7 +42,7 @@ python-json-logger
 psycopg2-binary
 
 # --- Data quality ---
-great-expectations
+great-expectations<1.0
 
 # --- MLOps / Versioning ---
 dvc
@@ -53,6 +51,17 @@ dvc-gs
 # --- GCP ---
 google-cloud-storage
 google-auth
+
+# --- ML Training ---
+xgboost
+lightgbm
+scikit-learn
+shap>=0.45,<0.50
+
+# --- LLM Report Generation ---
+google-genai
+fastapi
+uvicorn[standard]
 
 # --- Testing ---
 pytest

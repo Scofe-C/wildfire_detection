@@ -10,6 +10,7 @@ Owner: Person A
 import io
 import logging
 import os
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional, Union
@@ -206,16 +207,24 @@ def _fetch_single_request(
                     f"(attempt {attempt + 1}/{max_retries})"
                 )
                 limiter.record_failure()
-                import time
                 time.sleep(delay)
                 continue
 
+            # Bug #3 fix: 4xx errors (except 429) are non-retryable —
+            # fail immediately to avoid wasting time on auth/not-found.
+            if 400 <= response.status_code < 500:
+                logger.error(
+                    f"FIRMS API non-retryable error: HTTP {response.status_code} "
+                    f"for {sensor}. Response: {response.text[:200]}"
+                )
+                return None
+
+            # 5xx — transient server error, retry with backoff
             logger.error(
                 f"FIRMS API error: HTTP {response.status_code} for {sensor}. "
                 f"Response: {response.text[:200]}"
             )
             limiter.record_failure()
-            import time
             time.sleep(limiter.get_backoff_delay())
 
         except requests.exceptions.Timeout:
@@ -224,13 +233,11 @@ def _fetch_single_request(
                 f"(attempt {attempt + 1}/{max_retries})"
             )
             limiter.record_failure()
-            import time
             time.sleep(limiter.get_backoff_delay())
 
         except requests.exceptions.ConnectionError as e:
             logger.error(f"FIRMS connection error: {e}")
             limiter.record_failure()
-            import time
             time.sleep(limiter.get_backoff_delay())
 
     logger.error(

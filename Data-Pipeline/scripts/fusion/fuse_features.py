@@ -65,6 +65,23 @@ def fuse_features(
     resolution_km: int = 64,
     config_path: Optional[str] = None,
 ) -> pd.DataFrame:
+    """Merge FIRMS fire, weather, and static terrain features into a unified table.
+
+    Generates a master grid at the given resolution, left-joins each data
+    source, applies fill strategies from the schema registry, and enforces
+    the expected column order.
+
+    Args:
+        firms_features: Processed FIRMS fire detection features.
+        weather_features: Processed weather observation features.
+        static_features: Static terrain/fuel features.
+        execution_date: Timestamp of the current pipeline window.
+        resolution_km: Grid resolution in km (default 64).
+        config_path: Optional path to schema_config.yaml.
+
+    Returns:
+        Fused DataFrame with one row per grid cell.
+    """
     registry = get_registry(config_path)
 
     firms_features = _ensure_grid_id_df(firms_features)
@@ -136,11 +153,119 @@ def fuse_features(
     return fused
 
 
+# ---------------------------------------------------------------------------
+# Temporal Lag — ML-ready variant (Plan §Problem 2)
+# ---------------------------------------------------------------------------
+# Fire context features that must use the PREVIOUS time window (T-1) to avoid
+# data leakage.  fire_detected_binary is the prediction LABEL and stays at T.
+FIRE_CONTEXT_LAG_COLS = [
+    "active_fire_count",
+    "mean_frp",
+    "median_frp",
+    "max_confidence",
+    "nearest_fire_distance_km",
+]
+
+
+def apply_temporal_lag(
+    fused: pd.DataFrame,
+    prev_fire_features: Optional[pd.DataFrame],
+) -> pd.DataFrame:
+    """Produce an ML-ready copy of *fused* with fire context from T-1.
+
+    - ``FIRE_CONTEXT_LAG_COLS`` are replaced by values from
+      *prev_fire_features* (the previous 6-hour window).
+    - ``fire_detected_binary`` is kept from the current window (T) as the
+      prediction label.
+    - If *prev_fire_features* is None or empty the lagged columns are filled
+      with their default values (0 / 0.0 / -1.0) so the output shape is
+      always stable.
+
+    Returns a **new** DataFrame; the original *fused* is not modified.
+    """
+    ml = fused.copy()
+
+    prev = _ensure_grid_id_df(prev_fire_features)
+
+    if prev is not None and not prev.empty and "grid_id" in prev.columns:
+        prev = prev.copy()
+        prev["grid_id"] = prev["grid_id"].astype(str)
+
+        # Keep only lag columns + grid_id from prev
+        available = [c for c in FIRE_CONTEXT_LAG_COLS if c in prev.columns]
+        if available:
+            prev_subset = prev[["grid_id"] + available].copy()
+
+            # Drop current-window fire context, merge in T-1
+            ml = ml.drop(columns=available, errors="ignore")
+            ml = ml.merge(prev_subset, on="grid_id", how="left")
+
+            logger.info(
+                f"Temporal lag applied: {len(available)} fire context cols "
+                f"replaced with T-1 values ({len(prev_subset)} rows)"
+            )
+    else:
+        logger.warning(
+            "No previous fire features provided — filling lagged columns "
+            "with defaults (no temporal lag applied)"
+        )
+
+    # Guarantee columns exist with defaults even if prev was empty
+    lag_defaults = {
+        "active_fire_count": 0,
+        "mean_frp": 0.0,
+        "median_frp": 0.0,
+        "max_confidence": 0,
+        "nearest_fire_distance_km": -1.0,
+    }
+    for col, default in lag_defaults.items():
+        if col not in ml.columns:
+            ml[col] = default
+        else:
+            ml[col] = ml[col].fillna(default)
+
+    return ml
+
+
+def fuse_features_for_ml(
+    firms_features: pd.DataFrame,
+    weather_features: pd.DataFrame,
+    static_features: pd.DataFrame,
+    execution_date: pd.Timestamp,
+    prev_fire_features: Optional[pd.DataFrame] = None,
+    resolution_km: int = 64,
+    config_path: Optional[str] = None,
+) -> pd.DataFrame:
+    """Convenience wrapper: fuse + apply temporal lag for ML training.
+
+    Returns an ML-ready DataFrame where fire context columns reflect the
+    previous time window (T-1) while ``fire_detected_binary`` is the
+    current-window label (T).
+    """
+    fused = fuse_features(
+        firms_features=firms_features,
+        weather_features=weather_features,
+        static_features=static_features,
+        execution_date=execution_date,
+        resolution_km=resolution_km,
+        config_path=config_path,
+    )
+    return apply_temporal_lag(fused, prev_fire_features)
+
+
 def _aggregate_weather_to_window(
     weather_df: pd.DataFrame,
     execution_date: pd.Timestamp,
     window_hours: int,
 ) -> pd.DataFrame:
+    """Aggregate weather data to the time window ending at execution_date.
+
+    Filters weather rows to [execution_date - window_hours, execution_date],
+    then groups by grid_id and computes mean (sum for precipitation).
+
+    Returns an empty DataFrame with a 'grid_id' column if no weather rows
+    fall within the window (Bug #2 fix: no silent fallback to all data).
+    """
     weather_df = weather_df.copy()
     weather_df["timestamp"] = pd.to_datetime(weather_df["timestamp"], errors="coerce")
 
@@ -151,7 +276,11 @@ def _aggregate_weather_to_window(
     windowed = weather_df[mask]
 
     if windowed.empty:
-        windowed = weather_df
+        logger.warning(
+            f"No weather rows in [{window_start}, {window_end}] window. "
+            f"Returning empty — fusion will use fill strategies."
+        )
+        return pd.DataFrame(columns=["grid_id"])
 
     if "grid_id" not in windowed.columns:
         return pd.DataFrame(columns=["grid_id"])
@@ -174,6 +303,7 @@ def _aggregate_weather_to_window(
 
 
 def _apply_fill_strategies(df: pd.DataFrame, registry) -> pd.DataFrame:
+    """Apply per-column fill strategies (zero, forward_fill, constant) from the registry."""
     fill_strategies = registry.get_fill_strategies()
 
     for col, strategy in fill_strategies.items():
@@ -196,6 +326,7 @@ def _apply_fill_strategies(df: pd.DataFrame, registry) -> pd.DataFrame:
 
 
 def _compute_quality_flags(fused: pd.DataFrame) -> pd.Series:
+    """Compute data quality flags: 0 = good, 3 = >30% nulls in feature columns."""
     flags = pd.Series(0, index=fused.index, dtype="int8")
 
     core_cols = [

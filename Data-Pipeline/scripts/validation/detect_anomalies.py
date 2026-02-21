@@ -190,7 +190,7 @@ def _load_baseline(
     if not path.exists():
         return None
     try:
-        with open(path) as f:
+        with open(path,encoding="utf-8") as f:
             return json.load(f)
     except (json.JSONDecodeError, OSError) as e:
         logger.warning(f"Could not read baseline {path}: {e} — treating as missing")
@@ -255,7 +255,7 @@ def _update_baseline(
 
     path = _baseline_path(feature, season, baseline_dir)
     try:
-        with open(path, "w") as f:
+        with open(path, "w",encoding="utf-8") as f:
             json.dump(baseline, f, indent=2)
         logger.debug(
             f"Baseline updated: {feature}/{season} "

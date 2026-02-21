@@ -307,12 +307,14 @@ wildfire-pipeline-merged/
 │   │   └── emergency.py          # Emergency state machine
 │   │
 │   ├── fusion/
-│   │   └── fuse_features.py      # Left-join from master grid (all cells preserved)
+│   │   ├── fuse_features.py      # Left-join from master grid (all cells preserved)
+│   │   └── priority_resolver.py  # Priority Hierarchy Engine (ground truth > satellite)
 │   │
 │   ├── ingestion/
 │   │   ├── ingest_firms.py       # NASA FIRMS (VIIRS + MODIS, per-region)
 │   │   ├── ingest_goes.py        # GOES NRT quick-check + S3 direct access
-│   │   └── ingest_weather.py     # Open-Meteo + NWS fallback
+│   │   ├── ingest_weather.py     # Open-Meteo + NWS fallback
+│   │   └── ingest_field_telemetry.py  # Field telemetry schema validation [NEW]
 │   │
 │   ├── processing/
 │   │   ├── process_firms.py      # Spatial join, FRP clipping, MODIS confidence norm
@@ -328,13 +330,19 @@ wildfire-pipeline-merged/
 │   │   ├── rate_limiter.py       # FIRMS + weather API rate limiting
 │   │   └── schema_loader.py      # FeatureRegistry from schema_config.yaml
 │   │
+│   ├── export/
+│   │   └── export_spatial.py     # Track B: spatial grid + adjacency matrix (.npz)
+│   │
 │   └── validation/
 │       ├── detect_anomalies.py   # Seasonal baseline z-score (JSON files, Welford update)
 │       └── validate_schema.py    # Great Expectations (dynamic from schema)
 │
 ├── tests/
-│   ├── test_fusion/              # Fusion left-join completeness
-│   ├── test_ingestion/           # FIRMS: API timeout, malformed CSV, multi-resolution
+│   ├── test_export/              # Dual-track (tabular + spatial) consistency
+│   ├── test_fusion/              # Fusion left-join completeness, priority resolver,
+│   │                             #   temporal lag, weather fallback
+│   ├── test_ingestion/           # FIRMS: API timeout, malformed CSV, multi-resolution;
+│   │                             #   SLA alerting, retry logic, field telemetry
 │   ├── test_processing/          # Weather (7 scenarios) + static layer + caching
 │   ├── test_utils/               # Grid: cell counts, reprojection, circular mean aspect,
 │   │                             #        h3 compat, focal grid, spatial pruning

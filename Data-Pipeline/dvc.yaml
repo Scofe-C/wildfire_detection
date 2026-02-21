@@ -74,3 +74,25 @@ stages:
     outs:
       - data/processed/baselines:
           persist: true
+
+  # --- ML Pipeline (Phase 2) ---
+  historical_backfill:
+    cmd: python -m scripts.backfill.historical_backfill
+    deps:
+      - scripts/backfill/historical_backfill.py
+      - scripts/fusion/fuse_features.py
+      - scripts/utils/grid_utils.py
+      - scripts/utils/schema_loader.py
+      - configs/schema_config.yaml
+    outs:
+      - data/processed/backfill:
+          persist: true
+
+  train_ignition_model:
+    cmd: echo "Placeholder — training script to be implemented"
+    deps:
+      - data/processed/backfill
+      - configs/schema_config.yaml
+    outs:
+      - models/ignition:
+          persist: true

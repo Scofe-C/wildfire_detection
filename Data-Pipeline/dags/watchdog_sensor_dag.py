@@ -336,19 +336,19 @@ with DAG(
         poke_interval=60,           # Re-check GCS every 60 seconds
         timeout=120,                # Soft-fail after 2 min if no trigger
         soft_fail=True,             # Don't mark as failed — just skip
-        provide_context=True,
+        
     )
 
     process_trigger_task = PythonOperator(
         task_id="process_fire_trigger",
         python_callable=process_fire_trigger,
-        provide_context=True,
+        
     )
 
     manifest_task = PythonOperator(
         task_id="compute_region_manifest",
         python_callable=compute_region_manifest,
-        provide_context=True,
+        
         trigger_rule="all_done",  # Run even if process_trigger had issues
     )
 

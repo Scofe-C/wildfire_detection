@@ -46,13 +46,17 @@ def load_config(config_path: Optional[str] = None) -> dict:
             f"Schema config not found at {path}. "
             f"Ensure configs/schema_config.yaml exists."
         )
-    with open(path, "r") as f:
+    with open(path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 
 # ---------------------------------------------------------------------------
 # Feature Registry
 # ---------------------------------------------------------------------------
+@property
+def config(self) -> dict:
+    return self._config
+
 class FeatureRegistry:
     """Provides typed access to the feature schema.
 

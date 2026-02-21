@@ -302,6 +302,15 @@ def _fetch_open_meteo_batch(
                 time.sleep(delay)
                 continue
 
+            # 4xx (except 429) are non-retryable — fail immediately
+            if 400 <= resp.status_code < 500:
+                logger.error(
+                    f"Open-Meteo non-retryable error: HTTP {resp.status_code}: "
+                    f"{resp.text[:200]}"
+                )
+                return None
+
+            # 5xx — transient server error, retry with backoff
             logger.warning(f"Open-Meteo HTTP {resp.status_code}: {resp.text[:200]}")
             logger.warning(f"Open-Meteo request params: hourly={params.get('hourly')} daily={params.get('daily')}")
             limiter.record_failure()

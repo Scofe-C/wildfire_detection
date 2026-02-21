@@ -4,7 +4,7 @@ from typing import Any, Dict, List, Tuple
 
 import great_expectations as ge
 import pandas as pd
-
+import great_expectations as gx
 from scripts.utils.grid_utils import generate_full_grid
 
 
@@ -15,7 +15,7 @@ _TYPE_MAP = {
     "int16": "int",
     "int32": "int",
     "int64": "int",
-    "string": "object",
+    "string": "str",
     "bool": "bool",
 }
 
@@ -41,7 +41,7 @@ def run_validation(
     Great Expectations validation gate.
     Returns (passed, results_dict) where results_dict contains issues list.
     """
-
+    # Old (removed):
     validator = ge.from_pandas(df)
 
     feature_names: List[str] = registry.get_feature_names()
@@ -70,11 +70,13 @@ def run_validation(
             continue
 
         if ("min" in rules) or ("max" in rules):
-            validator.expect_column_values_to_be_between(
-                col,
-                min_value=rules.get("min"),
-                max_value=rules.get("max"),
-            )
+            # Skip between-check for non-numeric columns (avoids str vs int TypeError)
+            if col in df.columns and pd.api.types.is_numeric_dtype(df[col]):
+                validator.expect_column_values_to_be_between(
+                    col,
+                    min_value=rules.get("min"),
+                    max_value=rules.get("max"),
+                )
 
         if "allowed_values" in rules:
             validator.expect_column_values_to_be_in_set(
