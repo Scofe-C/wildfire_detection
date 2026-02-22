@@ -98,8 +98,28 @@ def fetch_weather_data(
     lookback_hours: int = 24,
     output_dir: Optional[str] = None,
     config_path: Optional[str] = None,
+    trigger_source: str = "cron",
+    fire_cells: Optional[list] = None,
+    h3_ring_max: int = 5,
 ) -> Path:
     """Fetch weather data for all grid cell centroids.
+
+    On emergency/active watchdog triggers, fetches HRRR (15-min cycle,
+    3 km resolution) for focal cells around the confirmed fire, then merges
+    with Open-Meteo for the remaining background grid cells.
+    On cron triggers, uses Open-Meteo only (unchanged behaviour).
+
+    Args:
+        grid_centroids:  DataFrame with grid_id, latitude, longitude.
+        execution_date:  Airflow execution_date (UTC).
+        lookback_hours:  Weather lookback window. 24h for cron; 2h for watchdog.
+        output_dir:      Output directory for raw CSV.
+        config_path:     Optional schema config path override.
+        trigger_source:  DAG trigger source. If 'watchdog_emergency' or
+                         'watchdog_active', HRRR is attempted for focal cells.
+        fire_cells:      H3 cell IDs confirmed by the watchdog (used to build
+                         the focal grid for HRRR extraction).
+        h3_ring_max:     Focal grid outer ring (passed from DAG params).
 
     Returns:
         Path to raw weather CSV.
@@ -111,6 +131,38 @@ def fetch_weather_data(
     registry = get_registry(config_path)
     om_config = registry.get_source_config("open_meteo")
     limiter = create_weather_limiter(config_path)
+
+    # ------------------------------------------------------------------
+    # HRRR branch: emergency / active watchdog triggers only
+    # ------------------------------------------------------------------
+    is_watchdog = trigger_source in ("watchdog_emergency", "watchdog_active")
+
+    if is_watchdog and fire_cells:
+        hrrr_path = _try_hrrr_focal(
+            grid_centroids=grid_centroids,
+            fire_cells=fire_cells,
+            h3_ring_max=h3_ring_max,
+            execution_date=execution_date,
+            output_dir=output_dir,
+            config_path=config_path,
+        )
+        if hrrr_path is not None:
+            # HRRR succeeded — merge with Open-Meteo for background cells
+            return _merge_hrrr_with_background(
+                hrrr_path=hrrr_path,
+                grid_centroids=grid_centroids,
+                execution_date=execution_date,
+                lookback_hours=lookback_hours,
+                output_dir=output_dir,
+                om_config=om_config,
+                limiter=limiter,
+                config_path=config_path,
+            )
+        # HRRR failed — fall through to full Open-Meteo with narrowed window
+        logger.warning(
+            "HRRR fetch failed — falling back to Open-Meteo for all cells "
+            f"(lookback_hours={lookback_hours})"
+        )
 
     # resolve output_dir early
     if output_dir is None:
@@ -175,14 +227,22 @@ def fetch_weather_data(
             weather_df["grid_id"] = weather_df["grid_id"].astype(str)
             weather_df["data_quality_flag"] = 0  # fresh Open-Meteo
             all_weather.append(weather_df)
+            # Brief pause between batches to stay under rate limits
+            time.sleep(0.3)
         else:
             logger.warning(
                 f"  Open-Meteo failed for batch {batch_idx + 1}. Attempting NWS fallback."
             )
             for _, cell in batch.iterrows():
+                lat = float(cell["latitude"])
+                lon = float(cell["longitude"])
+                # NWS only covers CONUS land — skip offshore / border points
+                if lat < 24.5 or lat > 49.5 or lon < -125.0 or lon > -66.5:
+                    failed_cells.append(str(cell["grid_id"]))
+                    continue
                 nws_df = _fetch_nws_fallback(
-                    lat=float(cell["latitude"]),
-                    lon=float(cell["longitude"]),
+                    lat=lat,
+                    lon=lon,
                     grid_id=str(cell["grid_id"]),
                     config_path=config_path,
                 )
@@ -482,3 +542,163 @@ def _parse_nws_wind_direction(direction: Optional[str]) -> Optional[float]:
         "W": 270, "WNW": 292.5, "NW": 315, "NNW": 337.5,
     }
     return direction_map.get(str(direction).strip().upper())
+
+
+# ---------------------------------------------------------------------------
+# HRRR integration helpers (called only on watchdog emergency/active triggers)
+# ---------------------------------------------------------------------------
+
+def _try_hrrr_focal(
+    grid_centroids: pd.DataFrame,
+    fire_cells: list,
+    h3_ring_max: int,
+    execution_date,
+    output_dir: Optional[str],
+    config_path: Optional[str],
+) -> Optional[Path]:
+    """Attempt HRRR fetch for the focal grid around confirmed fire cells.
+
+    Returns:
+        Path to HRRR CSV, or None if HRRR is unavailable / fails.
+        None signals the caller to fall back to Open-Meteo.
+    """
+    try:
+        from scripts.ingestion.ingest_hrrr import fetch_hrrr_for_focal_grid
+        from scripts.utils.grid_utils import generate_fire_focal_grid
+    except ImportError as e:
+        logger.warning(f"HRRR dependencies not installed — skipping HRRR: {e}")
+        return None
+
+    try:
+        focal_grid = generate_fire_focal_grid(
+            fire_cell_ids=fire_cells,
+            ring_min=0,          # include the fire cells themselves (ring 0)
+            ring_max=h3_ring_max,
+        )
+
+        if focal_grid.empty:
+            logger.warning("HRRR: focal grid is empty — skipping")
+            return None
+
+        logger.info(
+            f"HRRR: generated focal grid with {len(focal_grid)} cells "
+            f"({sum(focal_grid['cell_type'] == 'fire')} fire, "
+            f"{sum(focal_grid['cell_type'] == 'detection_zone')} detection zone)"
+        )
+
+        return fetch_hrrr_for_focal_grid(
+            focal_grid=focal_grid[["grid_id", "latitude", "longitude"]],
+            execution_date=execution_date,
+            output_dir=output_dir,
+            config_path=config_path,
+        )
+
+    except Exception as e:
+        logger.warning(f"HRRR focal fetch failed: {e}")
+        return None
+
+
+def _merge_hrrr_with_background(
+    hrrr_path: Path,
+    grid_centroids: pd.DataFrame,
+    execution_date,
+    lookback_hours: int,
+    output_dir: Optional[str],
+    om_config: dict,
+    limiter,
+    config_path: Optional[str],
+) -> Path:
+    """Merge HRRR focal data with Open-Meteo background data.
+
+    Strategy:
+      1. Read HRRR CSV — these are the focal (fire + detection zone) cells.
+      2. Identify background cells: grid cells NOT covered by HRRR.
+      3. Fetch Open-Meteo for background cells only (narrowed lookback window).
+         Background cells = previous cron run data → data_quality_flag = 4
+         if Open-Meteo also fails, they stay null (fuse_features forward-fills).
+      4. Concatenate HRRR rows + Open-Meteo rows → write merged CSV.
+
+    This gives the model:
+      - flag=3 (HRRR, ~15 min fresh) for focal cells
+      - flag=0 (Open-Meteo, ~1h fresh) or flag=4 (forward-fill) for background
+
+    Returns:
+        Path to merged CSV.
+    """
+    execution_date = _to_utc_aware(execution_date)
+
+    if output_dir is None:
+        output_dir = (
+            Path(__file__).resolve().parent.parent.parent / "data" / "raw" / "weather"
+        )
+    out_dir = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Load HRRR focal data
+    hrrr_df = pd.read_csv(hrrr_path)
+    hrrr_cell_ids = set(hrrr_df["grid_id"].astype(str).tolist())
+
+    # Identify background cells (not covered by HRRR)
+    all_cell_ids = set(grid_centroids["grid_id"].astype(str).tolist())
+    background_ids = all_cell_ids - hrrr_cell_ids
+
+    logger.info(
+        f"HRRR merge: {len(hrrr_cell_ids)} HRRR focal cells, "
+        f"{len(background_ids)} background cells for Open-Meteo"
+    )
+
+    parts = [hrrr_df]
+
+    if background_ids:
+        background_centroids = grid_centroids[
+            grid_centroids["grid_id"].astype(str).isin(background_ids)
+        ].copy()
+
+        # Fetch Open-Meteo for background cells
+        # Batched using the same logic as the main Open-Meteo path
+        batches = _create_coordinate_batches(background_centroids, OPEN_METEO_MAX_LOCATIONS)
+        bg_weather = []
+
+        for batch_idx, batch in enumerate(batches):
+            weather_df = _fetch_open_meteo_batch(
+                batch=batch,
+                start_date=_to_utc_aware(execution_date - timedelta(hours=lookback_hours)),
+                end_date=execution_date,
+                base_url=om_config["base_url"],
+                historical_url=om_config["historical_url"],
+                limiter=limiter,
+                timeout=om_config.get("timeout_seconds", 20),
+                max_retries=om_config.get("max_retries", 3),
+            )
+            if weather_df is not None and not weather_df.empty:
+                weather_df = weather_df.copy()
+                weather_df["grid_id"] = weather_df["grid_id"].astype(str)
+                weather_df["data_quality_flag"] = 0
+                bg_weather.append(weather_df)
+            else:
+                logger.debug(f"Open-Meteo failed for background batch {batch_idx + 1}")
+
+        if bg_weather:
+            parts.append(pd.concat(bg_weather, ignore_index=True))
+
+    merged = pd.concat(parts, ignore_index=True)
+
+    # Ensure schema columns
+    expected_cols = [
+        "grid_id", "timestamp", "temperature_2m", "relative_humidity_2m",
+        "wind_speed_10m", "wind_direction_10m", "precipitation",
+        "soil_moisture_0_to_7cm", "vpd", "fire_weather_index", "data_quality_flag",
+    ]
+    for c in expected_cols:
+        if c not in merged.columns:
+            merged[c] = None
+
+    date_str = execution_date.strftime("%Y%m%d_%H%M%S")
+    output_path = out_dir / f"weather_raw_{date_str}.csv"
+    merged.to_csv(output_path, index=False)
+
+    logger.info(
+        f"HRRR+OM merge complete: {len(hrrr_df)} HRRR rows + "
+        f"{len(merged) - len(hrrr_df)} Open-Meteo rows → {output_path}"
+    )
+    return output_path

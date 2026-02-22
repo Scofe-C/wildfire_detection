@@ -53,10 +53,6 @@ def load_config(config_path: Optional[str] = None) -> dict:
 # ---------------------------------------------------------------------------
 # Feature Registry
 # ---------------------------------------------------------------------------
-@property
-def config(self) -> dict:
-    return self._config
-
 class FeatureRegistry:
     """Provides typed access to the feature schema.
 
@@ -75,6 +71,11 @@ class FeatureRegistry:
         self._anomaly = self._config.get("anomaly_detection", {})
         self._validation = self._config.get("validation", {})
         self._storage = self._config.get("storage", {})
+
+    @property
+    def config(self) -> dict:
+        """Return the full raw config dict."""
+        return self._config
 
     # --- Feature Queries ---
 

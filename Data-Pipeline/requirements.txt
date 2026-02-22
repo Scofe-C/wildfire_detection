@@ -25,6 +25,14 @@ numpy
 packaging
 pyarrow
 
+# --- HRRR weather (emergency/active watchdog triggers only) ---
+herbie-data          # HRRR S3 path construction + cfgrib/xarray integration
+cfgrib>=0.9.10       # eccodes-backed GRIB2 reading via xarray
+eccodes              # system GRIB2 library (also needs apt: libeccodes-dev)
+scipy                # RegularGridInterpolator for HRRR → H3 centroid extraction
+xarray               # N-dimensional array support used by cfgrib/herbie-data
+
+
 # --- Geo stack ---
 h3
 geopandas
@@ -70,3 +78,4 @@ pytest-mock
 
 # --- Code quality ---
 ruff
+# hypothesis       # property-based testing

@@ -115,9 +115,14 @@ def write_state(state: dict, config_path: Optional[str] = None) -> bool:
         bucket = client.bucket(bucket_name)
         blob = bucket.blob(gcs_path)
 
-        # Get current generation for conditional write
-        blob.reload() if blob.exists() else None
-        generation = blob.generation if blob.exists() else 0
+        # Get current generation for conditional write (single reload to
+        # avoid TOCTOU race — two blob.exists() calls could see different state)
+        try:
+            blob.reload()
+            generation = blob.generation
+        except Exception:
+            # Blob does not exist yet — use generation 0 for first write
+            generation = 0
 
         blob.upload_from_string(
             payload,

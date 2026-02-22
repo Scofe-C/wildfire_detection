@@ -143,6 +143,7 @@ def process_fire_trigger(**context):
         "detection_range_km": detect_range,
         "triggered_by_watchdog": True,
         "original_trigger_id": trigger_id,
+        "weather_lookback_hours": 2 if mode in ("emergency", "active") else 24,
     }
 
     try:

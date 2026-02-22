@@ -158,7 +158,25 @@ def task_ingest_weather(region: str, **context):
     from scripts.utils.grid_utils import generate_grid_for_bbox
 
     execution_date = context["execution_date"]
-    resolution_km  = context["params"].get("resolution_km", DEFAULT_RESOLUTION_KM)
+
+    # If resolution_km is missing and we default to 64 km on a watchdog-triggered
+    # 22 km run, the weather grid_ids won't match FIRMS grid_ids in fusion →
+    # every row joins to null weather features with no error raised.
+    # The DAG params dict always sets "resolution_km" as a default, so this
+    # assertion only fires if that default is accidentally removed.
+    resolution_km = context["params"].get("resolution_km")
+    if resolution_km is None:
+        raise ValueError(
+            "resolution_km is missing from DAG params in task_ingest_weather. "
+            "This would silently produce a grid_id mismatch during fusion — "
+            "weather features would be null for every row. "
+            "Ensure the DAG params dict includes 'resolution_km'."
+        )
+
+    # (15-min interval) can request a narrower window (e.g. 2h) for fresher data,
+    # while cron runs keep the standard 24h window.
+    lookback_hours = context["params"].get("weather_lookback_hours", 24)
+
     bbox = REGIONS[region]["bbox"]
 
     # Generate region-specific grid centroids only — no full-grid needed here.
@@ -169,12 +187,13 @@ def task_ingest_weather(region: str, **context):
     output_path = fetch_weather_data(
         grid_centroids=grid_centroids,
         execution_date=execution_date,
-        lookback_hours=24,
+        lookback_hours=lookback_hours,
         output_dir=str(RAW_DIR / "weather"),
     )
 
     context["ti"].xcom_push(key=f"weather_raw_path_{region}", value=str(output_path))
     logger.info(f"[{region}] Weather ingestion complete → {output_path}")
+
 
 
 def task_process_firms(region: str, **context):
@@ -260,7 +279,10 @@ def task_fuse_features(**context):
 
     firms_df   = pd.concat(firms_dfs,   ignore_index=True) if firms_dfs   else pd.DataFrame()
     weather_df = pd.concat(weather_dfs, ignore_index=True) if weather_dfs else pd.DataFrame()
-    static_path = context["ti"].xcom_pull(key="static_features_path")
+    static_path = (
+            context["ti"].xcom_pull(task_ids="check_static_cache", key="static_features_path")
+            or context["ti"].xcom_pull(task_ids="load_static_layers", key="static_features_path")
+    )
     static_df   = pd.read_parquet(static_path) if static_path else pd.DataFrame()
 
     # Generate focal grid when watchdog provided fire cells
@@ -312,6 +334,15 @@ def task_fuse_features(**context):
         pd.concat(prev_fire_dfs, ignore_index=True)
         if prev_fire_dfs else None
     )
+
+    has_genuine_lag = prev_fire_df is not None and len(prev_fire_df) > 0
+    context["ti"].xcom_push(key="has_genuine_temporal_lag", value=has_genuine_lag)
+    if not has_genuine_lag:
+        logger.warning(
+            "No genuine T-1 fire data available — ML-ready variant will use "
+            "default fills for fire context columns. Models trained on this "
+            "window should treat it as a cold-start sample."
+        )
 
     ml_fused = apply_temporal_lag(fused, prev_fire_df)
 
@@ -512,6 +543,7 @@ with DAG(
     tags=["wildfire", "mlops", "data-pipeline"],
     params={
         "resolution_km": DEFAULT_RESOLUTION_KM,
+        "weather_lookback_hours": 24,
         # Watchdog trigger params (set by watchdog_sensor_dag on fire detection)
         "trigger_source": "cron",         # "cron" | "watchdog_active" | "watchdog_emergency"
         "fire_cells": [],                 # H3 cell IDs confirmed by watchdog
@@ -637,23 +669,30 @@ with DAG(
 
             echo "=== DVC version step ==="
 
+            # DVC needs a git repo context
+            if [ ! -d .git ] || [ -z "$(ls -A .git)" ]; then
+                git init
+                git config user.email "airflow@wildfire.local"
+                git config user.name "Airflow"
+            fi
+
             if ! dvc remote list | grep -q .; then
                 echo "ERROR: No DVC remote configured."
-                echo "One-time setup: dvc remote add -d gcs_remote gs://<bucket>/dvc-store"
                 exit 1
             fi
 
             echo "Tracking data/processed/fused ..."
-            dvc add data/processed/fused
+            dvc add data/processed/fused -f
 
             echo "Tracking data/processed/{{ params.resolution_km }}km ..."
-            dvc add data/processed/{{ params.resolution_km }}km
+            dvc add data/processed/{{ params.resolution_km }}km -f
 
             echo "Pushing to GCS remote ..."
-            dvc push
+            dvc push data/processed/fused.dvc data/processed/{{ params.resolution_km }}km.dvc
 
             echo "=== DVC version step complete ==="
         """,
+        cwd="/opt/airflow",
         dag=dag,
     )
 

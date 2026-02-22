@@ -315,18 +315,16 @@ class FireDetector:
 
         for source in viirs_sources:
             try:
-                # Temporarily override source in the fetch function
-                import scripts.ingestion.ingest_goes as goes_module
-                original_source = goes_module.GOES_NRT_SOURCE
-                goes_module.GOES_NRT_SOURCE = source
+                # M3 fix: pass source directly instead of mutating the module
+                # global, which is not thread-safe under concurrent execution.
                 dets = fetch_goes_nrt_detections(
                     bbox=bbox,
                     lookback_minutes=lookback_hours * 60,
                     min_frp_mw=1.0,  # Lower threshold for VIIRS confirmation
                     api_key=api_key,
                     max_retries=2,
+                    source=source,
                 )
-                goes_module.GOES_NRT_SOURCE = original_source
 
                 for det in dets:
                     try:

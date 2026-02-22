@@ -48,6 +48,7 @@ def fetch_goes_nrt_detections(
     api_key: Optional[str] = None,
     max_retries: int = 3,
     timeout_seconds: int = 20,
+    source: Optional[str] = None,
 ) -> list[dict]:
     """Poll FIRMS GOES_NRT for fire detections in a bounding box.
 
@@ -61,12 +62,16 @@ def fetch_goes_nrt_detections(
         api_key: FIRMS MAP_KEY. Falls back to FIRMS_MAP_KEY env var if None.
         max_retries: Number of HTTP retries on failure.
         timeout_seconds: Per-request timeout.
+        source: FIRMS source identifier (e.g. "GOES_NRT", "VIIRS_SNPP_NRT").
+            Defaults to module-level GOES_NRT_SOURCE if not provided.
+            Prefer passing this parameter instead of mutating the global.
 
     Returns:
         List of detection dicts:
         [{"lat": 37.5, "lon": -120.2, "frp": 45.3, "acq_datetime": datetime, ...}]
         Empty list if no fires or API unavailable.
     """
+    effective_source = source or GOES_NRT_SOURCE
     api_key = api_key or os.environ.get("FIRMS_MAP_KEY")
     if not api_key:
         logger.warning("No FIRMS_MAP_KEY — GOES NRT quick-check skipped")
@@ -74,7 +79,7 @@ def fetch_goes_nrt_detections(
 
     west, south, east, north = bbox
     bbox_str = f"{west},{south},{east},{north}"
-    url = f"{FIRMS_BASE_URL}/csv/{api_key}/{GOES_NRT_SOURCE}/{bbox_str}/1"
+    url = f"{FIRMS_BASE_URL}/csv/{api_key}/{effective_source}/{bbox_str}/1"
 
     cutoff = datetime.now(timezone.utc) - timedelta(minutes=lookback_minutes)
 

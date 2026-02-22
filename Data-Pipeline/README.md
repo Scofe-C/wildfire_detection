@@ -1,8 +1,17 @@
 # 🔥 Wildfire Detection & Response System — Data Pipeline
 
-> **MLOps Course · Phase 1 Deliverable · February 2026**
+> **MLOps Course · Northeastern University · February 2026**
 > 
-> An end-to-end data pipeline that ingests wildfire and environmental data from six public sources, fuses them into a unified H3-indexed feature table, and exports validated, versioned Parquet files ready for model training — with an adaptive GCP-based fire detection watchdog that escalates resolution and polling frequency automatically when a fire is confirmed.
+> An end-to-end, production-ready data pipeline that ingests wildfire and environmental data from six public sources, fuses them into a unified H3-indexed feature table, and exports validated, versioned Parquet files ready for ML model training. The system features three operational modes — **quiet**, **active**, and **emergency** — with an adaptive GCP-based fire detection watchdog that automatically escalates resolution and polling frequency when a wildfire is confirmed.
+
+### What This Pipeline Does
+
+1. **Ingests** satellite fire detections (NASA FIRMS), hourly weather data (Open-Meteo + NWS fallback), terrain features (USGS SRTM), and vegetation/fuel data (LANDFIRE)
+2. **Processes** raw data into H3 hexagonal grid cells covering California and Texas, running regions in parallel
+3. **Fuses** all features into a single unified table with 28 features per grid cell per time window
+4. **Validates** the output against a dynamic schema with anomaly detection (seasonal z-scores)
+5. **Exports** partitioned Parquet files and versions them with DVC to Google Cloud Storage
+6. **Monitors** for new fires via a GCS-polling watchdog that triggers the pipeline within minutes of a confirmed detection
 
 ---
 
@@ -122,7 +131,7 @@ The pipeline fuses **six public data sources** into a single Parquet-based featu
 ```bash
 # 1. Clone
 git clone <repo-url>
-cd wildfire-pipeline-merged
+cd Data-Pipeline
 
 # 2. Configure environment
 cp .env.example .env
@@ -143,16 +152,103 @@ docker compose up -d --build
 |---|---|---|
 | `wildfire_data_pipeline` | Main pipeline | Every 6 hrs (fallback cron) |
 | `watchdog_sensor_dag` | Polls GCS for fire triggers | Every 2 min, **always-on** |
-| `wildfire_local_test` | Local testing — no API keys | Manual trigger only |
 
-### Local Test (no API keys needed)
+---
 
-```bash
-# Generate synthetic seed data
-python scripts/seed_local_test.py
+## Testing Pipeline Modes
 
-# Then trigger 'wildfire_local_test' manually in the Airflow UI
-# Runs the full pipeline end-to-end using fake but schema-valid data
+The pipeline runs in three modes, each with different resolution, speed, and scope:
+
+| Mode | Resolution | Regions | Weather Lookback | When It Runs |
+|---|---|---|---|---|
+| **Quiet** | 64 km (~200 cells) | All (CA + TX) | 24 hours | Off-season, scheduled cron |
+| **Active** | 22 km (~1000 cells) | Fire region only | 2 hours | Fire season, watchdog trigger |
+| **Emergency** | 22 km (~1000 cells) | Fire region only | 2 hours | Confirmed large fire (FRP > 200 MW) |
+
+### Option 1: Test Locally Without Airflow (fastest)
+
+```powershell
+cd d:\NEU\wildfire_detection\Data-Pipeline
+
+# Test individual modes
+python scripts/test_modes_local.py --mode quiet       # ~30s, 64km, all regions
+python scripts/test_modes_local.py --mode active       # ~60s, 22km, California
+python scripts/test_modes_local.py --mode emergency    # ~60s, 22km, California
+
+# Test all three in sequence
+python scripts/test_modes_local.py --mode all
+```
+
+This script calls the same ingestion/processing/fusion functions as the Airflow DAG — no Docker or Airflow needed.
+
+### Option 2: Test in Docker via Airflow UI
+
+1. Open **http://localhost:8080** → find `wildfire_data_pipeline`
+2. Click ▶ → **"Trigger DAG w/ config"**
+3. Paste one of these JSON configs:
+
+**Quiet mode:**
+```json
+{"trigger_source": "cron", "mode": "quiet", "resolution_km": 64}
+```
+
+**Active mode (California only):**
+```json
+{
+  "trigger_source": "watchdog_active",
+  "mode": "active",
+  "resolution_km": 22,
+  "regions": ["california"],
+  "fire_cells": ["8e283082ddbffff"],
+  "fire_frp_mw": 45.0,
+  "triggered_by_watchdog": true
+}
+```
+
+**Emergency mode:**
+```json
+{
+  "trigger_source": "watchdog_emergency",
+  "mode": "emergency",
+  "resolution_km": 22,
+  "regions": ["california"],
+  "fire_cells": ["8e283082ddbffff"],
+  "fire_frp_mw": 120.0,
+  "triggered_by_watchdog": true
+}
+```
+
+### Option 3: Test via Docker CLI (PowerShell)
+
+```powershell
+# Quiet mode
+docker compose exec airflow-scheduler airflow dags trigger wildfire_data_pipeline --conf "{""trigger_source"": ""cron"", ""mode"": ""quiet""}"
+
+# Active mode
+docker compose exec airflow-scheduler airflow dags trigger wildfire_data_pipeline --conf "{""trigger_source"": ""watchdog_active"", ""mode"": ""active"", ""resolution_km"": 22, ""regions"": [""california""], ""fire_cells"": [""8e283082ddbffff""], ""triggered_by_watchdog"": true}"
+```
+
+### Simulate a Watchdog Fire Trigger
+
+To test the full watchdog → pipeline flow, upload a trigger file to GCS:
+
+```powershell
+# Create trigger JSON
+@"
+{
+    "trigger_source": "watchdog_emergency",
+    "resolution_km": 22,
+    "regions": ["california"],
+    "fire_cells": ["8e283082ddbffff"],
+    "fire_frp_mw": 250.0,
+    "mode": "emergency"
+}
+"@ | Out-File -Encoding utf8 trigger_test.json
+
+# Upload to GCS
+gsutil cp trigger_test.json gs://my-wildfire-1/watchdog/triggers/test-001.json
+
+# The watchdog_sensor_dag will detect it within 60 seconds and trigger the pipeline
 ```
 
 ---
@@ -302,6 +398,8 @@ wildfire-pipeline-merged/
 │   └── wildfire_local_test_dag.py
 │
 ├── scripts/
+│   ├── test_modes_local.py       # ★ Local mode tester (quiet/active/emergency, no Airflow)
+│   │
 │   ├── detection/
 │   │   ├── fire_detector.py      # Four-gate false alarm prevention
 │   │   └── emergency.py          # Emergency state machine
@@ -313,8 +411,9 @@ wildfire-pipeline-merged/
 │   ├── ingestion/
 │   │   ├── ingest_firms.py       # NASA FIRMS (VIIRS + MODIS, per-region)
 │   │   ├── ingest_goes.py        # GOES NRT quick-check + S3 direct access
-│   │   ├── ingest_weather.py     # Open-Meteo + NWS fallback
-│   │   └── ingest_field_telemetry.py  # Field telemetry schema validation [NEW]
+│   │   ├── ingest_weather.py     # Open-Meteo + NWS fallback (with rate limit backoff)
+│   │   ├── ingest_hrrr.py        # NOAA HRRR rapid weather (emergency/active modes)
+│   │   └── ingest_field_telemetry.py  # Field telemetry schema validation
 │   │
 │   ├── processing/
 │   │   ├── process_firms.py      # Spatial join, FRP clipping, MODIS confidence norm
@@ -407,11 +506,15 @@ gcloud storage cp industrial_sources.json \
 ## Running Tests
 
 ```bash
-# Local (requires pip install -r requirements.txt -c constraints.txt)
+# Local on Windows (DAG tests will SKIP — Airflow needs Linux)
+set PYTHONPATH=.
+python -m pytest tests/ -v --tb=short
+
+# Local on Linux/macOS
 export PYTHONPATH=.
 pytest tests/ -v --tb=short
 
-# Inside Docker (recommended — matches CI exactly)
+# Inside Docker (recommended — matches CI, all tests including DAG structure)
 docker run --rm \
   -e GCS_BUCKET_NAME=test-bucket \
   -e FIRMS_MAP_KEY=test-key \
@@ -420,7 +523,12 @@ docker run --rm \
 
 # With coverage
 pytest tests/ -v --cov=scripts --cov-report=term-missing
+
+# GCP live tests only (requires real credentials)
+pytest tests/test_dvc/ -m gcp -v
 ```
+
+> **Note:** DAG structure tests (`test_dag_structure.py`) require Airflow's `fcntl` module which is Unix-only. On Windows, these tests automatically **SKIP** with a clear message. They run in Docker and CI.
 
 ### CI Pipeline
 

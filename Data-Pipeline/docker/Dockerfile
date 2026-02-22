@@ -7,6 +7,7 @@ FROM ghcr.io/osgeo/gdal:ubuntu-small-3.8.4 AS airflow-base
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-pip python3-venv python3-dev build-essential \
     curl git \
+    libeccodes-dev libeccodes0 \
     && rm -rf /var/lib/apt/lists/*
 
 RUN python3 -m pip install --upgrade pip setuptools wheel

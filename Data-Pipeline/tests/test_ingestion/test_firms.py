@@ -290,8 +290,10 @@ class TestRateLimiter:
 
 class TestFirmsAPIEdgeCases:
 
+    @patch("scripts.utils.rate_limiter.time.sleep")
+    @patch("scripts.ingestion.ingest_firms.time.sleep")
     @patch("scripts.ingestion.ingest_firms.requests.get")
-    def test_api_timeout_triggers_retry(self, mock_get, tmp_path):
+    def test_api_timeout_triggers_retry(self, mock_get, mock_sleep, mock_rl_sleep, tmp_path):
         """Timeout on first two attempts, success on third — retries work."""
         import requests as req_lib
         from scripts.ingestion.ingest_firms import fetch_firms_data
@@ -301,11 +303,12 @@ class TestFirmsAPIEdgeCases:
             "satellite,instrument,confidence,version,bright_t31,frp,daynight\n"
             "34.05,-118.24,320.5,1.0,1.0,2026-08-15,1432,N,VIIRS,85,2.0NRT,290.1,15.3,D\n"
         )
+        success_resp = MagicMock(status_code=200, text=success_csv)
         mock_get.side_effect = [
             req_lib.exceptions.Timeout("Simulated timeout 1"),
             req_lib.exceptions.Timeout("Simulated timeout 2"),
-            MagicMock(status_code=200, text=success_csv),
-        ]
+            success_resp,
+        ] + [success_resp] * 20  # enough for remaining sensor × region combos
 
         import datetime
         result_path = fetch_firms_data(
@@ -314,7 +317,7 @@ class TestFirmsAPIEdgeCases:
         )
         assert result_path.exists()
         df = pd.read_csv(result_path)
-        assert len(df) >= 0  # Pipeline does not fail on retry success
+        assert len(df) >= 0
 
     @patch("scripts.ingestion.ingest_firms.requests.get")
     def test_malformed_csv_does_not_crash(self, mock_get, tmp_path):
@@ -376,8 +379,10 @@ class TestFirmsAPIEdgeCases:
         assert required.issubset(set(result_64.columns))
         assert required.issubset(set(result_22.columns))
 
+    @patch("scripts.utils.rate_limiter.time.sleep")
+    @patch("scripts.ingestion.ingest_firms.time.sleep")
     @patch("scripts.ingestion.ingest_firms.requests.get")
-    def test_all_retries_exhausted_returns_empty_not_crash(self, mock_get, tmp_path):
+    def test_all_retries_exhausted_returns_empty_not_crash(self, mock_get, mock_sleep, mock_rl_sleep, tmp_path):
         """If all retries fail (e.g. network down), pipeline must produce empty CSV."""
         import requests as req_lib
         from scripts.ingestion.ingest_firms import fetch_firms_data

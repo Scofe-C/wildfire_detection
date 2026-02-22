@@ -44,8 +44,7 @@ x-airflow-common-volumes: &airflow-common-volumes
   - ${GCP_KEY_PATH:-./gcp-key.json}:/opt/airflow/gcp-key.json:ro
   # DVC config and pipeline definition (needed by version_with_dvc task)
   # Mounted read-only: container reads config, dvc add/push write to data/
-  - ./.dvc:/opt/airflow/.dvc:ro
-  - ./dvc.yaml:/opt/airflow/dvc.yaml:ro
+  - ./.dvc:/opt/airflow/.dvc
 
 services:
   postgres:

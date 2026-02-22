@@ -63,7 +63,7 @@ data_sources:
       backoff_base_seconds: 2
       backoff_max_seconds: 120
     timeout_seconds: 20
-    max_retries: 3
+    max_retries: 5
     coordinate_precision: 3
 
   nws:
@@ -74,11 +74,26 @@ data_sources:
     role: "fallback"
 
   hrrr:
-    # NOAA High-Resolution Rapid Refresh. Deferred to streaming phase.
-    # Placeholder config — sets data_quality_flag=3 when used.
+    # NOAA High-Resolution Rapid Refresh — active for watchdog emergency/active triggers.
+    # Files served from public AWS S3 (no auth required); NOMADS URL kept as reference only.
     base_url: "https://nomads.ncep.noaa.gov/pub/data/nccf/com/hrrr/prod/"
+    s3_bucket: "noaa-hrrr-bdp-pds"
+    s3_key_template: "hrrr.{date}/conus/hrrr.t{hour}z.wrfsfcf00.grib2"
     update_frequency_minutes: 15
+    analysis_lag_minutes: 55        # f00 typically available ~45-60 min after cycle start
+    n_cycle_lookback: 3             # how many previous cycles to try if current not published
     role: "rapid_fallback"
+    trigger_modes: ["watchdog_emergency", "watchdog_active"]
+    variables:
+      temperature_2m:         {grib_shortName: TMP,   typeOfLevel: heightAboveGround, level: 2}
+      relative_humidity_2m:   {grib_shortName: RH,    typeOfLevel: heightAboveGround, level: 2}
+      u_wind_10m:             {grib_shortName: UGRD,  typeOfLevel: heightAboveGround, level: 10}
+      v_wind_10m:             {grib_shortName: VGRD,  typeOfLevel: heightAboveGround, level: 10}
+      precipitation:          {grib_shortName: APCP,  typeOfLevel: surface,           level: 0}
+      soil_moisture_0_to_7cm: {grib_shortName: SOILW, typeOfLevel: depthBelowLandLayer, level: 0}
+    # wind_speed_10m and wind_direction_10m are derived from U+V in ingest_hrrr.py
+    # vpd is derived from temperature_2m + relative_humidity_2m
+    # fire_weather_index is not available in HRRR surface analysis (remains None)
 
   landfire:
     products:

@@ -128,7 +128,17 @@ def fuse_features(
             registry.temporal_aggregation_hours,
         )
     else:
-        weather_agg = pd.DataFrame(columns=["grid_id"])
+        # H2 fix: include all expected weather columns so the left-merge
+        # produces NaN-filled columns that the fill strategy can handle,
+        # instead of silently dropping weather columns entirely.
+        _weather_cols = [
+            "grid_id", "temperature_2m", "relative_humidity_2m",
+            "wind_speed_10m", "wind_direction_10m", "precipitation",
+            "soil_moisture_0_to_7cm", "vpd", "fire_weather_index",
+            "data_quality_flag", "days_since_last_precipitation",
+            "cumulative_wind_run_24h", "drought_index_proxy",
+        ]
+        weather_agg = pd.DataFrame(columns=_weather_cols)
 
     fused = _safe_merge(fused, weather_agg, how="left")
 

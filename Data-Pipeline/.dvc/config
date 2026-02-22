@@ -1,4 +1,4 @@
 [core]
     remote = gcsremote
 ['remote "gcsremote"']
-    url = gs://wildfire-mlops
+    url = gs://my-wildfire-1

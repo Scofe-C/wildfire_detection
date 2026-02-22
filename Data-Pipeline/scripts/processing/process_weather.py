@@ -48,6 +48,18 @@ WEATHER_COLS = [
 ]
 
 
+def _circular_mean_degrees(series: pd.Series) -> float:
+    """Compute circular mean of angles in degrees (0–360).
+
+    Standard arithmetic mean gives wrong results for circular variables:
+    e.g. mean(350°, 10°) = 180° instead of the correct 0° (north).
+    Uses atan2 on unit-circle sine/cosine components.
+    """
+    rads = np.deg2rad(series.dropna())
+    if len(rads) == 0:
+        return np.nan
+    return float(np.rad2deg(np.arctan2(np.sin(rads).mean(), np.cos(rads).mean())) % 360)
+
 def process_weather_data(
     raw_csv_path: str,
     resolution_km: int = 64,
@@ -135,7 +147,7 @@ def process_weather_data(
         "temperature_2m":             "mean",
         "relative_humidity_2m":       "mean",
         "wind_speed_10m":             "mean",
-        "wind_direction_10m":         "mean",
+        "wind_direction_10m":         _circular_mean_degrees,  # circular variable — arithmetic mean is wrong
         "precipitation":              "sum",
         "soil_moisture_0_to_7cm":     "mean",
         "vpd":                        "mean",
@@ -206,8 +218,11 @@ def _compute_days_since_precip(df: pd.DataFrame) -> pd.Series:
             if "timestamp" in group.columns and group["timestamp"].notna().any():
                 ts = group["timestamp"].dropna()
                 window_hours = (ts.max() - ts.min()).total_seconds() / 3600
-                # The entire window is dry → at minimum window_hours/24 days since last rain
-                days_dry = max(window_hours / 24.0, 0.0)
+                # The entire window is dry → at minimum window_hours/24 days
+                # since last rain.  If the window is zero-width (single row),
+                # default to 1.0 — we cannot determine actual drought length
+                # from a single point, so 0.0 would falsely imply recent rain.
+                days_dry = max(window_hours / 24.0, 1.0)
             else:
                 days_dry = 1.0  # Default: assume 1 day if no timestamp
             result.loc[group.index] = days_dry
