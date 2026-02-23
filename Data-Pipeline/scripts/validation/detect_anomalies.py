@@ -264,3 +264,84 @@ def _update_baseline(
         )
     except OSError as e:
         logger.warning(f"Could not write baseline {path}: {e}")
+
+
+# ---------------------------------------------------------------------------
+# CLI entry point — used by dvc repro and for ad-hoc manual runs
+# ---------------------------------------------------------------------------
+
+if __name__ == "__main__":
+    import argparse
+    import logging
+    from datetime import datetime
+
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
+
+    parser = argparse.ArgumentParser(
+        description="Run seasonal anomaly detection on the fused feature dataset."
+    )
+    parser.add_argument(
+        "--input",
+        default="data/processed/fused",
+        help="Path to Parquet file or directory of fused features.",
+    )
+    parser.add_argument(
+        "--baseline-dir",
+        default="data/processed/baselines",
+        help="Directory for baseline JSON files (default: data/processed/baselines).",
+    )
+    parser.add_argument(
+        "--no-update",
+        action="store_true",
+        help="Skip updating baselines after detection (useful for read-only audits).",
+    )
+    parser.add_argument(
+        "--output",
+        default="data/processed/baselines/anomaly_last_run.json",
+        help="Path to write the anomaly run summary JSON.",
+    )
+    args = parser.parse_args()
+
+    import json
+    import pandas as pd
+    from pathlib import Path
+    from scripts.utils.schema_loader import get_registry
+
+    registry = get_registry()
+    input_path = Path(args.input)
+
+    if input_path.is_dir():
+        parts = list(input_path.rglob("*.parquet"))
+        if not parts:
+            logger.error(f"No Parquet files found in {input_path}")
+            raise SystemExit(1)
+        df = pd.concat([pd.read_parquet(p) for p in parts], ignore_index=True)
+    else:
+        df = pd.read_parquet(input_path)
+
+    logger.info(f"Running anomaly detection on {len(df):,} rows")
+
+    anomalies = detect_anomalies(
+        fused_df=df,
+        registry=registry,
+        execution_date=datetime.utcnow(),
+        baseline_dir=Path(args.baseline_dir),
+        update_baseline=not args.no_update,
+    )
+
+    summary = {
+        "run_at": datetime.utcnow().isoformat(),
+        "row_count": len(df),
+        "anomaly_count": len(anomalies),
+        "anomalies": anomalies,
+    }
+
+    output_path = Path(args.output)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(summary, f, indent=2, default=str)
+
+    logger.info(
+        f"Anomaly detection complete: {len(anomalies)} anomalies found. "
+        f"Summary written to {output_path}"
+    )

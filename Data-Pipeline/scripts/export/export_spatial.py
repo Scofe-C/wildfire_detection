@@ -222,3 +222,66 @@ def export_adjacency_matrix(
         f"(nodes={n_cells}, edges={len(rows_coo)})"
     )
     return file_path
+
+
+# ---------------------------------------------------------------------------
+# CLI entry point — used by dvc repro and for ad-hoc manual runs
+# ---------------------------------------------------------------------------
+
+if __name__ == "__main__":
+    import argparse
+    import logging
+    from datetime import datetime
+    from pathlib import Path
+
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
+    log = logging.getLogger(__name__)
+
+    parser = argparse.ArgumentParser(
+        description="Export fused features as spatial grid arrays (.npz) for CNN/GCN models."
+    )
+    parser.add_argument(
+        "--input",
+        default="data/processed/fused",
+        help="Path to Parquet file or directory of fused features.",
+    )
+    parser.add_argument(
+        "--output-dir",
+        default="data/processed/spatial",
+        help="Directory to write .npz output files (default: data/processed/spatial).",
+    )
+    parser.add_argument(
+        "--resolution-km",
+        type=float,
+        default=64.0,
+        help="Grid resolution in km (default: 64).",
+    )
+    parser.add_argument(
+        "--date",
+        default=None,
+        help="Date string for output filenames (e.g. 2026-02-22). Defaults to today.",
+    )
+    args = parser.parse_args()
+
+    import pandas as pd
+
+    input_path = Path(args.input)
+    if input_path.is_dir():
+        parts = list(input_path.rglob("*.parquet"))
+        if not parts:
+            log.error(f"No Parquet files found in {input_path}")
+            raise SystemExit(1)
+        df = pd.concat([pd.read_parquet(p) for p in parts], ignore_index=True)
+    else:
+        df = pd.read_parquet(input_path)
+
+    date_str = args.date or datetime.utcnow().strftime("%Y-%m-%d")
+    output_dir = str(Path(args.output_dir) / f"{int(args.resolution_km)}km")
+
+    log.info(f"Exporting spatial grid: {len(df):,} rows → {output_dir}")
+
+    grid_path = export_spatial_grid(df, output_dir, args.resolution_km, date_str)
+    adj_path = export_adjacency_matrix(df, output_dir, args.resolution_km, date_str)
+
+    log.info(f"Grid: {grid_path}")
+    log.info(f"Adjacency: {adj_path}")

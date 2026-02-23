@@ -124,3 +124,96 @@ def run_validation(
             issues.append(f"{exp} failed column={col} kwargs={kw}")
 
     return passed, {"passed": passed, "issues": issues, "ge_summary": result}
+
+
+# ---------------------------------------------------------------------------
+# CLI entry point — used by dvc repro and for ad-hoc manual runs
+# ---------------------------------------------------------------------------
+
+if __name__ == "__main__":
+    import argparse
+    import json
+    import logging
+    import sys
+    from pathlib import Path
+
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
+    log = logging.getLogger(__name__)
+
+    parser = argparse.ArgumentParser(
+        description="Run Great Expectations schema validation on the fused feature dataset."
+    )
+    parser.add_argument(
+        "--input",
+        default="data/processed/fused",
+        help="Path to Parquet file or directory of fused features.",
+    )
+    parser.add_argument(
+        "--resolution-km",
+        type=int,
+        default=64,
+        help="Grid resolution in km — used for row count validation (default: 64).",
+    )
+    parser.add_argument(
+        "--output-dir",
+        default="data/processed/baselines",
+        help="Directory to write statistics summary JSON (default: data/processed/baselines).",
+    )
+    parser.add_argument(
+        "--no-row-count",
+        action="store_true",
+        help="Disable row count enforcement (useful for partial/test datasets).",
+    )
+    args = parser.parse_args()
+
+    import pandas as pd
+    from scripts.utils.schema_loader import get_registry
+
+    registry = get_registry()
+    input_path = Path(args.input)
+
+    if input_path.is_dir():
+        parts = list(input_path.rglob("*.parquet"))
+        if not parts:
+            log.error(f"No Parquet files found in {input_path}")
+            sys.exit(1)
+        df = pd.concat([pd.read_parquet(p) for p in parts], ignore_index=True)
+    else:
+        df = pd.read_parquet(input_path)
+
+    log.info(f"Validating {len(df):,} rows at resolution {args.resolution_km} km")
+
+    passed, results = run_validation(
+        df=df,
+        registry=registry,
+        resolution_km=args.resolution_km,
+        enforce_row_count=not args.no_row_count,
+    )
+
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Write statistics summary alongside the GE results
+    stats_path = output_dir / "stats_latest.json"
+    summary = {
+        "run_at": __import__("datetime").datetime.utcnow().isoformat(),
+        "row_count": len(df),
+        "resolution_km": args.resolution_km,
+        "passed": passed,
+        "issue_count": len(results.get("issues", [])),
+        "issues": results.get("issues", []),
+        "column_null_rates": {
+            col: float(df[col].isna().mean())
+            for col in df.columns
+        },
+    }
+    with open(stats_path, "w", encoding="utf-8") as f:
+        json.dump(summary, f, indent=2, default=str)
+
+    log.info(f"Validation {'PASSED' if passed else 'FAILED'} — stats written to {stats_path}")
+
+    if not passed:
+        log.warning(f"Issues: {results.get('issues', [])[:5]}")
+        # Non-zero exit so DVC marks the stage as failed, but pipeline continues
+        # (Airflow task uses trigger_rule='all_done' on detect_anomalies)
+        sys.exit(1)

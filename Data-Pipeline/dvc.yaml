@@ -4,7 +4,13 @@
 # Mirrors the Airflow DAG structure so the entire pipeline can be
 # reproduced offline with: dvc repro
 #
-# Each stage corresponds to an Airflow task.
+# Each stage corresponds to an Airflow task (or offline-only analysis).
+# Stage ordering follows the DAG dependency graph:
+#
+#   ingest_firms  ─┐
+#   ingest_weather ┤→ process_* → fuse_features → validate_schema → detect_anomalies
+#                                              └──────────────────→ export_spatial
+#                  historical_backfill → bias_analysis → train_ignition_model
 # =============================================================================
 
 stages:
@@ -41,7 +47,6 @@ stages:
       - data/processed/weather:
           persist: true
 
-
   process_firms:
     cmd: python scripts/processing/process_firms.py
     deps:
@@ -66,17 +71,53 @@ stages:
           persist: true
 
   validate_schema:
-    cmd: python scripts/validation/validate_schema.py
+    cmd: python scripts/validation/validate_schema.py --input data/processed/fused --resolution-km 64 --output-dir data/processed/baselines
     deps:
       - scripts/validation/validate_schema.py
       - scripts/utils/schema_loader.py
+      - configs/schema_config.yaml
       - data/processed/fused
     outs:
       - data/processed/baselines:
           persist: true
 
-  # --- ML Pipeline (Phase 2) ---
+  detect_anomalies:
+    # Runs after validate_schema. DVC infers ordering from the shared dep on
+    # data/processed/fused — no need to list data/processed/baselines as a dep,
+    # which would conflict with validate_schema's ownership of that directory.
+    # The output anomaly_last_run.json sits inside data/processed/baselines but
+    # is declared as a file-level out so DVC does not re-lock the whole directory.
+    cmd: python scripts/validation/detect_anomalies.py --input data/processed/fused --baseline-dir data/processed/baselines --output data/processed/baselines/anomaly_last_run.json
+    deps:
+      - scripts/validation/detect_anomalies.py
+      - scripts/utils/schema_loader.py
+      - configs/schema_config.yaml
+      - data/processed/fused
+    outs:
+      - data/processed/baselines/anomaly_last_run.json:
+          persist: true
+          cache: false
+
+  export_spatial:
+    # Track B: spatial .npz outputs for CNN/GCN model training.
+    # Runs in parallel with detect_anomalies in DVC (both depend on fused only).
+    cmd: python scripts/export/export_spatial.py --input data/processed/fused --output-dir data/processed/spatial --resolution-km 64
+    deps:
+      - scripts/export/export_spatial.py
+      - scripts/utils/grid_utils.py
+      - data/processed/fused
+    outs:
+      - data/processed/spatial:
+          persist: true
+
+  # ---------------------------------------------------------------------------
+  # ML Pipeline — offline stages (do not run on every 6-hour cron cycle)
+  # ---------------------------------------------------------------------------
+
   historical_backfill:
+    # Replays the full pipeline over a historical date range to build a
+    # training-ready dataset. Run once before model training; re-run when
+    # the feature schema changes.
     cmd: python -m scripts.backfill.historical_backfill
     deps:
       - scripts/backfill/historical_backfill.py
@@ -88,10 +129,29 @@ stages:
       - data/processed/backfill:
           persist: true
 
+  bias_analysis:
+    # Offline bias analysis over the backfill dataset.
+    # Re-run whenever the backfill or schema changes.
+    # cache: false so the JSON report is committed directly to Git for review.
+    cmd: python scripts/validation/bias_analysis.py --input data/processed/backfill --output data/processed/baselines/bias_report.json
+    deps:
+      - scripts/validation/bias_analysis.py
+      - scripts/utils/schema_loader.py
+      - configs/schema_config.yaml
+      - data/processed/backfill
+    outs:
+      - data/processed/baselines/bias_report.json:
+          persist: true
+          cache: false
+
   train_ignition_model:
-    cmd: echo "Placeholder — training script to be implemented"
+    # Placeholder — training script to be implemented in Phase 2.
+    # Listed here so the dependency chain (backfill → bias_report → train)
+    # is enforced: model training cannot proceed without a reviewed bias report.
+    cmd: echo "Placeholder — training script to be implemented in Phase 2"
     deps:
       - data/processed/backfill
+      - data/processed/baselines/bias_report.json
       - configs/schema_config.yaml
     outs:
       - models/ignition:

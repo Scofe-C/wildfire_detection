@@ -98,6 +98,9 @@ class TestXComKeyConsistency:
 
     def test_static_path_key_is_consistent(self):
         """check_static_cache and load_static_layers must push under the same key."""
+        import platform
+        if platform.system() == "Windows":
+            pytest.skip("Airflow requires fcntl (Unix-only); run in Docker or CI")
         import inspect
         import dags.wildfire_dag as dag_module
 
@@ -112,6 +115,9 @@ class TestXComKeyConsistency:
 
     def test_fuse_pulls_from_both_static_task_ids(self):
         """Bug 1 fix: fuse_features must pull from both task_ids explicitly."""
+        import platform
+        if platform.system() == "Windows":
+            pytest.skip("Airflow requires fcntl (Unix-only); run in Docker or CI")
         import inspect
         import dags.wildfire_dag as dag_module
 

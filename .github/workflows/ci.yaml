@@ -1,11 +1,29 @@
 # =============================================================================
-# Wildfire MLOps Pipeline - CI/CD
+# Wildfire MLOps Pipeline — CI/CD
 # =============================================================================
-# Runs on every push and pull request:
-#   1. Builds the Docker image (ensures dependency installation works)
-#   2. Validates DAG can be imported without errors (inside Docker)
-#   3. Runs full pytest suite (inside Docker)
-#   4. Checks code style with ruff (inside Docker)
+# Repo layout:
+#   wildfire_detection/              ← git repo root
+#   ├── .github/workflows/ci.yaml   ← THIS FILE
+#   └── Data-Pipeline/               ← project root (all source lives here)
+#       ├── dags/
+#       ├── scripts/
+#       ├── tests/
+#       ├── configs/
+#       ├── docker/Dockerfile
+#       ├── docker-compose.yaml
+#       ├── dvc.yaml
+#       ├── dvc.lock
+#       ├── requirements.txt
+#       └── constraints.txt
+#
+# Steps:
+#   1. Build Docker test image (cached across runs)
+#   2. Validate both DAG imports (parse-time import check)
+#   3. Validate dvc.yaml syntax and dep file references
+#   4. Run full pytest suite with coverage
+#   5. Upload test artifacts (pytest XML + coverage XML)
+#   6. Lint with ruff (E and F rules)
+#   7. Check dependency consistency (critical packages pinned)
 # =============================================================================
 
 name: Pipeline CI
@@ -14,21 +32,40 @@ on:
   push:
     branches: [main, develop]
     paths:
-      - 'wildfire-pipeline/**'
-      - '.github/workflows/ci.yml'
+      # All project source under Data-Pipeline/
+      - 'Data-Pipeline/dags/**'
+      - 'Data-Pipeline/scripts/**'
+      - 'Data-Pipeline/tests/**'
+      - 'Data-Pipeline/configs/**'
+      - 'Data-Pipeline/docker/**'
+      - 'Data-Pipeline/cloud/**'
+      # Root-level project files whose changes must also trigger CI
+      - 'Data-Pipeline/requirements.txt'
+      - 'Data-Pipeline/constraints.txt'
+      - 'Data-Pipeline/dvc.yaml'
+      - 'Data-Pipeline/dvc.lock'
+      - 'Data-Pipeline/docker-compose.yaml'
+      # The CI workflow itself — changes to CI must re-validate
+      - '.github/workflows/ci.yaml'
   pull_request:
     branches: [main, develop]
     paths:
-      - 'wildfire-pipeline/**'
-      - '.github/workflows/ci.yml'
+      - 'Data-Pipeline/dags/**'
+      - 'Data-Pipeline/scripts/**'
+      - 'Data-Pipeline/tests/**'
+      - 'Data-Pipeline/configs/**'
+      - 'Data-Pipeline/docker/**'
+      - 'Data-Pipeline/cloud/**'
+      - 'Data-Pipeline/requirements.txt'
+      - 'Data-Pipeline/constraints.txt'
+      - 'Data-Pipeline/dvc.yaml'
+      - 'Data-Pipeline/dvc.lock'
+      - 'Data-Pipeline/docker-compose.yaml'
+      - '.github/workflows/ci.yaml'
 
 jobs:
   test:
     runs-on: ubuntu-latest
-
-    defaults:
-      run:
-        working-directory: .
 
     steps:
       - uses: actions/checkout@v4
@@ -37,12 +74,13 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       # Build only the 'test' target — no CMD, inherits all deps from airflow-base.
-      # Cache layers across runs using GHA cache to keep build under 2 minutes.
+      # context points to Data-Pipeline/ so COPY instructions in Dockerfile work correctly.
+      # Cache layers across runs to keep build under 2 minutes.
       - name: Build CI test image
         uses: docker/build-push-action@v5
         with:
-          context: wildfire-pipeline
-          file: wildfire-pipeline/docker/Dockerfile
+          context: Data-Pipeline
+          file: Data-Pipeline/docker/Dockerfile
           target: test
           push: false
           load: true
@@ -50,29 +88,68 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # Validates that the DAG file has no import-time errors.
-      # This is the cheapest guard against accidental syntax/import regressions.
-      - name: Validate DAG imports
+      # Validates wildfire_dag.py has no import-time errors.
+      # SequentialExecutor + SQLite is the correct combination for import-only checks:
+      # LocalExecutor is not supported with SQLite in Airflow 2.x.
+      # UNIT_TEST_MODE=true prevents Airflow from connecting to a real metadata DB.
+      - name: Validate wildfire_dag imports
         run: |
           docker run --rm \
             -e AIRFLOW__CORE__LOAD_EXAMPLES=false \
+            -e AIRFLOW__CORE__UNIT_TEST_MODE=true \
+            -e AIRFLOW__CORE__EXECUTOR=SequentialExecutor \
             -e AIRFLOW__DATABASE__SQL_ALCHEMY_CONN="sqlite:////tmp/airflow_test.db" \
-            -e AIRFLOW__CORE__EXECUTOR=LocalExecutor \
             wildfire-pipeline:test \
             python3 dags/wildfire_dag.py
 
-      # Also validate the watchdog sensor DAG
-      - name: Validate watchdog sensor DAG imports
+      - name: Validate watchdog_sensor_dag imports
         run: |
           docker run --rm \
             -e AIRFLOW__CORE__LOAD_EXAMPLES=false \
+            -e AIRFLOW__CORE__UNIT_TEST_MODE=true \
+            -e AIRFLOW__CORE__EXECUTOR=SequentialExecutor \
             -e AIRFLOW__DATABASE__SQL_ALCHEMY_CONN="sqlite:////tmp/airflow_test.db" \
-            -e AIRFLOW__CORE__EXECUTOR=LocalExecutor \
             wildfire-pipeline:test \
             python3 dags/watchdog_sensor_dag.py
 
-      # Full pytest suite. Tests are designed to run without GCS or API keys.
-      # Any test that would require external I/O uses mocks.
+      # Validate dvc.yaml syntax and that every script dep file exists in the image.
+      # Catches YAML errors and missing references before dvc repro is run.
+      # Note: data/ paths are DVC-tracked and absent from the image — those are skipped.
+      - name: Validate dvc.yaml
+        run: |
+          docker run --rm \
+            wildfire-pipeline:test \
+            python3 -c "
+          import yaml, os, sys
+
+          with open('dvc.yaml') as f:
+              dag = yaml.safe_load(f)
+
+          stages = dag.get('stages', {})
+          if not stages:
+              print('ERROR: dvc.yaml has no stages', file=sys.stderr)
+              sys.exit(1)
+
+          missing = []
+          for stage_name, stage in stages.items():
+              for dep in stage.get('deps', []):
+                  # Skip DVC-tracked data dirs — not present in the CI image
+                  if dep.startswith('data/') or dep.startswith('models/'):
+                      continue
+                  if not os.path.exists(dep):
+                      missing.append(f'{stage_name}: {dep}')
+
+          if missing:
+              print('ERROR: dep files referenced in dvc.yaml are missing:', file=sys.stderr)
+              for m in missing:
+                  print(f'  {m}', file=sys.stderr)
+              sys.exit(1)
+
+          print(f'dvc.yaml OK — {len(stages)} stages, all dep files present')
+          "
+
+      # Full pytest suite with coverage.
+      # Tests run without GCS or real API keys — all external I/O is mocked.
       - name: Run pytest suite
         run: |
           docker run --rm \
@@ -80,11 +157,48 @@ jobs:
             -e FIRMS_MAP_KEY=test-key \
             wildfire-pipeline:test \
             pytest tests/ -v --tb=short --no-header \
-              --ignore=tests/test_ingestion/test_firms_integration.py
+              --junitxml=/tmp/pytest-results.xml \
+              --cov=scripts \
+              --cov-report=xml:/tmp/coverage.xml \
+              --cov-report=term-missing
 
-      # Ruff lint — blocks on any error (E/F rules).
-      # W and C rules emit warnings only (--exit-zero for those categories
-      # is controlled by ruff.toml if present, otherwise default config).
+      # Run a named container so we can copy artifacts out after it exits.
+      # `if: always()` ensures artifacts are captured even on test failure.
+      - name: Extract test artifacts from container
+        if: always()
+        run: |
+          docker run --name ci-artifact-run \
+            -e GCS_BUCKET_NAME=test-bucket \
+            -e FIRMS_MAP_KEY=test-key \
+            wildfire-pipeline:test \
+            pytest tests/ -v --tb=short --no-header \
+              --junitxml=/tmp/pytest-results.xml \
+              --cov=scripts \
+              --cov-report=xml:/tmp/coverage.xml \
+            || true
+          docker cp ci-artifact-run:/tmp/pytest-results.xml ./pytest-results.xml 2>/dev/null || true
+          docker cp ci-artifact-run:/tmp/coverage.xml ./coverage.xml 2>/dev/null || true
+          docker rm ci-artifact-run || true
+
+      - name: Upload pytest results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pytest-results
+          path: pytest-results.xml
+          retention-days: 14
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-report
+          path: coverage.xml
+          retention-days: 14
+
+      # Ruff lint — blocks on any E or F error.
+      # E501 (line too long) suppressed: agreed team convention.
+      # --output-format=github annotates PR diffs with inline error markers.
       - name: Lint with ruff
         run: |
           docker run --rm \
@@ -94,27 +208,46 @@ jobs:
               --select=E,F \
               --ignore=E501
 
-      # Check that constraints.txt and requirements.txt are in sync
-      # (no package in requirements.txt is missing from constraints.txt).
+      # Verify critical packages are pinned in constraints.txt.
+      # These four packages have cross-machine compatibility requirements:
+      #   pyarrow       — Parquet encoding changed between major versions
+      #   great-expectations — API changed completely at v1.0
+      #   dvc           — protocol changes break dvc.lock compatibility
+      #   ruff          — lint rules change between versions
       - name: Check dependency consistency
         run: |
           docker run --rm \
             wildfire-pipeline:test \
             python3 -c "
-          import re
-          req = open('requirements.txt').read()
-          con = open('constraints.txt').read()
-          req_pkgs = {
-              line.split('==')[0].split('>=')[0].split('[')[0].strip().lower()
-              for line in req.splitlines()
-              if line.strip() and not line.startswith('#')
-          }
-          con_pkgs = {
-              line.split('==')[0].split('>=')[0].strip().lower()
-              for line in con.splitlines()
-              if line.strip() and not line.startswith('#')
-          }
-          # pyarrow must always be pinned in constraints
-          assert 'pyarrow' in con_pkgs, 'FAIL: pyarrow must be pinned in constraints.txt'
-          print('Dependency check passed.')
+          import sys, re
+
+          req_lines = [
+              l.strip() for l in open('requirements.txt')
+              if l.strip() and not l.startswith('#')
+          ]
+          con_lines = [
+              l.strip() for l in open('constraints.txt')
+              if l.strip() and not l.startswith('#')
+          ]
+
+          def pkg_name(line):
+              return re.split(r'[=><\[!]', line)[0].strip().lower().replace('-', '_')
+
+          con_pkgs = {pkg_name(l) for l in con_lines}
+
+          must_pin = [
+              'pyarrow',
+              'great_expectations',
+              'dvc',
+              'ruff',
+          ]
+
+          failures = [pkg for pkg in must_pin if pkg not in con_pkgs]
+
+          if failures:
+              for pkg in failures:
+                  print(f'ERROR: {pkg} must be pinned in constraints.txt', file=sys.stderr)
+              sys.exit(1)
+
+          print(f'Dependency check passed. Verified pins: {must_pin}')
           "
