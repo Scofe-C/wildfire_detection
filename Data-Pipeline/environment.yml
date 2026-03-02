@@ -1,0 +1,80 @@
+name: wildfire
+channels:
+  - conda-forge
+  - defaults
+
+dependencies:
+  # Python version — must match Docker image (python 3.10 in Dockerfile)
+  - python=3.10
+
+  # Core data stack (conda-forge builds are faster + include C extensions)
+  - pandas>=2.2.0,<3.0
+  - numpy>=1.26.3,<2.0
+  - pyarrow=15.0.0        # HARD PIN — Parquet encoding compatibility (matches constraints.txt)
+  - packaging
+
+  # Geo stack — use conda-forge for binary wheels (avoids GDAL build issues)
+  - geopandas
+  - shapely
+  - pyproj
+  - rasterio
+  - fiona
+  - h3-py                 # h3 hexagonal grid library
+
+  # YAML / config
+  - pyyaml
+
+  # HTTP
+  - requests
+
+  # Testing
+  - pytest>=7.0
+  - pytest-cov
+  - pytest-mock
+
+  # Code quality
+  - pip  # needed for packages not on conda-forge
+
+  - pip:
+    # Airflow — MUST match requirements.txt and Docker image version
+    - apache-airflow[postgres]==2.8.1
+
+    # Data quality — pinned per constraints.txt
+    - great-expectations<1.0
+
+    # MLOps / Versioning — pinned per constraints.txt
+    - dvc==3.38.1
+    - dvc-gs==3.0.1
+
+    # GCP
+    - google-cloud-storage==2.14.0
+    - google-auth==2.27.0
+
+    # HRRR weather (emergency mode only)
+    - herbie-data
+    - cfgrib>=0.9.10
+    - xarray
+    - scipy
+
+    # Geo extras not on conda-forge
+    - rasterstats
+
+    # Logging
+    - python-json-logger
+
+    # Database
+    - psycopg2-binary
+
+    # ML
+    - xgboost
+    - lightgbm
+    - scikit-learn
+    - shap>=0.45,<0.50
+
+    # Code quality
+    - ruff==0.2.0
+
+    # DVC GCS remote
+    - google-genai
+    - fastapi
+    - uvicorn[standard]

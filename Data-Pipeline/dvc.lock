@@ -1,0 +1,263 @@
+schema: '2.0'
+stages:
+  ingest_firms:
+    cmd: python scripts/ingestion/ingest_firms.py
+    deps:
+    - path: configs/schema_config.yaml
+      hash: md5
+      md5: e04cbd7afd99434b5f3956fbae7d760c
+      size: 13810
+    - path: scripts/ingestion/ingest_firms.py
+      hash: md5
+      md5: 3cc3851650ab7e91f28e21eb1521b0cd
+      size: 7953
+    - path: scripts/utils/rate_limiter.py
+      hash: md5
+      md5: 996cd11e45903f39fbcae2b96b36ceec
+      size: 6073
+    - path: scripts/utils/schema_loader.py
+      hash: md5
+      md5: 911cca78d53603af6b97bc5887074a4a
+      size: 10747
+    outs:
+    - path: data/raw/firms
+      hash: md5
+      md5: 19223e90d03fd62fcddafa0d3280c42f.dir
+      size: 772
+      nfiles: 6
+  ingest_weather:
+    cmd: python scripts/ingestion/ingest_weather.py
+    deps:
+    - path: configs/schema_config.yaml
+      hash: md5
+      md5: e04cbd7afd99434b5f3956fbae7d760c
+      size: 13810
+    - path: scripts/ingestion/ingest_weather.py
+      hash: md5
+      md5: df38029472c881e15c394b0209737b49
+      size: 15694
+    - path: scripts/utils/grid_utils.py
+      hash: md5
+      md5: 2f2486c4b559b020992fe6cfaedec742
+      size: 8550
+    - path: scripts/utils/rate_limiter.py
+      hash: md5
+      md5: 996cd11e45903f39fbcae2b96b36ceec
+      size: 6073
+    - path: scripts/utils/schema_loader.py
+      hash: md5
+      md5: 911cca78d53603af6b97bc5887074a4a
+      size: 10747
+    outs:
+    - path: data/raw/weather
+      hash: md5
+      md5: e8e377034f78a5523d5a9e3b3efa306e.dir
+      size: 390338
+      nfiles: 6
+  process_weather:
+    cmd: python scripts/processing/process_weather.py
+    deps:
+    - path: data/raw/weather
+      hash: md5
+      md5: e8e377034f78a5523d5a9e3b3efa306e.dir
+      size: 390338
+      nfiles: 6
+    - path: scripts/processing/process_weather.py
+      hash: md5
+      md5: 9823c07763b719be8da651b3cba37911
+      size: 2992
+    - path: scripts/utils/grid_utils.py
+      hash: md5
+      md5: 2f2486c4b559b020992fe6cfaedec742
+      size: 8550
+    outs:
+    - path: data/processed/weather
+      hash: md5
+      md5: 44d4a92509c5f197e10399b67ce0eedf.dir
+      size: 8454
+      nfiles: 1
+  process_firms:
+    cmd: python scripts/processing/process_firms.py
+    deps:
+    - path: data/raw/firms
+      hash: md5
+      md5: 19223e90d03fd62fcddafa0d3280c42f.dir
+      size: 772
+      nfiles: 6
+    - path: scripts/processing/process_firms.py
+      hash: md5
+      md5: 6efb0d3ce367ac766519f3a7436d8146
+      size: 7486
+    - path: scripts/utils/grid_utils.py
+      hash: md5
+      md5: 2f2486c4b559b020992fe6cfaedec742
+      size: 8550
+    outs:
+    - path: data/processed/firms
+      hash: md5
+      md5: f80509fb38734b6d5210088d48bee2a7.dir
+      size: 4197
+      nfiles: 1
+  fuse_features:
+    cmd: python scripts/fusion/fuse_features.py
+    deps:
+    - path: data/processed/firms
+      hash: md5
+      md5: f80509fb38734b6d5210088d48bee2a7.dir
+      size: 4197
+      nfiles: 1
+    - path: data/processed/weather
+      hash: md5
+      md5: 44d4a92509c5f197e10399b67ce0eedf.dir
+      size: 8454
+      nfiles: 1
+    - path: data/static
+      hash: md5
+      md5: 4925385623adf1586202cc57cbddccf7.dir
+      size: 7467
+      nfiles: 1
+    - path: scripts/fusion/fuse_features.py
+      hash: md5
+      md5: d8df6fbf22e078a050d34d6e18b7de75
+      size: 6551
+    - path: scripts/utils/grid_utils.py
+      hash: md5
+      md5: 2f2486c4b559b020992fe6cfaedec742
+      size: 8550
+    - path: scripts/utils/schema_loader.py
+      hash: md5
+      md5: 911cca78d53603af6b97bc5887074a4a
+      size: 10747
+    outs:
+    - path: data/processed/fused
+      hash: md5
+      md5: 5215938bf1d35a4ff6104252b3ccecf7.dir
+      size: 22054
+      nfiles: 1
+  validate_schema:
+    cmd: python scripts/validation/validate_schema.py --input data/processed/fused
+      --resolution-km 64 --output-dir data/processed/baselines
+    deps:
+    - path: scripts/validation/validate_schema.py
+      hash: md5
+      md5: a014207fd096db343bbb9f8cda4bffa2
+      size: 7397
+    - path: scripts/utils/schema_loader.py
+      hash: md5
+      md5: 34ed9698e0d7771e6234333b2b1aff79
+      size: 10884
+    - path: data/processed/fused
+      hash: md5
+      md5: 5215938bf1d35a4ff6104252b3ccecf7.dir
+      size: 22054
+      nfiles: 1
+    outs:
+    - path: data/processed/baselines
+      hash: md5
+      md5: 0e33be99df3997bca63cca0f823f47bf.dir
+      size: 21849
+      nfiles: 3
+  detect_anomalies:
+    cmd: python scripts/validation/detect_anomalies.py --input data/processed/fused
+      --baseline-dir data/processed/baselines --output data/processed/baselines/anomaly_last_run.json
+    deps:
+    - path: scripts/validation/detect_anomalies.py
+      hash: md5
+      md5: 73d133131e588ecdb60d3992bdb830f3
+      size: 12254
+    - path: scripts/utils/schema_loader.py
+      hash: md5
+      md5: 34ed9698e0d7771e6234333b2b1aff79
+      size: 10884
+    - path: configs/schema_config.yaml
+      hash: md5
+      md5: 5d7cdfc6be6145b4c771b9c4680f8bf8
+      size: 25384
+    - path: data/processed/fused
+      hash: md5
+      md5: 5215938bf1d35a4ff6104252b3ccecf7.dir
+      size: 22054
+      nfiles: 1
+    outs:
+    - path: data/processed/baselines/anomaly_last_run.json
+      hash: md5
+      md5: 5e0548684e842a802600d5886e5390b
+      size: 53
+  export_spatial:
+    cmd: python scripts/export/export_spatial.py --input data/processed/fused --output-dir
+      data/processed/spatial --resolution-km 64
+    deps:
+    - path: scripts/export/export_spatial.py
+      hash: md5
+      md5: 28d664bbcbc256b89f742fdecd628db5
+      size: 9197
+    - path: scripts/utils/grid_utils.py
+      hash: md5
+      md5: 2f2486c4b559b020992fe6cfaedec742
+      size: 8550
+    - path: data/processed/fused
+      hash: md5
+      md5: 5215938bf1d35a4ff6104252b3ccecf7.dir
+      size: 22054
+      nfiles: 1
+    outs:
+    - path: data/processed/spatial
+      hash: md5
+      md5: 809f7aac4f81b1d533da101c14aba746.dir
+      size: 791
+      nfiles: 2
+  historical_backfill:
+    cmd: python -m scripts.backfill.historical_backfill
+    deps:
+    - path: scripts/backfill/historical_backfill.py
+      hash: md5
+      md5: 623649db80fabd498f474f5f499d1f36
+      size: 7398
+    - path: scripts/fusion/fuse_features.py
+      hash: md5
+      md5: d8df6fbf22e078a050d34d6e18b7de75
+      size: 6551
+    - path: scripts/utils/grid_utils.py
+      hash: md5
+      md5: 2f2486c4b559b020992fe6cfaedec742
+      size: 8550
+    - path: scripts/utils/schema_loader.py
+      hash: md5
+      md5: 34ed9698e0d7771e6234333b2b1aff79
+      size: 10884
+    - path: configs/schema_config.yaml
+      hash: md5
+      md5: 5d7cdfc6be6145b4c771b9c4680f8bf8
+      size: 25384
+    outs:
+    - path: data/processed/backfill
+      hash: md5
+      md5: 4b74f29987163a25bbcbbb2799234b37.dir
+      size: 22435
+      nfiles: 3
+  bias_analysis:
+    cmd: python scripts/validation/bias_analysis.py --input data/processed/backfill
+      --output data/processed/baselines/bias_report.json
+    deps:
+    - path: scripts/validation/bias_analysis.py
+      hash: md5
+      md5: 22327aaacf8cb19e5d3749cab5806725
+      size: 22737
+    - path: scripts/utils/schema_loader.py
+      hash: md5
+      md5: 34ed9698e0d7771e6234333b2b1aff79
+      size: 10884
+    - path: configs/schema_config.yaml
+      hash: md5
+      md5: 5d7cdfc6be6145b4c771b9c4680f8bf8
+      size: 25384
+    - path: data/processed/backfill
+      hash: md5
+      md5: 4b74f29987163a25bbcbbb2799234b37.dir
+      size: 22435
+      nfiles: 3
+    outs:
+    - path: data/processed/baselines/bias_report.json
+      hash: md5
+      md5: fdc128eacccd2abcb8df612fc3a6c006
+      size: 196

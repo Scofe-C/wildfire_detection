@@ -1,9 +1,0 @@
-# Enforce LF line endings for consistency across Windows/Linux
-* text=auto eol=lf
-
-# Explicitly ensure these file types use LF
-*.py text eol=lf
-*.sh text eol=lf
-*.yaml text eol=lf
-*.yml text eol=lf
-Dockerfile text eol=lf

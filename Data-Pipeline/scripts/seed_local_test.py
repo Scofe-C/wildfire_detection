@@ -205,7 +205,7 @@ def create_dummy_gcp_key():
         print(f"  gcp-key.json: already exists, skipping (remove manually to regenerate)")
         return output_path
 
-    with open(output_path, "w") as f:
+    with open(output_path, "w",encoding="utf-8") as f:
         json.dump(dummy_key, f, indent=2)
     print(f"  gcp-key.json: {output_path} (dummy — local testing only)")
     return output_path
@@ -224,7 +224,7 @@ GCS_BUCKET_NAME=wildfire-mlops-dev
 GCP_KEY_PATH=./gcp-key.json
 SLACK_WEBHOOK_URL=
 """
-    with open(env_path, "w") as f:
+    with open(env_path, "w",encoding="utf-8") as f:
         f.write(env_content)
     print(f"  .env: {env_path} (dummy values for local testing)")
     return env_path

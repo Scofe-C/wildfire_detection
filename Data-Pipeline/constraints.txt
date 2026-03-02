@@ -1,0 +1,28 @@
+# =============================================================================
+# Wildfire MLOps — Dependency Constraints
+# =============================================================================
+# Use with: pip install -r requirements.txt -c constraints.txt
+#
+# These bound the packages that affect data format compatibility across machines.
+# pyarrow is HARD PINNED: Parquet dictionary encoding changed between major
+# versions — a file written by 15.x cannot always be read by 14.x.
+# All team members (Windows 11, Windows 10, macOS) must use the same pyarrow.
+#
+# Airflow's own constraint file (per Python version) is applied separately:
+#   https://raw.githubusercontent.com/apache/airflow/constraints-2.8.1/
+#     constraints-3.11.txt
+# Docker image uses Python 3.11 — see docker/Dockerfile.
+# =============================================================================
+
+# Critical: Parquet schema compat — pin across all environments
+pyarrow==15.0.0
+
+# Bounds for known-safe versions (can be loosened after testing)
+numpy>=1.26.3,<2.0
+pandas>=2.2.0,<3.0
+great-expectations<1.0
+dvc==3.38.1
+dvc-gs==3.0.1
+google-cloud-storage==2.14.0
+google-auth==2.27.0
+ruff==0.2.0

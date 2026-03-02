@@ -1,6 +1,4 @@
 [core]
-    remote = gcs_remote
-    autostage = true
-['remote "gcs_remote"']
-    url = gs://my-wildfire-1/dvc-store
-    credentialpath = gcp-key.json
+    remote = gcsremote
+['remote "gcsremote"']
+    url = gs://my-wildfire-1

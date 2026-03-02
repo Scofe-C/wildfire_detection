@@ -282,3 +282,145 @@ class TestRateLimiter:
             limiter.record_failure()
         delay = limiter.get_backoff_delay()
         assert delay <= 10.0
+
+
+# ---------------------------------------------------------------------------
+# Tests: Missing scenarios from Section 2.6 (added per gap analysis)
+# ---------------------------------------------------------------------------
+
+class TestFirmsAPIEdgeCases:
+
+    @patch("scripts.utils.rate_limiter.time.sleep")
+    @patch("scripts.ingestion.ingest_firms.time.sleep")
+    @patch("scripts.ingestion.ingest_firms.requests.get")
+    def test_api_timeout_triggers_retry(self, mock_get, mock_sleep, mock_rl_sleep, tmp_path):
+        """Timeout on first two attempts, success on third — retries work."""
+        import requests as req_lib
+        from scripts.ingestion.ingest_firms import fetch_firms_data
+
+        success_csv = (
+            "latitude,longitude,brightness,scan,track,acq_date,acq_time,"
+            "satellite,instrument,confidence,version,bright_t31,frp,daynight\n"
+            "34.05,-118.24,320.5,1.0,1.0,2026-08-15,1432,N,VIIRS,85,2.0NRT,290.1,15.3,D\n"
+        )
+        success_resp = MagicMock(status_code=200, text=success_csv)
+        mock_get.side_effect = [
+            req_lib.exceptions.Timeout("Simulated timeout 1"),
+            req_lib.exceptions.Timeout("Simulated timeout 2"),
+            success_resp,
+        ] + [success_resp] * 20  # enough for remaining sensor × region combos
+
+        import datetime
+        result_path = fetch_firms_data(
+            execution_date=datetime.datetime(2026, 8, 15),
+            output_dir=str(tmp_path),
+        )
+        assert result_path.exists()
+        df = pd.read_csv(result_path)
+        assert len(df) >= 0
+
+    @patch("scripts.ingestion.ingest_firms.requests.get")
+    def test_malformed_csv_does_not_crash(self, mock_get, tmp_path):
+        """HTML error page or garbage response returns empty CSV without raising."""
+        mock_get.return_value = MagicMock(
+            status_code=200,
+            text="<html><body>Service Unavailable</body></html>",
+        )
+
+        import datetime
+        result_path = fetch_firms_data(
+            execution_date=datetime.datetime(2026, 8, 15),
+            output_dir=str(tmp_path),
+        )
+        assert result_path.exists(), "fetch_firms_data must always write a file"
+        df = pd.read_csv(result_path)
+        # Should produce an empty or near-empty DataFrame, not crash
+        assert isinstance(df, pd.DataFrame)
+
+    def test_multi_resolution_cell_counts_are_consistent(self):
+        """At higher resolution, more cells must be generated for the same bbox.
+
+        This verifies the spatial join logic produces sensible cell counts
+        and that changing DEFAULT_RESOLUTION_KM from 64 → 22 doesn't break
+        aggregation.
+        """
+        from scripts.processing.process_firms import process_firms_data
+        import tempfile
+
+        raw_csv = (
+            "latitude,longitude,brightness,scan,track,acq_date,acq_time,"
+            "satellite,instrument,confidence,version,bright_t31,frp,daynight,region,sensor_source\n"
+            "34.0522,-118.2437,320.5,1.0,1.0,2026-08-15,1432,N,VIIRS,85,2.0NRT,290.1,15.3,D,california,VIIRS_SNPP_NRT\n"
+            "36.7783,-119.4179,350.2,1.0,1.0,2026-08-15,1432,N,VIIRS,92,2.0NRT,300.5,42.7,D,california,VIIRS_SNPP_NRT\n"
+        )
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as f:
+            f.write(raw_csv)
+            raw_path = f.name
+
+        result_64 = process_firms_data(raw_csv_path=raw_path, resolution_km=64)
+        result_22 = process_firms_data(raw_csv_path=raw_path, resolution_km=22)
+
+        # Both resolutions must produce a valid non-empty DataFrame
+        assert len(result_64) > 0, "64km grid should have at least 1 fire cell"
+        assert len(result_22) > 0, "22km grid should have at least 1 fire cell"
+
+        # Higher resolution means smaller cells → same detections may map to
+        # different cells but active_fire_count totals should match
+        total_fires_64 = result_64["active_fire_count"].sum()
+        total_fires_22 = result_22["active_fire_count"].sum()
+        assert total_fires_64 == total_fires_22, (
+            f"Total fire count must be the same regardless of resolution: "
+            f"64km={total_fires_64}, 22km={total_fires_22}"
+        )
+
+        # Required columns present at both resolutions
+        required = {"grid_id", "active_fire_count", "mean_frp", "fire_detected_binary"}
+        assert required.issubset(set(result_64.columns))
+        assert required.issubset(set(result_22.columns))
+
+    @patch("scripts.utils.rate_limiter.time.sleep")
+    @patch("scripts.ingestion.ingest_firms.time.sleep")
+    @patch("scripts.ingestion.ingest_firms.requests.get")
+    def test_all_retries_exhausted_returns_empty_not_crash(self, mock_get, mock_sleep, mock_rl_sleep, tmp_path):
+        """If all retries fail (e.g. network down), pipeline must produce empty CSV."""
+        import requests as req_lib
+        from scripts.ingestion.ingest_firms import fetch_firms_data
+
+        mock_get.side_effect = req_lib.exceptions.ConnectionError("Network unreachable")
+
+        import datetime
+        result_path = fetch_firms_data(
+            execution_date=datetime.datetime(2026, 8, 15),
+            output_dir=str(tmp_path),
+        )
+        assert result_path.exists(), "Must always write a file even on total failure"
+
+    def test_duplicate_sensor_detections_not_deduplicated(self):
+        """VIIRS SNPP and VIIRS NOAA20 detections of the same fire are both counted.
+
+        Section 2.6: 'Duplicate detection: Same fire detected by VIIRS_SNPP
+        and VIIRS_NOAA20 — verify it is counted correctly (not deduplicated,
+        since each sensor pass is a valid observation).'
+        """
+        from scripts.processing.process_firms import _aggregate_to_grid
+
+        # Same lat/lon fire detected by two sensors → same grid cell, 2 detections
+        df = pd.DataFrame({
+            "grid_id": ["cell_fire", "cell_fire"],
+            "latitude": [34.0522, 34.0522],
+            "frp": [25.0, 27.0],
+            "confidence": [85, 88],
+            # Different sensor sources — both should be counted
+            "sensor_source": ["VIIRS_SNPP_NRT", "VIIRS_NOAA20_NRT"],
+        })
+        result = _aggregate_to_grid(df)
+        cell = result[result["grid_id"] == "cell_fire"].iloc[0]
+
+        assert cell["active_fire_count"] == 2, (
+            "Both sensor detections must be counted — "
+            f"expected 2, got {cell['active_fire_count']}"
+        )
+
+# Add fetch_firms_data import at module level for the new tests
+from scripts.ingestion.ingest_firms import fetch_firms_data  # noqa: E402

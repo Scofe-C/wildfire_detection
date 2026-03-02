@@ -46,7 +46,7 @@ def load_config(config_path: Optional[str] = None) -> dict:
             f"Schema config not found at {path}. "
             f"Ensure configs/schema_config.yaml exists."
         )
-    with open(path, "r") as f:
+    with open(path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 
@@ -71,6 +71,11 @@ class FeatureRegistry:
         self._anomaly = self._config.get("anomaly_detection", {})
         self._validation = self._config.get("validation", {})
         self._storage = self._config.get("storage", {})
+
+    @property
+    def config(self) -> dict:
+        """Return the full raw config dict."""
+        return self._config
 
     # --- Feature Queries ---
 
