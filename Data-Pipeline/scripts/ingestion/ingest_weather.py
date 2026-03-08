@@ -8,6 +8,20 @@ Phase 2 MVP notes:
 - We still output a stable schema including fire_weather_index (as None).
 - Always writes a CSV even if all API calls fail (empty but with headers).
 
+Fixes applied vs previous version:
+  1. Open-Meteo multi-location params now passed as lists (not CSV strings),
+     so requests encodes them as repeated keys: latitude=A&latitude=B&...
+     instead of latitude=A%2CB%2C... which caused persistent 429s.
+  2. limiter.record_failure() is now called BEFORE get_backoff_delay() so
+     the sleep duration reflects the current (incremented) failure count.
+  3. HRRR branch now logs trigger_source and fire_cells at entry so silent
+     skip is immediately visible in Airflow logs.
+  4. Watchdog path no longer fetches the full background region grid.
+     On emergency/active triggers only focal + detection-zone ring cells
+     are fetched via Open-Meteo as background (not all ~3000+ region cells).
+  5. OPEN_METEO_MAX_LOCATIONS raised to 300 (API supports up to 1000) to
+     reduce round-trips.
+
 Owner: Person B
 Dependencies: requests, pandas, numpy
 """
@@ -26,7 +40,10 @@ from scripts.utils.schema_loader import get_registry
 
 logger = logging.getLogger(__name__)
 
-# Open-Meteo hourly variables
+# ---------------------------------------------------------------------------
+# Open-Meteo variable lists
+# ---------------------------------------------------------------------------
+
 OPEN_METEO_HOURLY_PARAMS: list[str] = [
     "temperature_2m",
     "relative_humidity_2m",
@@ -37,60 +54,86 @@ OPEN_METEO_HOURLY_PARAMS: list[str] = [
     "vapor_pressure_deficit",
 ]
 
-# Phase2 MVP: Do NOT request daily vars (avoid unsupported "fire_weather_index_max")
+# Phase 2 MVP: daily vars disabled (avoid unsupported "fire_weather_index_max")
 OPEN_METEO_DAILY_PARAMS: list[str] = []
 
-# Maximum coordinates per Open-Meteo request
-OPEN_METEO_MAX_LOCATIONS = 50
+# Open-Meteo supports up to 1000 locations per request.
+# 300 is a safe ceiling that keeps URL length well under limits.
+OPEN_METEO_MAX_LOCATIONS = 300
+
+# Expected output schema columns (in order)
+_SCHEMA_COLS = [
+    "grid_id",
+    "timestamp",
+    "temperature_2m",
+    "relative_humidity_2m",
+    "wind_speed_10m",
+    "wind_direction_10m",
+    "precipitation",
+    "soil_moisture_0_to_7cm",
+    "vpd",
+    "fire_weather_index",
+    "data_quality_flag",
+]
 
 
-from datetime import datetime, timezone
-import pandas as pd
+# ---------------------------------------------------------------------------
+# Datetime helpers
+# ---------------------------------------------------------------------------
 
 def _to_utc_aware(dt) -> datetime:
-    """Force any Airflow/Pendulum/Proxy datetime into real UTC-aware datetime."""
-    
+    """Coerce any datetime-like (including Airflow Proxy / Pendulum) to a
+    real UTC-aware :class:`datetime.datetime`.
+
+    Strategy: convert to string first — the safest universal path — then
+    let pandas parse it and attach UTC.
+    """
     if dt is None:
         raise ValueError("Datetime cannot be None")
 
-    # 🔥 FIX: unwrap Airflow Proxy objects
+    # Unwrap Airflow lazy-proxy objects (present in Airflow ≥2.3 task context)
     if hasattr(dt, "__wrapped__"):
         dt = dt.__wrapped__
 
-    # Convert to string first (safest way)
-    dt = str(dt)
-
-    ts = pd.to_datetime(dt, utc=True)
-
+    ts = pd.to_datetime(str(dt), utc=True)
     return ts.to_pydatetime()
 
 
+# ---------------------------------------------------------------------------
+# Empty-CSV helper
+# ---------------------------------------------------------------------------
 
-
-def _write_empty_weather_csv(output_dir: Path, execution_date: datetime, *, reason: str) -> Path:
+def _write_empty_weather_csv(
+    output_dir: Path, execution_date: datetime, *, reason: str
+) -> Path:
+    """Write an empty CSV with the canonical schema and return its path."""
     output_dir.mkdir(parents=True, exist_ok=True)
     execution_date = _to_utc_aware(execution_date)
 
     date_str = execution_date.strftime("%Y%m%d_%H%M%S")
     out = output_dir / f"weather_empty_{date_str}.csv"
 
-    df = pd.DataFrame(columns=[
-        "grid_id",
-        "timestamp",
-        "temperature_2m",
-        "relative_humidity_2m",
-        "wind_speed_10m",
-        "wind_direction_10m",
-        "precipitation",
-        "soil_moisture_0_to_7cm",
-        "vpd",
-        "fire_weather_index",
-        "data_quality_flag",
-    ])
-    df.to_csv(out, index=False)
-    logger.warning(f"{reason} — wrote empty weather CSV: {out}")
+    pd.DataFrame(columns=_SCHEMA_COLS).to_csv(out, index=False)
+    logger.warning("%s — wrote empty weather CSV: %s", reason, out)
     return out
 
+
+# ---------------------------------------------------------------------------
+# Schema enforcement helper
+# ---------------------------------------------------------------------------
+
+def _ensure_schema(df: pd.DataFrame) -> pd.DataFrame:
+    """Add any missing schema columns as None and normalise timestamp dtype."""
+    for col in _SCHEMA_COLS:
+        if col not in df.columns:
+            df[col] = None
+    df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+    return df
+
+
+# ---------------------------------------------------------------------------
+# Public entry point
+# ---------------------------------------------------------------------------
 
 def fetch_weather_data(
     grid_centroids: pd.DataFrame,
@@ -104,52 +147,100 @@ def fetch_weather_data(
 ) -> Path:
     """Fetch weather data for all grid cell centroids.
 
-    On emergency/active watchdog triggers, fetches HRRR (15-min cycle,
-    3 km resolution) for focal cells around the confirmed fire, then merges
-    with Open-Meteo for the remaining background grid cells.
-    On cron triggers, uses Open-Meteo only (unchanged behaviour).
+    On emergency/active watchdog triggers, attempts HRRR (15-min cycle,
+    3 km resolution) for the focal grid around confirmed fire cells, then
+    fills *only the focal + detection-zone ring* with Open-Meteo if HRRR
+    fails.  The full background region grid is intentionally NOT re-fetched
+    on watchdog runs (fuse_features forward-fills from the last cron run).
+
+    On cron triggers uses Open-Meteo for all region cells (unchanged).
 
     Args:
-        grid_centroids:  DataFrame with grid_id, latitude, longitude.
+        grid_centroids:  DataFrame with columns grid_id, latitude, longitude.
         execution_date:  Airflow execution_date (UTC).
-        lookback_hours:  Weather lookback window. 24h for cron; 2h for watchdog.
-        output_dir:      Output directory for raw CSV.
-        config_path:     Optional schema config path override.
-        trigger_source:  DAG trigger source. If 'watchdog_emergency' or
-                         'watchdog_active', HRRR is attempted for focal cells.
-        fire_cells:      H3 cell IDs confirmed by the watchdog (used to build
-                         the focal grid for HRRR extraction).
-        h3_ring_max:     Focal grid outer ring (passed from DAG params).
+        lookback_hours:  Weather lookback window (24 h cron / 2 h watchdog).
+        output_dir:      Directory for raw CSV output.
+        config_path:     Optional schema-registry config path override.
+        trigger_source:  One of "cron", "watchdog_active", "watchdog_emergency".
+        fire_cells:      H3 cell IDs confirmed by the watchdog.
+        h3_ring_max:     Focal grid outer ring radius (from DAG params).
 
     Returns:
-        Path to raw weather CSV.
+        Path to the written raw weather CSV.
 
     Guarantees:
-        - Always writes a CSV file (empty w/ headers if needed).
-        - Output includes grid_id, timestamp, data_quality_flag columns.
+        - Always writes a CSV (empty with headers if everything fails).
+        - Output always contains grid_id, timestamp, data_quality_flag.
     """
+    # ------------------------------------------------------------------
+    # Early diagnostics — critical for debugging silent HRRR-branch skips
+    # ------------------------------------------------------------------
+    logger.info(
+        "fetch_weather_data called: trigger_source=%r  fire_cells=%r  "
+        "lookback_hours=%d  len(grid_centroids)=%d",
+        trigger_source,
+        fire_cells,
+        lookback_hours,
+        len(grid_centroids) if grid_centroids is not None else 0,
+    )
+
     registry = get_registry(config_path)
     om_config = registry.get_source_config("open_meteo")
     limiter = create_weather_limiter(config_path)
 
     # ------------------------------------------------------------------
-    # HRRR branch: emergency / active watchdog triggers only
+    # HRRR branch — watchdog_emergency / watchdog_active only
     # ------------------------------------------------------------------
     is_watchdog = trigger_source in ("watchdog_emergency", "watchdog_active")
 
-    if is_watchdog and fire_cells:
-        hrrr_path = _try_hrrr_focal(
-            grid_centroids=grid_centroids,
-            fire_cells=fire_cells,
-            h3_ring_max=h3_ring_max,
-            execution_date=execution_date,
-            output_dir=output_dir,
-            config_path=config_path,
-        )
-        if hrrr_path is not None:
-            # HRRR succeeded — merge with Open-Meteo for background cells
-            return _merge_hrrr_with_background(
-                hrrr_path=hrrr_path,
+    if is_watchdog:
+        if not fire_cells:
+            logger.warning(
+                "Watchdog trigger received but fire_cells is empty/None — "
+                "this usually means DAG conf was not forwarded to the task.  "
+                "Falling back to cron-style full-grid Open-Meteo fetch."
+            )
+        else:
+            logger.info(
+                "Watchdog trigger: attempting HRRR for %d fire cells "
+                "(h3_ring_max=%d)",
+                len(fire_cells),
+                h3_ring_max,
+            )
+            hrrr_path = _try_hrrr_focal(
+                grid_centroids=grid_centroids,
+                fire_cells=fire_cells,
+                h3_ring_max=h3_ring_max,
+                execution_date=execution_date,
+                output_dir=output_dir,
+                config_path=config_path,
+            )
+            if hrrr_path is not None:
+                # HRRR succeeded — merge with Open-Meteo for focal background
+                # only (NOT the entire region grid).
+                return _merge_hrrr_with_focal_background(
+                    hrrr_path=hrrr_path,
+                    fire_cells=fire_cells,
+                    h3_ring_max=h3_ring_max,
+                    grid_centroids=grid_centroids,
+                    execution_date=execution_date,
+                    lookback_hours=lookback_hours,
+                    output_dir=output_dir,
+                    om_config=om_config,
+                    limiter=limiter,
+                    config_path=config_path,
+                )
+
+            # HRRR failed — fall back to Open-Meteo for focal cells only
+            logger.warning(
+                "HRRR fetch failed — fetching Open-Meteo for focal cells only "
+                "(lookback_hours=%d).  Background cells will be forward-filled "
+                "from the last cron run.",
+                lookback_hours,
+            )
+            return _fetch_focal_open_meteo(
+                fire_cells=fire_cells,
+                h3_ring_max=h3_ring_max,
                 grid_centroids=grid_centroids,
                 execution_date=execution_date,
                 lookback_hours=lookback_hours,
@@ -158,153 +249,290 @@ def fetch_weather_data(
                 limiter=limiter,
                 config_path=config_path,
             )
-        # HRRR failed — fall through to full Open-Meteo with narrowed window
-        logger.warning(
-            "HRRR fetch failed — falling back to Open-Meteo for all cells "
-            f"(lookback_hours={lookback_hours})"
-        )
 
-    # resolve output_dir early
-    if output_dir is None:
-        output_dir = (
-            Path(__file__).resolve().parent.parent.parent / "data" / "raw" / "weather"
-        )
-    out_dir = Path(output_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    # normalize execution_date to UTC-aware
-    execution_date = _to_utc_aware(execution_date)
-
-    # basic guards
-    if grid_centroids is None or grid_centroids.empty:
-        return _write_empty_weather_csv(out_dir, execution_date, reason="No grid centroids provided")
-
-    required = {"grid_id", "latitude", "longitude"}
-    if not required.issubset(set(grid_centroids.columns)):
-        missing = sorted(required - set(grid_centroids.columns))
-        return _write_empty_weather_csv(out_dir, execution_date, reason=f"grid_centroids missing columns: {missing}")
-
-    coord_precision = om_config.get("coordinate_precision", 3)
-
-    grid_centroids = grid_centroids.copy()
-    grid_centroids["grid_id"] = grid_centroids["grid_id"].astype(str)
-    grid_centroids["latitude"] = grid_centroids["latitude"].round(coord_precision)
-    grid_centroids["longitude"] = grid_centroids["longitude"].round(coord_precision)
-
-    # time range (UTC-aware)
-    end_date = execution_date
-    start_date = _to_utc_aware(end_date - timedelta(hours=lookback_hours))
-
-    logger.info(
-        f"Fetching weather for {len(grid_centroids)} grid cells, "
-        f"{start_date.isoformat()} to {end_date.isoformat()}"
+    # ------------------------------------------------------------------
+    # Cron branch — full region grid via Open-Meteo
+    # ------------------------------------------------------------------
+    return _fetch_full_grid_open_meteo(
+        grid_centroids=grid_centroids,
+        execution_date=execution_date,
+        lookback_hours=lookback_hours,
+        output_dir=output_dir,
+        om_config=om_config,
+        limiter=limiter,
+        config_path=config_path,
     )
 
-    batches = _create_coordinate_batches(grid_centroids, OPEN_METEO_MAX_LOCATIONS)
 
-    all_weather: list[pd.DataFrame] = []
+# ---------------------------------------------------------------------------
+# Cron path: full region grid
+# ---------------------------------------------------------------------------
+
+def _fetch_full_grid_open_meteo(
+    grid_centroids: pd.DataFrame,
+    execution_date: datetime,
+    lookback_hours: int,
+    output_dir: Optional[str],
+    om_config: dict,
+    limiter: RateLimiter,
+    config_path: Optional[str],
+) -> Path:
+    """Fetch Open-Meteo for every cell in the region (cron trigger)."""
+    out_dir, execution_date = _resolve_output(output_dir, execution_date)
+
+    if grid_centroids is None or grid_centroids.empty:
+        return _write_empty_weather_csv(
+            out_dir, execution_date, reason="No grid centroids provided"
+        )
+
+    grid_centroids = _normalise_centroids(grid_centroids, om_config)
+    end_dt = execution_date
+    start_dt = _to_utc_aware(end_dt - timedelta(hours=lookback_hours))
+
+    logger.info(
+        "Cron fetch: %d cells  %s → %s",
+        len(grid_centroids),
+        start_dt.isoformat(),
+        end_dt.isoformat(),
+    )
+
+    all_rows, failed_cells = _batch_fetch_open_meteo(
+        grid_centroids=grid_centroids,
+        start_dt=start_dt,
+        end_dt=end_dt,
+        om_config=om_config,
+        limiter=limiter,
+        config_path=config_path,
+        quality_flag=0,
+    )
+
+    if failed_cells:
+        logger.warning(
+            "%d cells failed both Open-Meteo and NWS — will be "
+            "forward-filled downstream.",
+            len(failed_cells),
+        )
+
+    return _write_combined(all_rows, out_dir, execution_date, label="weather_raw")
+
+
+# ---------------------------------------------------------------------------
+# Watchdog path: focal cells only via Open-Meteo (HRRR failed)
+# ---------------------------------------------------------------------------
+
+def _fetch_focal_open_meteo(
+    fire_cells: list,
+    h3_ring_max: int,
+    grid_centroids: pd.DataFrame,
+    execution_date: datetime,
+    lookback_hours: int,
+    output_dir: Optional[str],
+    om_config: dict,
+    limiter: RateLimiter,
+    config_path: Optional[str],
+) -> Path:
+    """Fetch Open-Meteo for focal + detection-zone cells only."""
+    out_dir, execution_date = _resolve_output(output_dir, execution_date)
+
+    focal_centroids = _get_focal_centroids(
+        fire_cells, h3_ring_max, grid_centroids, om_config
+    )
+    if focal_centroids.empty:
+        return _write_empty_weather_csv(
+            out_dir, execution_date, reason="Focal grid resolved to zero centroids"
+        )
+
+    end_dt = execution_date
+    start_dt = _to_utc_aware(end_dt - timedelta(hours=lookback_hours))
+
+    logger.info(
+        "Watchdog focal Open-Meteo fetch: %d focal cells  %s → %s",
+        len(focal_centroids),
+        start_dt.isoformat(),
+        end_dt.isoformat(),
+    )
+
+    all_rows, failed_cells = _batch_fetch_open_meteo(
+        grid_centroids=focal_centroids,
+        start_dt=start_dt,
+        end_dt=end_dt,
+        om_config=om_config,
+        limiter=limiter,
+        config_path=config_path,
+        quality_flag=0,
+    )
+
+    if failed_cells:
+        logger.warning(
+            "%d focal cells failed Open-Meteo + NWS fallback.",
+            len(failed_cells),
+        )
+
+    return _write_combined(
+        all_rows, out_dir, execution_date, label="weather_raw_focal"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Watchdog path: merge HRRR focal + Open-Meteo detection-zone background
+# ---------------------------------------------------------------------------
+
+def _merge_hrrr_with_focal_background(
+    hrrr_path: Path,
+    fire_cells: list,
+    h3_ring_max: int,
+    grid_centroids: pd.DataFrame,
+    execution_date: datetime,
+    lookback_hours: int,
+    output_dir: Optional[str],
+    om_config: dict,
+    limiter: RateLimiter,
+    config_path: Optional[str],
+) -> Path:
+    """Merge HRRR focal data with Open-Meteo for detection-zone-only background.
+
+    data_quality_flag values:
+        3 — HRRR (~15 min fresh, 3 km resolution)
+        0 — Open-Meteo (~1 h fresh)
+        4 — forward-filled from previous run (handled downstream)
+
+    Only cells in the focal grid (fire cells + ring_max detection zone) are
+    fetched here.  The wider region background is intentionally omitted; the
+    fuse_features step forward-fills from the last cron run.
+    """
+    out_dir, execution_date = _resolve_output(output_dir, execution_date)
+
+    hrrr_df = pd.read_csv(hrrr_path)
+    hrrr_cell_ids = set(hrrr_df["grid_id"].astype(str))
+
+    # Background = focal grid cells NOT already covered by HRRR
+    focal_centroids = _get_focal_centroids(
+        fire_cells, h3_ring_max, grid_centroids, om_config
+    )
+    background_centroids = focal_centroids[
+        ~focal_centroids["grid_id"].astype(str).isin(hrrr_cell_ids)
+    ].copy()
+
+    logger.info(
+        "HRRR merge: %d HRRR focal cells, %d focal-background cells for "
+        "Open-Meteo (full region background skipped — will be forward-filled)",
+        len(hrrr_cell_ids),
+        len(background_centroids),
+    )
+
+    parts = [hrrr_df]
+
+    if not background_centroids.empty:
+        end_dt = execution_date
+        start_dt = _to_utc_aware(end_dt - timedelta(hours=lookback_hours))
+        bg_rows, _ = _batch_fetch_open_meteo(
+            grid_centroids=background_centroids,
+            start_dt=start_dt,
+            end_dt=end_dt,
+            om_config=om_config,
+            limiter=limiter,
+            config_path=config_path,
+            quality_flag=0,
+        )
+        if bg_rows:
+            parts.append(pd.concat(bg_rows, ignore_index=True))
+
+    merged = pd.concat(parts, ignore_index=True)
+    merged = _ensure_schema(merged)
+
+    date_str = execution_date.strftime("%Y%m%d_%H%M%S")
+    output_path = out_dir / f"weather_raw_{date_str}.csv"
+    merged.to_csv(output_path, index=False)
+
+    logger.info(
+        "HRRR+OM merge complete: %d HRRR rows + %d Open-Meteo rows → %s",
+        len(hrrr_df),
+        len(merged) - len(hrrr_df),
+        output_path,
+    )
+    return output_path
+
+
+# ---------------------------------------------------------------------------
+# Core batched Open-Meteo fetch with NWS fallback
+# ---------------------------------------------------------------------------
+
+def _batch_fetch_open_meteo(
+    grid_centroids: pd.DataFrame,
+    start_dt: datetime,
+    end_dt: datetime,
+    om_config: dict,
+    limiter: RateLimiter,
+    config_path: Optional[str],
+    quality_flag: int,
+) -> tuple[list[pd.DataFrame], list[str]]:
+    """Fetch Open-Meteo in batches with per-cell NWS fallback on failure.
+
+    Returns:
+        (list of DataFrames with weather rows, list of failed grid_ids)
+    """
+    batches = _create_coordinate_batches(grid_centroids, OPEN_METEO_MAX_LOCATIONS)
+    all_rows: list[pd.DataFrame] = []
     failed_cells: list[str] = []
 
     for batch_idx, batch in enumerate(batches):
         logger.info(
-            f"  Weather batch {batch_idx + 1}/{len(batches)} "
-            f"({len(batch)} locations)"
+            "  Weather batch %d/%d (%d locations)",
+            batch_idx + 1,
+            len(batches),
+            len(batch),
         )
 
         weather_df = _fetch_open_meteo_batch(
             batch=batch,
-            start_date=start_date,
-            end_date=end_date,
+            start_date=start_dt,
+            end_date=end_dt,
             base_url=om_config["base_url"],
             historical_url=om_config["historical_url"],
             limiter=limiter,
             timeout=om_config.get("timeout_seconds", 20),
             max_retries=om_config.get("max_retries", 3),
-            )
+        )
 
-        if weather_df is not None and len(weather_df) > 0:
+        if weather_df is not None and not weather_df.empty:
             weather_df = weather_df.copy()
             weather_df["grid_id"] = weather_df["grid_id"].astype(str)
-            weather_df["data_quality_flag"] = 0  # fresh Open-Meteo
-            all_weather.append(weather_df)
-            # Brief pause between batches to stay under rate limits
-            time.sleep(0.3)
+            weather_df["data_quality_flag"] = quality_flag
+            all_rows.append(weather_df)
+            time.sleep(0.3)  # polite pause between successful batches
         else:
             logger.warning(
-                f"  Open-Meteo failed for batch {batch_idx + 1}. Attempting NWS fallback."
+                "  Open-Meteo failed for batch %d — attempting NWS fallback.",
+                batch_idx + 1,
             )
             for _, cell in batch.iterrows():
                 lat = float(cell["latitude"])
                 lon = float(cell["longitude"])
-                # NWS only covers CONUS land — skip offshore / border points
-                if lat < 24.5 or lat > 49.5 or lon < -125.0 or lon > -66.5:
+                # NWS covers CONUS land only — skip offshore / border points
+                if not (24.5 <= lat <= 49.5 and -125.0 <= lon <= -66.5):
                     failed_cells.append(str(cell["grid_id"]))
                     continue
+
                 nws_df = _fetch_nws_fallback(
                     lat=lat,
                     lon=lon,
                     grid_id=str(cell["grid_id"]),
                     config_path=config_path,
                 )
-                if nws_df is not None and len(nws_df) > 0:
+                if nws_df is not None and not nws_df.empty:
                     nws_df = nws_df.copy()
                     nws_df["grid_id"] = nws_df["grid_id"].astype(str)
-                    nws_df["data_quality_flag"] = 2
-                    all_weather.append(nws_df)
+                    nws_df["data_quality_flag"] = 2  # NWS fallback flag
+                    all_rows.append(nws_df)
                 else:
                     failed_cells.append(str(cell["grid_id"]))
 
-    if failed_cells:
-        logger.warning(
-            f"{len(failed_cells)} cells failed both Open-Meteo and NWS. "
-            f"These will be forward-filled from previous data (future step)."
-        )
-
-    combined = pd.concat(all_weather, ignore_index=True) if all_weather else pd.DataFrame()
-
-    # guarantee required columns
-    expected_cols = [
-        "grid_id",
-        "timestamp",
-        "temperature_2m",
-        "relative_humidity_2m",
-        "wind_speed_10m",
-        "wind_direction_10m",
-        "precipitation",
-        "soil_moisture_0_to_7cm",
-        "vpd",
-        "fire_weather_index",
-        "data_quality_flag",
-    ]
-    for c in expected_cols:
-        if c not in combined.columns:
-            combined[c] = None
-
-    # normalize timestamp dtype if present
-    combined["timestamp"] = pd.to_datetime(combined["timestamp"], errors="coerce")
-
-    date_str = execution_date.strftime("%Y%m%d_%H%M%S")
-    output_path = out_dir / f"weather_raw_{date_str}.csv"
-
-    if combined.empty:
-        return _write_empty_weather_csv(out_dir, execution_date, reason="All weather API requests failed")
-
-    combined.to_csv(output_path, index=False)
-
-    logger.info(
-        f"Weather ingestion complete: {len(combined)} rows for "
-        f"{combined['grid_id'].nunique() if 'grid_id' in combined.columns else 0} "
-        f"cells → {output_path}"
-    )
-    return output_path
+    return all_rows, failed_cells
 
 
-def _create_coordinate_batches(grid_centroids: pd.DataFrame, batch_size: int) -> list[pd.DataFrame]:
-    return [
-        grid_centroids.iloc[i: i + batch_size]
-        for i in range(0, len(grid_centroids), batch_size)
-    ]
-
+# ---------------------------------------------------------------------------
+# Open-Meteo single-batch HTTP fetch
+# ---------------------------------------------------------------------------
 
 def _fetch_open_meteo_batch(
     batch: pd.DataFrame,
@@ -316,28 +544,27 @@ def _fetch_open_meteo_batch(
     timeout: int = 20,
     max_retries: int = 3,
 ) -> Optional[pd.DataFrame]:
-    """Fetch Open-Meteo for multiple locations in one request."""
-    lats = ",".join(batch["latitude"].astype(str))
-    lons = ",".join(batch["longitude"].astype(str))
+    """Fetch Open-Meteo for multiple locations in one request.
 
-    # HARD timezone enforcement (defensive)
+    KEY FIX: latitude and longitude are passed as *lists* so that the
+    ``requests`` library encodes them as repeated query-string keys:
+        ?latitude=32.1&latitude=33.2&...
+    Passing comma-joined strings produced URL-encoded CSV values that the
+    API rejected with 429 / 400 on multi-location requests.
+    """
+    # FIX #1 — pass lists, not comma-joined strings
+    lats: list[str] = batch["latitude"].astype(str).tolist()
+    lons: list[str] = batch["longitude"].astype(str).tolist()
+
     start_date = _to_utc_aware(start_date)
     end_date = _to_utc_aware(end_date)
 
-    now = datetime.now(timezone.utc)
-
-    # Ensure both sides are aware UTC
-    if end_date.tzinfo is None:
-        end_date = end_date.replace(tzinfo=timezone.utc)
-
-    cutoff = now - timedelta(days=5)
-
+    cutoff = datetime.now(timezone.utc) - timedelta(days=5)
     url = historical_url if end_date < cutoff else base_url
 
-
-    params = {
-        "latitude": lats,
-        "longitude": lons,
+    params: dict = {
+        "latitude": lats,       # list → requests repeats the key correctly
+        "longitude": lons,      # list → requests repeats the key correctly
         "hourly": ",".join(OPEN_METEO_HOURLY_PARAMS),
         "start_date": start_date.strftime("%Y-%m-%d"),
         "end_date": end_date.strftime("%Y-%m-%d"),
@@ -352,46 +579,66 @@ def _fetch_open_meteo_batch(
                 resp = requests.get(url, params=params, timeout=timeout)
 
             if resp.status_code == 200:
-                data = resp.json()
-                return _parse_open_meteo_response(data, batch)
+                return _parse_open_meteo_response(resp.json(), batch)
 
             if resp.status_code == 429:
-                delay = limiter.get_backoff_delay()
-                logger.warning(f"Open-Meteo rate limited. Backing off {delay:.1f}s (attempt {attempt+1}/{max_retries})")
+                # FIX #2 — record_failure() BEFORE get_backoff_delay() so the
+                # sleep reflects the incremented (current) failure count.
                 limiter.record_failure()
+                delay = limiter.get_backoff_delay()
+                logger.warning(
+                    "Open-Meteo rate limited. Backing off %.1fs "
+                    "(attempt %d/%d)",
+                    delay,
+                    attempt + 1,
+                    max_retries,
+                )
                 time.sleep(delay)
                 continue
 
-            # 4xx (except 429) are non-retryable — fail immediately
+            # 4xx (except 429) — non-retryable
             if 400 <= resp.status_code < 500:
                 logger.error(
-                    f"Open-Meteo non-retryable error: HTTP {resp.status_code}: "
-                    f"{resp.text[:200]}"
+                    "Open-Meteo non-retryable error: HTTP %d: %s",
+                    resp.status_code,
+                    resp.text[:300],
                 )
                 return None
 
-            # 5xx — transient server error, retry with backoff
-            logger.warning(f"Open-Meteo HTTP {resp.status_code}: {resp.text[:200]}")
-            logger.warning(f"Open-Meteo request params: hourly={params.get('hourly')} daily={params.get('daily')}")
+            # 5xx — transient, retry with backoff
+            logger.warning(
+                "Open-Meteo HTTP %d (attempt %d/%d): %s",
+                resp.status_code,
+                attempt + 1,
+                max_retries,
+                resp.text[:200],
+            )
             limiter.record_failure()
             time.sleep(limiter.get_backoff_delay())
 
-        except requests.exceptions.RequestException as e:
-            logger.warning(f"Open-Meteo request error: {e} (attempt {attempt+1}/{max_retries})")
+        except requests.exceptions.RequestException as exc:
+            logger.warning(
+                "Open-Meteo request error (attempt %d/%d): %s",
+                attempt + 1,
+                max_retries,
+                exc,
+            )
             limiter.record_failure()
             time.sleep(limiter.get_backoff_delay())
 
     return None
 
 
+# ---------------------------------------------------------------------------
+# Open-Meteo response parser
+# ---------------------------------------------------------------------------
+
 def _parse_open_meteo_response(data: dict, batch: pd.DataFrame) -> pd.DataFrame:
-    """Parse Open-Meteo JSON into flat rows (hourly)."""
+    """Parse Open-Meteo JSON into a flat hourly DataFrame."""
     records: list[dict] = []
 
-    # Endpoint may return either a dict (single location) or list (multi-location)
+    # API returns a dict for single location, list for multi-location
     results = data if isinstance(data, list) else [data]
-
-    # The order of returned results should align with order of input coordinates
     grid_ids = batch["grid_id"].astype(str).tolist()
 
     for idx, result in enumerate(results):
@@ -408,14 +655,11 @@ def _parse_open_meteo_response(data: dict, batch: pd.DataFrame) -> pd.DataFrame:
             continue
 
         for t_idx, ts in enumerate(timestamps):
-            rec = {"grid_id": grid_id, "timestamp": ts}
-
+            rec: dict = {"grid_id": grid_id, "timestamp": ts}
             for param in OPEN_METEO_HOURLY_PARAMS:
                 values = hourly.get(param, [])
                 rec[param] = values[t_idx] if t_idx < len(values) else None
-
-            # Phase2 MVP placeholder
-            rec["fire_weather_index"] = None
+            rec["fire_weather_index"] = None  # Phase 2 MVP placeholder
             records.append(rec)
 
     if not records:
@@ -424,26 +668,25 @@ def _parse_open_meteo_response(data: dict, batch: pd.DataFrame) -> pd.DataFrame:
     df = pd.DataFrame(records)
     df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
 
-    # rename vapor_pressure_deficit -> vpd for downstream
+    # Rename VPD field to canonical name used downstream
     if "vapor_pressure_deficit" in df.columns:
         df = df.rename(columns={"vapor_pressure_deficit": "vpd"})
 
-    # ensure missing expected fields exist
-    for c in [
-        "temperature_2m",
-        "relative_humidity_2m",
-        "wind_speed_10m",
-        "wind_direction_10m",
-        "precipitation",
-        "soil_moisture_0_to_7cm",
-        "vpd",
-        "fire_weather_index",
+    # Ensure all expected fields exist
+    for col in [
+        "temperature_2m", "relative_humidity_2m", "wind_speed_10m",
+        "wind_direction_10m", "precipitation", "soil_moisture_0_to_7cm",
+        "vpd", "fire_weather_index",
     ]:
-        if c not in df.columns:
-            df[c] = None
+        if col not in df.columns:
+            df[col] = None
 
     return df
 
+
+# ---------------------------------------------------------------------------
+# NWS fallback
+# ---------------------------------------------------------------------------
 
 def _fetch_nws_fallback(
     lat: float,
@@ -451,7 +694,7 @@ def _fetch_nws_fallback(
     grid_id: str,
     config_path: Optional[str] = None,
 ) -> Optional[pd.DataFrame]:
-    """Fallback to NWS forecastHourly."""
+    """Single-cell fallback to NWS forecastHourly endpoint."""
     registry = get_registry(config_path)
     nws_config = registry.get_source_config("nws")
     base_url = nws_config["base_url"]
@@ -464,35 +707,41 @@ def _fetch_nws_fallback(
         points_url = f"{base_url}/points/{lat:.4f},{lon:.4f}"
         resp = requests.get(points_url, headers=headers, timeout=timeout)
         if resp.status_code != 200:
-            logger.warning(f"NWS points lookup failed: HTTP {resp.status_code}")
+            logger.warning("NWS points lookup failed: HTTP %d", resp.status_code)
             return None
 
-        points = resp.json()
-        props = points.get("properties", {})
+        props = resp.json().get("properties", {})
         forecast_url = props.get("forecastHourly")
         if not forecast_url:
-            logger.warning(f"NWS: No forecast URL for ({lat}, {lon})")
+            logger.warning("NWS: no forecastHourly URL for (%.4f, %.4f)", lat, lon)
             return None
 
         resp = requests.get(forecast_url, headers=headers, timeout=timeout)
         if resp.status_code != 200:
-            logger.warning(f"NWS forecast failed: HTTP {resp.status_code}")
+            logger.warning("NWS forecast fetch failed: HTTP %d", resp.status_code)
             return None
 
-        forecast = resp.json()
-        periods = forecast.get("properties", {}).get("periods", [])
+        periods = resp.json().get("properties", {}).get("periods", [])
         if not periods:
             return None
 
         recs = []
         for p in periods[:24]:
+            temp = p.get("temperature")
+            unit = p.get("temperatureUnit")
             recs.append({
                 "grid_id": grid_id,
                 "timestamp": p.get("startTime"),
-                "temperature_2m": _fahrenheit_to_celsius(p.get("temperature")) if p.get("temperatureUnit") == "F" else p.get("temperature"),
-                "relative_humidity_2m": (p.get("relativeHumidity") or {}).get("value"),
+                "temperature_2m": (
+                    _fahrenheit_to_celsius(temp) if unit == "F" else temp
+                ),
+                "relative_humidity_2m": (
+                    (p.get("relativeHumidity") or {}).get("value")
+                ),
                 "wind_speed_10m": _parse_nws_wind_speed(p.get("windSpeed")),
-                "wind_direction_10m": _parse_nws_wind_direction(p.get("windDirection")),
+                "wind_direction_10m": _parse_nws_wind_direction(
+                    p.get("windDirection")
+                ),
                 "precipitation": None,
                 "soil_moisture_0_to_7cm": None,
                 "vpd": None,
@@ -503,10 +752,14 @@ def _fetch_nws_fallback(
         df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
         return df
 
-    except requests.exceptions.RequestException as e:
-        logger.warning(f"NWS fallback failed for ({lat}, {lon}): {e}")
+    except requests.exceptions.RequestException as exc:
+        logger.warning("NWS fallback failed for (%.4f, %.4f): %s", lat, lon, exc)
         return None
 
+
+# ---------------------------------------------------------------------------
+# Unit conversion helpers
+# ---------------------------------------------------------------------------
 
 def _fahrenheit_to_celsius(f: Optional[float]) -> Optional[float]:
     if f is None:
@@ -523,10 +776,11 @@ def _parse_nws_wind_speed(speed_str: Optional[str]) -> Optional[float]:
     try:
         s = str(speed_str).replace(" mph", "")
         parts = s.split(" to ")
-        if len(parts) == 2:
-            avg_mph = (float(parts[0]) + float(parts[1])) / 2
-        else:
-            avg_mph = float(parts[0])
+        avg_mph = (
+            (float(parts[0]) + float(parts[1])) / 2
+            if len(parts) == 2
+            else float(parts[0])
+        )
         return round(avg_mph * 1.60934, 1)
     except Exception:
         return None
@@ -545,7 +799,7 @@ def _parse_nws_wind_direction(direction: Optional[str]) -> Optional[float]:
 
 
 # ---------------------------------------------------------------------------
-# HRRR integration helpers (called only on watchdog emergency/active triggers)
+# HRRR integration helpers (watchdog triggers only)
 # ---------------------------------------------------------------------------
 
 def _try_hrrr_focal(
@@ -556,149 +810,193 @@ def _try_hrrr_focal(
     output_dir: Optional[str],
     config_path: Optional[str],
 ) -> Optional[Path]:
-    """Attempt HRRR fetch for the focal grid around confirmed fire cells.
-
-    Returns:
-        Path to HRRR CSV, or None if HRRR is unavailable / fails.
-        None signals the caller to fall back to Open-Meteo.
-    """
+    """Attempt HRRR fetch for the focal grid. Returns None on any failure."""
     try:
         from scripts.ingestion.ingest_hrrr import fetch_hrrr_for_focal_grid
         from scripts.utils.grid_utils import generate_fire_focal_grid
-    except ImportError as e:
-        logger.warning(f"HRRR dependencies not installed — skipping HRRR: {e}")
+    except ImportError as exc:
+        logger.warning("HRRR deps not installed — skipping HRRR: %s", exc)
         return None
 
     try:
         focal_grid = generate_fire_focal_grid(
             fire_cell_ids=fire_cells,
-            ring_min=0,          # include the fire cells themselves (ring 0)
+            ring_min=1,
             ring_max=h3_ring_max,
         )
-
         if focal_grid.empty:
-            logger.warning("HRRR: focal grid is empty — skipping")
+            logger.warning("HRRR: focal grid resolved to zero cells — skipping")
             return None
 
         logger.info(
-            f"HRRR: generated focal grid with {len(focal_grid)} cells "
-            f"({sum(focal_grid['cell_type'] == 'fire')} fire, "
-            f"{sum(focal_grid['cell_type'] == 'detection_zone')} detection zone)"
+            "HRRR: focal grid has %d cells (%d fire, %d detection zone)",
+            len(focal_grid),
+            (focal_grid["cell_type"] == "fire").sum(),
+            (focal_grid["cell_type"] == "detection_zone").sum(),
         )
-
         return fetch_hrrr_for_focal_grid(
             focal_grid=focal_grid[["grid_id", "latitude", "longitude"]],
             execution_date=execution_date,
             output_dir=output_dir,
             config_path=config_path,
         )
-
-    except Exception as e:
-        logger.warning(f"HRRR focal fetch failed: {e}")
+    except Exception as exc:
+        logger.warning("HRRR focal fetch raised an exception: %s", exc)
         return None
 
 
-def _merge_hrrr_with_background(
-    hrrr_path: Path,
+# ---------------------------------------------------------------------------
+# Private utilities
+# ---------------------------------------------------------------------------
+
+def _get_focal_centroids(
+    fire_cells: list,
+    h3_ring_max: int,
     grid_centroids: pd.DataFrame,
-    execution_date,
-    lookback_hours: int,
-    output_dir: Optional[str],
     om_config: dict,
-    limiter,
-    config_path: Optional[str],
-) -> Path:
-    """Merge HRRR focal data with Open-Meteo background data.
+) -> pd.DataFrame:
+    """Return centroids for the focal grid (fire cells + detection-zone rings).
 
-    Strategy:
-      1. Read HRRR CSV — these are the focal (fire + detection zone) cells.
-      2. Identify background cells: grid cells NOT covered by HRRR.
-      3. Fetch Open-Meteo for background cells only (narrowed lookback window).
-         Background cells = previous cron run data → data_quality_flag = 4
-         if Open-Meteo also fails, they stay null (fuse_features forward-fills).
-      4. Concatenate HRRR rows + Open-Meteo rows → write merged CSV.
+    Previous approach filtered grid_centroids by matching IDs from
+    generate_fire_focal_grid — this always produced an empty result because
+    grid_centroids is generated from a bbox scan and its cell IDs will never
+    overlap with the ring-expanded fire cell IDs.
 
-    This gives the model:
-      - flag=3 (HRRR, ~15 min fresh) for focal cells
-      - flag=0 (Open-Meteo, ~1h fresh) or flag=4 (forward-fill) for background
-
-    Returns:
-        Path to merged CSV.
+    Fix: derive lat/lon centroids DIRECTLY from the H3 cell IDs using
+    h3.h3_to_geo(), bypassing grid_centroids entirely for focal coverage.
+    grid_centroids is kept as a parameter for signature compatibility but
+    is no longer used for filtering.
     """
-    execution_date = _to_utc_aware(execution_date)
+    try:
+        import h3
+        from scripts.utils.grid_utils import generate_fire_focal_grid
 
+        focal_grid = generate_fire_focal_grid(
+            fire_cell_ids=fire_cells,
+            ring_min=1,
+            ring_max=h3_ring_max,
+        )
+        if focal_grid.empty:
+            logger.warning(
+                "_get_focal_centroids: generate_fire_focal_grid returned empty "
+                "for fire_cells=%s ring_max=%d", fire_cells, h3_ring_max
+            )
+            return pd.DataFrame()
+
+        # Resolve lat/lon from H3 cell IDs directly — works regardless of how
+        # grid_centroids was originally generated.
+        # H3 v3: h3_to_geo(cell)  →  H3 v4: cell_to_latlng(cell)
+        # Try v4 first, fall back to v3.
+        if hasattr(h3, "cell_to_latlng"):
+            _h3_to_geo = h3.cell_to_latlng   # H3 v4
+        elif hasattr(h3, "h3_to_geo"):
+            _h3_to_geo = h3.h3_to_geo        # H3 v3
+        else:
+            raise RuntimeError(
+                "h3 library has neither cell_to_latlng (v4) nor h3_to_geo (v3). "
+                f"Installed h3 version: {getattr(h3, '__version__', 'unknown')}"
+            )
+
+        rows = []
+        for cell_id in focal_grid["grid_id"].astype(str):
+            try:
+                lat, lon = _h3_to_geo(cell_id)
+                rows.append({"grid_id": cell_id, "latitude": lat, "longitude": lon})
+            except Exception as cell_exc:
+                logger.warning(
+                    "Could not resolve centroid for H3 cell %s: %s", cell_id, cell_exc
+                )
+
+        if not rows:
+            logger.warning(
+                "_get_focal_centroids: no valid centroids resolved from %d focal cells",
+                len(focal_grid),
+            )
+            return pd.DataFrame()
+
+        result = pd.DataFrame(rows)
+        logger.info(
+            "_get_focal_centroids: resolved %d centroids from %d focal cells "
+            "(fire_cells=%d, ring_max=%d)",
+            len(result),
+            len(focal_grid),
+            len(fire_cells),
+            h3_ring_max,
+        )
+        return _normalise_centroids(result, om_config)
+
+    except Exception as exc:
+        logger.warning(
+            "_get_focal_centroids failed (%s) — returning empty DataFrame", exc
+        )
+        return pd.DataFrame()
+
+
+def _normalise_centroids(
+    grid_centroids: pd.DataFrame, om_config: dict
+) -> pd.DataFrame:
+    """Validate required columns and round coordinates."""
+    required = {"grid_id", "latitude", "longitude"}
+    missing = sorted(required - set(grid_centroids.columns))
+    if missing:
+        raise ValueError(f"grid_centroids missing columns: {missing}")
+
+    precision = om_config.get("coordinate_precision", 3)
+    df = grid_centroids.copy()
+    df["grid_id"] = df["grid_id"].astype(str)
+    df["latitude"] = df["latitude"].round(precision)
+    df["longitude"] = df["longitude"].round(precision)
+    return df
+
+
+def _resolve_output(
+    output_dir: Optional[str], execution_date
+) -> tuple[Path, datetime]:
+    """Resolve output directory path and normalise execution_date."""
     if output_dir is None:
         output_dir = (
-            Path(__file__).resolve().parent.parent.parent / "data" / "raw" / "weather"
+            Path(__file__).resolve().parent.parent.parent
+            / "data"
+            / "raw"
+            / "weather"
         )
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    return out_dir, _to_utc_aware(execution_date)
 
-    # Load HRRR focal data
-    hrrr_df = pd.read_csv(hrrr_path)
-    hrrr_cell_ids = set(hrrr_df["grid_id"].astype(str).tolist())
 
-    # Identify background cells (not covered by HRRR)
-    all_cell_ids = set(grid_centroids["grid_id"].astype(str).tolist())
-    background_ids = all_cell_ids - hrrr_cell_ids
-
-    logger.info(
-        f"HRRR merge: {len(hrrr_cell_ids)} HRRR focal cells, "
-        f"{len(background_ids)} background cells for Open-Meteo"
-    )
-
-    parts = [hrrr_df]
-
-    if background_ids:
-        background_centroids = grid_centroids[
-            grid_centroids["grid_id"].astype(str).isin(background_ids)
-        ].copy()
-
-        # Fetch Open-Meteo for background cells
-        # Batched using the same logic as the main Open-Meteo path
-        batches = _create_coordinate_batches(background_centroids, OPEN_METEO_MAX_LOCATIONS)
-        bg_weather = []
-
-        for batch_idx, batch in enumerate(batches):
-            weather_df = _fetch_open_meteo_batch(
-                batch=batch,
-                start_date=_to_utc_aware(execution_date - timedelta(hours=lookback_hours)),
-                end_date=execution_date,
-                base_url=om_config["base_url"],
-                historical_url=om_config["historical_url"],
-                limiter=limiter,
-                timeout=om_config.get("timeout_seconds", 20),
-                max_retries=om_config.get("max_retries", 3),
-            )
-            if weather_df is not None and not weather_df.empty:
-                weather_df = weather_df.copy()
-                weather_df["grid_id"] = weather_df["grid_id"].astype(str)
-                weather_df["data_quality_flag"] = 0
-                bg_weather.append(weather_df)
-            else:
-                logger.debug(f"Open-Meteo failed for background batch {batch_idx + 1}")
-
-        if bg_weather:
-            parts.append(pd.concat(bg_weather, ignore_index=True))
-
-    merged = pd.concat(parts, ignore_index=True)
-
-    # Ensure schema columns
-    expected_cols = [
-        "grid_id", "timestamp", "temperature_2m", "relative_humidity_2m",
-        "wind_speed_10m", "wind_direction_10m", "precipitation",
-        "soil_moisture_0_to_7cm", "vpd", "fire_weather_index", "data_quality_flag",
+def _create_coordinate_batches(
+    grid_centroids: pd.DataFrame, batch_size: int
+) -> list[pd.DataFrame]:
+    return [
+        grid_centroids.iloc[i : i + batch_size]
+        for i in range(0, len(grid_centroids), batch_size)
     ]
-    for c in expected_cols:
-        if c not in merged.columns:
-            merged[c] = None
 
+
+def _write_combined(
+    all_rows: list[pd.DataFrame],
+    out_dir: Path,
+    execution_date: datetime,
+    label: str,
+) -> Path:
+    """Concatenate rows, enforce schema, write CSV, return path."""
     date_str = execution_date.strftime("%Y%m%d_%H%M%S")
-    output_path = out_dir / f"weather_raw_{date_str}.csv"
-    merged.to_csv(output_path, index=False)
+    output_path = out_dir / f"{label}_{date_str}.csv"
+
+    if not all_rows:
+        return _write_empty_weather_csv(
+            out_dir, execution_date, reason="All weather API requests failed"
+        )
+
+    combined = pd.concat(all_rows, ignore_index=True)
+    combined = _ensure_schema(combined)
+    combined.to_csv(output_path, index=False)
 
     logger.info(
-        f"HRRR+OM merge complete: {len(hrrr_df)} HRRR rows + "
-        f"{len(merged) - len(hrrr_df)} Open-Meteo rows → {output_path}"
+        "Weather ingestion complete: %d rows for %d cells → %s",
+        len(combined),
+        combined["grid_id"].nunique() if "grid_id" in combined.columns else 0,
+        output_path,
     )
     return output_path

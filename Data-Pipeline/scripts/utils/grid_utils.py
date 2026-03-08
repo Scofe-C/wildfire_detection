@@ -413,8 +413,9 @@ def generate_fire_focal_grid(
 
     Args:
         fire_cell_ids: List of H3 cell IDs at res 5 confirmed to have fire.
-        ring_min: Inner ring (default 1 ≈ 5 km). Cells closer than this
-                  are the fire cells themselves.
+        ring_min: Inner ring (default 1 ≈ 5 km). Pass 0 to include fire
+                  cells in the detection zone output (they are always added
+                  regardless with cell_type='fire').
         ring_max: Outer ring (default 5 ≈ 25 km). Defines detection perimeter.
         config_path: Optional schema config override.
 
@@ -429,11 +430,23 @@ def generate_fire_focal_grid(
             crs="EPSG:4326",
         )
 
+    # Clamp ring_min to 1 — ring 0 is the fire cell itself, already handled
+    # below as cell_type='fire'. Allowing ring_min=0 would cause
+    # _grid_disk_compat(cell, 0-1) = _grid_disk_compat(cell, -1) which
+    # raises "Grid distances must be nonnegative" in H3.
+    effective_ring_min = max(1, ring_min)
+    if ring_min < 1:
+        logger.debug(
+            "generate_fire_focal_grid: ring_min=%d clamped to 1 "
+            "(ring 0 = fire cell itself, always included as cell_type='fire')",
+            ring_min,
+        )
+
     fire_set = set(fire_cell_ids)
     all_cells: dict[str, dict] = {}
 
     for cell_id in fire_cell_ids:
-        # The fire cell itself
+        # Ring 0: the fire cell itself — always included regardless of ring_min
         if cell_id not in all_cells:
             try:
                 lat, lon = _cell_to_latlng_compat(cell_id)
@@ -450,12 +463,17 @@ def generate_fire_focal_grid(
                 logger.debug(f"Could not process fire cell {cell_id}: {e}")
                 continue
 
-        # Detection zone rings (ring_min to ring_max)
-        for ring_k in range(ring_min, ring_max + 1):
-            ring_cells = _grid_disk_compat(cell_id, ring_k) - _grid_disk_compat(cell_id, ring_k - 1)
+        # Detection zone rings (effective_ring_min to ring_max)
+        # Shell at ring k = grid_disk(k) - grid_disk(k-1)
+        # Safe because effective_ring_min >= 1, so k-1 >= 0 always.
+        for ring_k in range(effective_ring_min, ring_max + 1):
+            ring_cells = (
+                _grid_disk_compat(cell_id, ring_k)
+                - _grid_disk_compat(cell_id, ring_k - 1)
+            )
             for neighbor_id in ring_cells:
                 if neighbor_id in all_cells:
-                    # Keep minimum ring distance if cell already seen from another fire cell
+                    # Keep minimum ring distance if seen from another fire cell
                     if all_cells[neighbor_id]["ring_distance"] > ring_k:
                         all_cells[neighbor_id]["ring_distance"] = ring_k
                     continue

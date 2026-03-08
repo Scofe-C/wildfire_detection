@@ -153,42 +153,35 @@ def task_ingest_firms(region: str, **context):
 
 
 def task_ingest_weather(region: str, **context):
-    """Fetch weather for a single region's grid cells."""
     from scripts.ingestion.ingest_weather import fetch_weather_data
     from scripts.utils.grid_utils import generate_grid_for_bbox
 
     execution_date = context["execution_date"]
+    params = context["params"]
 
-    # If resolution_km is missing and we default to 64 km on a watchdog-triggered
-    # 22 km run, the weather grid_ids won't match FIRMS grid_ids in fusion →
-    # every row joins to null weather features with no error raised.
-    # The DAG params dict always sets "resolution_km" as a default, so this
-    # assertion only fires if that default is accidentally removed.
-    resolution_km = context["params"].get("resolution_km")
+    # --- THE FIX: Extracting the watchdog variables you passed ---
+    resolution_km = params.get("resolution_km")
+    lookback_hours = params.get("weather_lookback_hours", 24)
+    trigger_source = params.get("trigger_source", "cron") # This was missing
+    fire_cells     = params.get("fire_cells", [])         # This was missing
+    h3_ring_max    = params.get("h3_ring_max", 5)         # This was missing
+
     if resolution_km is None:
-        raise ValueError(
-            "resolution_km is missing from DAG params in task_ingest_weather. "
-            "This would silently produce a grid_id mismatch during fusion — "
-            "weather features would be null for every row. "
-            "Ensure the DAG params dict includes 'resolution_km'."
-        )
-
-    # (15-min interval) can request a narrower window (e.g. 2h) for fresher data,
-    # while cron runs keep the standard 24h window.
-    lookback_hours = context["params"].get("weather_lookback_hours", 24)
+        raise ValueError("resolution_km is missing from DAG params.")
 
     bbox = REGIONS[region]["bbox"]
-
-    # Generate region-specific grid centroids only — no full-grid needed here.
-    # generate_grid_for_bbox is cheaper than generate_full_grid at parse time.
     grid = generate_grid_for_bbox(bbox, resolution_km)
     grid_centroids = grid[["grid_id", "latitude", "longitude"]]
 
+    # --- THE FIX: Passing them into the function call ---
     output_path = fetch_weather_data(
         grid_centroids=grid_centroids,
         execution_date=execution_date,
         lookback_hours=lookback_hours,
         output_dir=str(RAW_DIR / "weather"),
+        trigger_source=trigger_source,  # Now the script knows it's a watchdog run
+        fire_cells=fire_cells,          # Now the script knows where the fire is
+        h3_ring_max=h3_ring_max         # Now the script knows how far to look
     )
 
     context["ti"].xcom_push(key=f"weather_raw_path_{region}", value=str(output_path))
