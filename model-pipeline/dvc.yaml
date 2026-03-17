@@ -1,0 +1,34 @@
+stages:
+  validate_model:
+    cmd: >-
+      python -m src.validation.model_selector
+      --predictions reports/validation/predictions.parquet
+      --output-dir reports/validation
+      --config configs/model_config.yaml
+    deps:
+      - src/validation/model_selector.py
+      - src/validation/metrics.py
+      - src/validation/visualizations.py
+      - models/ignition
+      - configs/model_config.yaml
+    outs:
+      - reports/validation:
+          persist: true
+
+  model_bias_gate:
+    cmd: >-
+      python -m src.bias.detector
+      --predictions reports/validation/joined_predictions.parquet
+      --output-dir reports/bias_gate
+      --config configs/model_config.yaml
+    deps:
+      - src/bias/detector.py
+      - src/bias/nri_loader.py
+      - src/bias/report.py
+      - reports/validation
+      - data/static/fema_nri
+      - configs/model_config.yaml
+    outs:
+      - reports/bias_gate:
+          persist: true
+          cache: false
