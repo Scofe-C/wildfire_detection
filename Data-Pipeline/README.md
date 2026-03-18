@@ -509,7 +509,7 @@ cat data/processed/baselines/bias_report.json | python -m json.tool | grep -A3 '
 ### Reading the Gantt chart
 
 1. Airflow UI → `wildfire_data_pipeline` → select a completed run → **Gantt** tab
-2. The longest bars in a typical run: `ingest_weather` (~8–12 min, Open-Meteo rate limited), `load_static_layers` (first run only, ~15–20 min)
+2. The longest bars in a typical run: `load_static_layers` (first run only, ~15–20 min)
 3. Both CA and TX `TaskGroup` bars should overlap — if they are sequential, the parallel execution broke and the DAG definition needs checking
 
 ---

@@ -76,6 +76,36 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 logger = logging.getLogger(__name__)
 
+
+# ---------------------------------------------------------------------------
+# Parquet compatibility helper
+# ---------------------------------------------------------------------------
+
+def _cast_parquet_compatible(df: "pd.DataFrame") -> "pd.DataFrame":
+    """Cast columns to types that older parquet-mr / Groovy RowMaterializer can read.
+
+    pyarrow writes int8 and int64 logical types that pre-1.12 parquet-mr
+    does not recognise, causing ExceptionInInitializerError on the Java side.
+    Casting to float64 / int32 and writing with version="1.0" keeps the data
+    intact while using only encodings the Groovy loader understands.
+    """
+    import pandas as pd
+
+    df = df.copy()
+    safe_casts = {
+        "fuel_model_fbfm40":            "float64",  # was int64 from static
+        "vegetation_type":              "float64",  # was int64 from static
+        "active_fire_count":            "int32",
+        "max_confidence":               "int32",
+        "fire_detected_binary":         "int32",
+        "data_quality_flag":            "int32",    # was int8 — parquet-mr rejects INT8
+        "days_since_last_precipitation":"float64",  # was int16 from weather
+    }
+    for col, dtype in safe_casts.items():
+        if col in df.columns:
+            df[col] = df[col].astype(dtype, errors="ignore")
+    return df
+
 # ---------------------------------------------------------------------------
 # Default DAG arguments
 # ---------------------------------------------------------------------------
@@ -268,7 +298,9 @@ def task_fuse_features(**context):
             df["region"] = region
             firms_dfs.append(df)
         if weather_path:
-            weather_dfs.append(pd.read_parquet(weather_path))
+            df = pd.read_parquet(weather_path)
+            df["region"] = region
+            weather_dfs.append(df)
 
     firms_df   = pd.concat(firms_dfs,   ignore_index=True) if firms_dfs   else pd.DataFrame()
     weather_df = pd.concat(weather_dfs, ignore_index=True) if weather_dfs else pd.DataFrame()
@@ -304,7 +336,8 @@ def task_fuse_features(**context):
 
     output_path = PROCESSED_DIR / "fused" / "fused_features_latest.parquet"
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    fused.to_parquet(output_path, index=False)
+    fused = _cast_parquet_compatible(fused)
+    fused.to_parquet(output_path, index=False, version="1.0")
     context["ti"].xcom_push(key="fused_features_path", value=str(output_path))
 
     # --- ML-ready variant with temporal lag (Plan §Problem 2) ---
@@ -352,7 +385,8 @@ def task_fuse_features(**context):
         logger.warning(f"Priority resolution skipped: {e}")
 
     ml_output_path = PROCESSED_DIR / "fused" / "fused_features_ml_latest.parquet"
-    ml_fused.to_parquet(ml_output_path, index=False)
+    ml_fused = _cast_parquet_compatible(ml_fused)
+    ml_fused.to_parquet(ml_output_path, index=False, version="1.0")
     context["ti"].xcom_push(key="fused_ml_features_path", value=str(ml_output_path))
 
     region_counts = fused["region"].value_counts().to_dict() if "region" in fused.columns else {}
@@ -471,7 +505,8 @@ def task_export_to_parquet(**context):
             )
             output_dir.mkdir(parents=True, exist_ok=True)
             output_path = output_dir / f"features_{date_str}.parquet"
-            region_df.to_parquet(output_path, index=False)
+            region_df = _cast_parquet_compatible(region_df)
+            region_df.to_parquet(output_path, index=False, version="1.0")
             exported_paths.append(str(output_path))
             logger.info(f"Exported {region}: {len(region_df)} rows → {output_path}")
     else:
@@ -480,7 +515,8 @@ def task_export_to_parquet(**context):
         output_dir = PROCESSED_DIR / f"{resolution_km}km" / f"date={date_str}"
         output_dir.mkdir(parents=True, exist_ok=True)
         output_path = output_dir / "features.parquet"
-        fused_df.to_parquet(output_path, index=False)
+        fused_df = _cast_parquet_compatible(fused_df)
+        fused_df.to_parquet(output_path, index=False, version="1.0")
         exported_paths.append(str(output_path))
 
     export_root = str(PROCESSED_DIR / f"{resolution_km}km")

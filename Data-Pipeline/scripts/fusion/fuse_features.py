@@ -121,16 +121,29 @@ def fuse_features(
             fused[col] = default
 
     # 3) weather aggregate + merge (merge weather_agg, not raw weather_features)
-    if (weather_features is not None) and (not weather_features.empty) and ("timestamp" in weather_features.columns):
-        weather_agg = _aggregate_weather_to_window(
-            weather_features,
-            pd.Timestamp(execution_date),
-            registry.temporal_aggregation_hours,
-        )
+    #
+    # process_weather.py saves one already-aggregated row per grid cell with no
+    # timestamp column — temporal windowing has already happened upstream.
+    # Only call _aggregate_weather_to_window when the raw multi-row format
+    # (one row per observation timestamp) is supplied instead.
+    if (weather_features is not None) and (not weather_features.empty):
+        if "timestamp" in weather_features.columns:
+            weather_agg = _aggregate_weather_to_window(
+                weather_features,
+                pd.Timestamp(execution_date),
+                registry.temporal_aggregation_hours,
+            )
+        else:
+            # Already aggregated by process_weather — use directly.
+            weather_agg = weather_features.copy()
+            weather_agg["grid_id"] = weather_agg["grid_id"].astype(str)
+            logger.info(
+                f"Weather already aggregated ({len(weather_agg)} rows, "
+                f"no timestamp column) — skipping temporal windowing."
+            )
     else:
-        # H2 fix: include all expected weather columns so the left-merge
-        # produces NaN-filled columns that the fill strategy can handle,
-        # instead of silently dropping weather columns entirely.
+        # No weather data at all — produce empty frame so left-merge still
+        # creates NaN-filled weather columns that fill strategies can handle.
         _weather_cols = [
             "grid_id", "temperature_2m", "relative_humidity_2m",
             "wind_speed_10m", "wind_direction_10m", "precipitation",
@@ -139,6 +152,7 @@ def fuse_features(
             "cumulative_wind_run_24h", "drought_index_proxy",
         ]
         weather_agg = pd.DataFrame(columns=_weather_cols)
+        logger.warning("No weather features available — weather columns will use fill strategies.")
 
     fused = _safe_merge(fused, weather_agg, how="left")
 
