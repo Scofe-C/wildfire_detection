@@ -1,0 +1,34 @@
+# Core
+numpy>=1.24.0,<2.0.0
+pandas>=2.0.0,<3.0.0
+pyarrow>=14.0.0
+scikit-learn>=1.3.0,<2.0.0
+pyyaml>=6.0
+
+# Bias detection
+fairlearn>=0.10.0,<1.0.0
+
+# Visualization
+matplotlib>=3.7.0,<4.0.0
+
+# Geospatial
+geopandas>=0.14.0,<1.0.0
+shapely>=2.0.0,<3.0.0
+h3>=4.0.0,<5.0.0
+
+# Tracking
+mlflow>=2.10.0,<3.0.0
+
+# GCP
+google-cloud-aiplatform>=1.40.0,<2.0.0
+google-cloud-storage>=2.14.0,<3.0.0
+
+# Model-specific (uncomment when teammates implement)
+xgboost>=2.0.0,<3.0.0
+shap>=0.44.0,<1.0.0
+
+# Dev / Test
+pytest>=7.4.0,<9.0.0
+pytest-cov>=4.1.0
+ruff>=0.2.0
+mypy>=1.8.0
