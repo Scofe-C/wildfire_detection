@@ -25,11 +25,14 @@ logger = logging.getLogger(__name__)
 
 # Feature channels for spatial grid (order matters)
 SPATIAL_FEATURE_CHANNELS = [
+    # fire (6)
     "active_fire_count",
     "mean_frp",
+    "median_frp",               # was missing — restores 20-channel spec
     "max_confidence",
     "nearest_fire_distance_km",
     "fire_detected_binary",
+    # weather (9)
     "temperature_2m",
     "relative_humidity_2m",
     "wind_speed_10m",
@@ -39,11 +42,13 @@ SPATIAL_FEATURE_CHANNELS = [
     "vpd",
     "days_since_last_precipitation",
     "cumulative_wind_run_24h",
+    # derived weather (1)
     "drought_index_proxy",
+    # terrain (4)
     "elevation_m",
     "slope_degrees",
     "aspect_degrees",
-    "fuel_model",
+    "fuel_model_fbfm40",        # was "fuel_model" — column name in fused df
     "canopy_cover_pct",
 ]
 
@@ -121,7 +126,7 @@ def export_spatial_grid(
     grid = np.full((n_rows, n_cols, n_channels), np.nan, dtype=np.float32)
 
     for ch_idx, col_name in enumerate(available_channels):
-        values = fused_df[col_name].values.astype(np.float32)
+        values = pd.to_numeric(fused_df[col_name], errors="coerce").values.astype(np.float32)
         grid[row_idx, col_idx, ch_idx] = values
 
     # Export

@@ -46,11 +46,14 @@ def load_and_process_static(
     df["slope_degrees"] = (30 * np.abs(np.cos(np.radians(lon)))).round(2)
     df["aspect_degrees"] = (np.mod(lon + 360, 360)).round(2)
 
-    # 5) other static placeholders
-    df["fuel_model_fbfm40"] = "UNKNOWN"
-    df["canopy_cover_pct"] = 0.0
-    df["vegetation_type"] = "UNKNOWN"
-    df["ndvi"] = 0.0
+    # 5) static placeholders
+    # fuel_model_fbfm40 and vegetation_type are stored as numeric codes.
+    # 0 = unclassified — used here until real LANDFIRE download is wired up.
+    # String "UNKNOWN" was used previously and caused all-null after float cast.
+    df["fuel_model_fbfm40"]   = 0       # int — FBFM40 fuel model code
+    df["canopy_cover_pct"]    = 0.0
+    df["vegetation_type"]     = 0       # int — NLCD vegetation class code
+    df["ndvi"]                = 0.0
     df["dominant_fuel_fraction"] = 0.0
 
     df = df[STATIC_COLUMNS]

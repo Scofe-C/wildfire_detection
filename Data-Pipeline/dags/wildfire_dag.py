@@ -698,26 +698,49 @@ with DAG(
 
             echo "=== DVC version step ==="
 
-            # DVC needs a git repo context
-            if [ ! -d .git ] || [ -z "$(ls -A .git)" ]; then
+            # Git setup
+            if [ ! -d .git ]; then
                 git init
-                git config user.email "airflow@wildfire.local"
-                git config user.name "Airflow"
             fi
+            git config user.email "airflow@wildfire.local"
+            git config user.name  "Airflow"
 
+            # DVC remote check
             if ! dvc remote list | grep -q .; then
-                echo "ERROR: No DVC remote configured."
+                echo "ERROR: No DVC remote configured. Run: dvc remote add -d myremote gs://<bucket>/dvc"
                 exit 1
             fi
 
+            # GCS credentials check
+            if [ -z "${GOOGLE_APPLICATION_CREDENTIALS:-}" ] && [ -z "${GOOGLE_CLOUD_PROJECT:-}" ]; then
+                echo "WARNING: No GCS credentials found — dvc push may fail."
+            fi
+
+            # DVC add — stage the data files
             echo "Tracking data/processed/fused ..."
             dvc add data/processed/fused -f
 
             echo "Tracking data/processed/{{ params.resolution_km }}km ..."
             dvc add data/processed/{{ params.resolution_km }}km -f
 
+            # Git commit the updated .dvc files
+            # Without this step DVC has no version history — every run
+            # overwrites the same .dvc file with no record of prior versions.
+            git add data/processed/fused.dvc \
+                    "data/processed/{{ params.resolution_km }}km.dvc" \
+                    .gitignore 2>/dev/null || true
+
+            if git diff --cached --quiet; then
+                echo "No changes to .dvc files — nothing to commit."
+            else
+                git commit -m "chore(dvc): update {{ params.resolution_km }}km + fused [{{ execution_date }}]"
+                echo "Git commit created."
+            fi
+
+            # DVC push to GCS
             echo "Pushing to GCS remote ..."
-            dvc push data/processed/fused.dvc data/processed/{{ params.resolution_km }}km.dvc
+            dvc push data/processed/fused.dvc "data/processed/{{ params.resolution_km }}km.dvc"
+            echo "DVC push complete."
 
             echo "=== DVC version step complete ==="
         """,

@@ -50,6 +50,15 @@ def _safe_merge(left: pd.DataFrame, right: Optional[pd.DataFrame], *, how: str =
     left["grid_id"] = left["grid_id"].astype(str)
     right["grid_id"] = right["grid_id"].astype(str)
 
+    # Deduplicate right on grid_id before merging.
+    # keep="first": the first concat'd source (e.g. CA weather with full 55-cell
+    # grid) wins over the later region-scoped source (TX weather with 32 cells).
+    # This preserves values for CA-only cells which only exist in the first source.
+    if right["grid_id"].duplicated().any():
+        before = len(right)
+        right = right.drop_duplicates(subset="grid_id", keep="first")
+        logger.debug(f"_safe_merge: deduped right {before} -> {len(right)} rows on grid_id")
+
     dup_cols = set(left.columns).intersection(set(right.columns)) - {"grid_id"}
     if dup_cols:
         right = right.drop(columns=list(dup_cols))
