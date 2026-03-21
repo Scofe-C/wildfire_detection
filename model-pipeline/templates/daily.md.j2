@@ -1,0 +1,53 @@
+# Daily Situation Report — {{ generated_at[:10] }}
+**Report ID**: {{ incident_id }}
+**Status**: {{ risk_level }} RISK | **Mode**: {{ operating_mode }} | **Areas Monitored**: {{ monitored_area_count }}
+**Confidence**: {{ "%.0f"|format(report_confidence * 100) }}% | **Human Review Required**: {{ human_review_required }}
+
+---
+
+## Summary
+
+{{ summary }}
+
+{% if weather_summary %}
+## Weather Conditions
+
+{{ weather_summary }}
+{% endif %}
+
+{% if highest_risk_cell %}
+## Highest Risk Cell
+
+H3 Index: `{{ highest_risk_cell }}`
+{% endif %}
+
+## Notable Changes
+{% if notable_changes %}
+{% for change in notable_changes %}
+- {{ change }}
+{% endfor %}
+{% else %}
+_No notable changes in this period._
+{% endif %}
+
+{% if next_check_recommendation %}
+## Next Check
+
+{{ next_check_recommendation }}
+{% endif %}
+
+---
+
+## Data Sources
+
+{% for src in data_sources_used %}
+- {{ src }}
+{% endfor %}
+
+{% if human_input_included %}
+_Operator input was incorporated into this report._
+{% endif %}
+
+---
+
+> {{ disclaimer }}

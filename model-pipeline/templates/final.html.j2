@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Final Report — {{ incident_name }}</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; max-width: 900px; margin: 0 auto; padding: 20px; color: #333; }
+        h1 { color: #2c3e50; border-bottom: 3px solid #2c3e50; padding-bottom: 10px; }
+        h2 { color: #34495e; margin-top: 30px; }
+        .meta { background: #f8f9fa; padding: 15px; border-radius: 6px; margin-bottom: 20px; }
+        .meta span { display: inline-block; margin-right: 20px; }
+        table { border-collapse: collapse; width: 100%; margin: 10px 0; }
+        th, td { border: 1px solid #ddd; padding: 8px 12px; text-align: left; }
+        th { background: #34495e; color: white; }
+        .timeline { border-left: 3px solid #3498db; padding-left: 20px; }
+        .timeline-event { margin-bottom: 15px; }
+        .timeline-event .ts { color: #3498db; font-weight: bold; }
+        .disclaimer { background: #fff3cd; padding: 12px; border: 1px solid #ffc107; border-radius: 4px; margin-top: 30px; font-style: italic; }
+        @media print { body { max-width: 100%; } }
+    </style>
+</head>
+<body>
+
+<h1>📋 Final Report: {{ incident_name }}</h1>
+
+<div class="meta">
+    <span><strong>Report ID:</strong> {{ incident_id }}</span>
+    <span><strong>Linked Incident:</strong> {{ linked_incident_id }}</span>
+    <span><strong>Generated:</strong> {{ generated_at }}</span>
+    <span><strong>Risk Level:</strong> {{ risk_level }}</span>
+    <span><strong>Confidence:</strong> {{ "%.0f"|format(report_confidence * 100) }}%</span>
+</div>
+
+<h2>Incident Timeline</h2>
+<div class="timeline">
+{% for evt in incident_timeline %}
+    <div class="timeline-event">
+        <span class="ts">{{ evt.timestamp }}</span>
+        <p>{{ evt.event }}{% if evt.source %} <em>({{ evt.source }})</em>{% endif %}</p>
+    </div>
+{% endfor %}
+</div>
+
+{% if total_area_burned_acres %}
+<h2>Total Area Burned</h2>
+<p>{{ total_area_burned_acres }} acres</p>
+{% endif %}
+
+<h2>Resources Deployed</h2>
+<table>
+    <thead>
+        <tr><th>Resource Type</th><th>Quantity</th><th>Deployed At</th><th>Notes</th></tr>
+    </thead>
+    <tbody>
+    {% for res in resources_deployed %}
+        <tr>
+            <td>{{ res.resource_type }}</td>
+            <td>{{ res.quantity }}</td>
+            <td>{{ res.deployed_at }}</td>
+            <td>{{ res.notes if res.notes else "—" }}</td>
+        </tr>
+    {% endfor %}
+    </tbody>
+</table>
+
+<h2>Losses Summary</h2>
+<table>
+    <tr><th>Structures at Risk</th><td>{{ losses_summary.structures_at_risk }}</td></tr>
+    <tr><th>Population at Risk</th><td>{{ losses_summary.population_at_risk }}</td></tr>
+    {% if losses_summary.infrastructure_notes %}
+    <tr><th>Infrastructure</th><td>{{ losses_summary.infrastructure_notes }}</td></tr>
+    {% endif %}
+    {% if losses_summary.estimated_cost_usd %}
+    <tr><th>Estimated Cost</th><td>${{ "%.2f"|format(losses_summary.estimated_cost_usd) }}</td></tr>
+    {% endif %}
+</table>
+
+<h2>Response Effectiveness</h2>
+<p>{{ response_effectiveness }}</p>
+
+<h2>Lessons Learned</h2>
+<ol>
+{% for lesson in lessons_learned %}
+    <li>{{ lesson }}</li>
+{% endfor %}
+</ol>
+
+<h2>Recommendations for Future</h2>
+<ol>
+{% for rec in recommendations_for_future %}
+    <li>{{ rec }}</li>
+{% endfor %}
+</ol>
+
+{% if attachments_referenced %}
+<h2>Attachments</h2>
+<ul>
+{% for att in attachments_referenced %}
+    <li>{{ att }}</li>
+{% endfor %}
+</ul>
+{% endif %}
+
+<h2>Data Sources</h2>
+<ul>
+{% for src in data_sources_used %}
+    <li>{{ src }}</li>
+{% endfor %}
+</ul>
+
+<div class="disclaimer">{{ disclaimer }}</div>
+
+</body>
+</html>

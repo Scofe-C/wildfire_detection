@@ -1,0 +1,62 @@
+# High Risk Alert — {{ generated_at[:10] }}
+**Report ID**: {{ incident_id }}
+**Status**: {{ risk_level }} RISK | **Mode**: {{ operating_mode }}
+**Confidence**: {{ "%.0f"|format(report_confidence * 100) }}% | **Human Review Required**: {{ human_review_required }}
+
+---
+
+## Risk Summary
+
+{{ risk_summary }}
+
+## Top Risk Cells
+
+| H3 Index | Risk Score | Latitude | Longitude |
+|----------|-----------|----------|-----------|
+{% for cell in top_risk_cells %}
+| `{{ cell.h3_index }}` | {{ "%.2f"|format(cell.risk_score) }} | {{ cell.lat }} | {{ cell.lon }} |
+{% endfor %}
+
+## Contributing Factors
+
+{% for factor in contributing_factors %}
+- {{ factor }}
+{% endfor %}
+
+## Preventive Recommendations
+
+{% for rec in preventive_recommendations %}
+### {{ rec.title }} ({{ rec.priority }})
+
+{{ rec.description }}
+
+{% endfor %}
+
+{% if vulnerable_populations %}
+## Vulnerable Populations
+
+{% for group in vulnerable_populations %}
+- **{{ group.group_name }}** — {{ group.location }} (score: {{ "%.2f"|format(group.vulnerability_score) }}){% if group.notes %} — {{ group.notes }}{% endif %}
+
+{% endfor %}
+{% endif %}
+
+## Escalation Trigger
+
+{{ escalation_trigger }}
+
+---
+
+## Data Sources
+
+{% for src in data_sources_used %}
+- {{ src }}
+{% endfor %}
+
+{% if human_input_included %}
+_Operator input was incorporated into this report._
+{% endif %}
+
+---
+
+> {{ disclaimer }}

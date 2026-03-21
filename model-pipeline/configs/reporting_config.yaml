@@ -1,0 +1,47 @@
+# OBJ-3 — Gemini Disaster Reporting Engine Configuration
+# Single source of truth for all OBJ-3 runtime settings.
+
+# Active LLM backend: "ollama" | "gemini_dev" | "vertex_ai"
+llm_backend: "ollama"
+
+# --- Ollama (Phase 1: local model) ---
+ollama:
+  model: "qwen2.5:14b"
+  base_url: "http://localhost:11434"
+  temperature: 0.0
+  max_retries: 2
+
+# --- Gemini Developer API (Phase 2: free-tier API key) ---
+gemini_dev:
+  model: "gemini-2.5-flash"
+  # API key read from env var GEMINI_API_KEY
+
+# --- Vertex AI (Phase 3: GCP project) ---
+vertex_ai:
+  model: "gemini-2.5-flash"
+  project_id: ""
+  location: "us-central1"
+  corpus_cache_ttl_seconds: 3600
+
+# --- RAG Corpus ---
+corpus:
+  version: "v1"
+  local_dir: "corpus/"
+  gcs_prefix: "corpus/"
+  max_corpus_chars: 500000
+
+# --- Reporting ---
+reporting:
+  confidence_threshold: 0.70
+  output_dir: "reports/disaster_reports"
+  gcs_bucket: ""
+  max_ml_block_chars: 20000
+  max_data_block_chars: 20000
+
+# --- Admin Toggle (human input channel) ---
+admin_toggle:
+  default: true
+  current_state: true
+  persistence: "local"            # "local" (Phase 1) | "firestore" (Phase 3)
+  firestore_collection: "config"
+  firestore_document: "admin_flags"

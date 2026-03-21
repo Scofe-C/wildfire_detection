@@ -27,6 +27,23 @@ google-cloud-storage>=2.14.0,<3.0.0
 xgboost>=2.0.0,<3.0.0
 shap>=0.44.0,<1.0.0
 
+# OBJ-3: Gemini Disaster Reporting — Core
+pydantic>=2.5.0,<3.0.0
+jinja2>=3.1.0,<4.0.0
+markdown>=3.5.0,<4.0.0
+
+# OBJ-3: Phase 1 — Local Ollama
+ollama>=0.4.0,<1.0.0
+
+# OBJ-3: Phase 2 — Gemini Developer API (free tier)
+google-generativeai>=0.8.0
+
+# OBJ-3: Phase 3 — Vertex AI + unified SDK
+google-genai>=1.0.0
+
+# OBJ-3: Optional (PDF rendering — large dependency, install only when needed)
+# weasyprint>=68.0,<69.0
+
 # Dev / Test
 pytest>=7.4.0,<9.0.0
 pytest-cov>=4.1.0

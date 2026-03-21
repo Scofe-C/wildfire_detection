@@ -1,0 +1,57 @@
+version: "1.0.0"
+
+paths:
+  backfill_dir: "../data-pipeline/data/processed/backfill"
+  models_dir: "models/ignition"
+  reports_dir: "reports"
+  validation_dir: "reports/validation"
+  bias_dir: "reports/bias_gate"
+  visualizations_dir: "reports/visualizations"
+  fema_nri_cache: "data/static/fema_nri"
+
+gcs:
+  bucket: "wildfire-model-pipeline"
+  models_prefix: "wildfire-models"
+  reports_prefix: "wildfire-reports"
+  bias_reports_prefix: "wildfire-bias-reports"
+
+validation:
+  auc_pr_threshold: 0.75
+  f1_threshold: 0.5
+  decision_threshold: 0.5
+  max_inference_latency_ms: 5000
+
+bias_gate:
+  metric: "false_negative_rate"
+  sensitive_feature: "nri_vulnerability_quartile"
+  max_disparity: 0.05
+  vulnerability_slices: ["Low", "Medium", "High", "Very High"]
+  mitigation_strategy:
+    primary: "class_weight"
+    secondary: "spatial_smote"
+    tertiary: "correlation_remover"
+
+tracking:
+  mlflow:
+    tracking_uri: "sqlite:///mlruns.db"
+    experiment_name: "wildfire-model-pipeline"
+    artifact_location: "mlruns/artifacts"
+  vertex_ai:
+    project_id: "${GCP_PROJECT_ID}"
+    location: "us-central1"
+    experiment_name: "wildfire-model-pipeline"
+
+shap:
+  enabled: true
+  min_soil_moisture_importance: 0.10
+  n_background_samples: 100
+
+notifications:
+  enabled: true
+  slack_webhook_secret: "wildfire-slack-webhook"
+  alert_on:
+    - "bias_gate_failure"
+    - "validation_failure"
+    - "pipeline_error"
+    - "rollback"
+    - "shap_drift"
