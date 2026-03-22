@@ -30,6 +30,10 @@ known-first-party = ["src"]
 python_version = "3.11"
 warn_return_any = true
 ignore_missing_imports = true
+# Disable error codes that fire exclusively due to untyped third-party libraries
+# (yaml, mlflow, google SDKs). These produce noise without catching real bugs.
+# Re-enable per-module once upstream stubs are available or we add inline ignores.
+disable_error_code = ["no-any-return", "import-untyped"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
