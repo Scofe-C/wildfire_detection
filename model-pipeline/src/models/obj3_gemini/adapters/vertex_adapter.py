@@ -213,32 +213,34 @@ class VertexAdapter(LLMAdapter):
             self._cache_name = None
             return None
 
-        # Check for existing cache
+        # Check for existing cache — list all and filter client-side by display_name.
+        # ListCachedContentsConfig has no server-side `filter` parameter in this SDK version.
         cache_display_name = f"wildfire-rag-corpus-{self._get_corpus_version(corpus_docs)}"
         try:
             existing_caches = self._client.caches.list(
-                config=types.ListCachedContentsConfig(
-                    filter=f'displayName="{cache_display_name}"',
-                ),
+                config=types.ListCachedContentsConfig(),
             )
             for cache in existing_caches:
-                # Check if the cache is still valid (not expired)
-                if hasattr(cache, "name") and cache.name:
+                if (
+                    hasattr(cache, "name") and cache.name
+                    and hasattr(cache, "display_name")
+                    and cache.display_name == cache_display_name
+                ):
                     logger.info("Cache hit: %s", cache.name)
                     self._cache_name = cache.name
                     return cache.name
         except Exception as exc:
             logger.warning("Failed to check existing caches: %s", exc)
 
-        # Create new cache
+        # Create new cache — `model` is a top-level arg to create(), not part of the config.
         try:
             # Build corpus content for caching
             corpus_parts: list[types.Part] = []
             for doc in corpus_docs:
                 if doc.mime_type == "text/plain":
                     text = doc.content_bytes.decode("utf-8", errors="replace")
-                    corpus_parts.append(types.Part.from_text(
-                        f"--- {doc.filename} ---\n{text}"
+                    corpus_parts.append(types.Part(
+                        text=f"--- {doc.filename} ---\n{text}"
                     ))
                 else:
                     # Binary files (PDFs) as inline data
@@ -248,11 +250,11 @@ class VertexAdapter(LLMAdapter):
                     ))
 
             cache = self._client.caches.create(
+                model=self._model_name,
                 config=types.CreateCachedContentConfig(
-                    model=self._model_name,
                     display_name=cache_display_name,
                     system_instruction=system_prompt,
-                    contents=[types.Content(parts=corpus_parts, role="user")],
+                    contents=types.Content(parts=corpus_parts, role="user"),
                     ttl=f"{ttl}s",
                 ),
             )

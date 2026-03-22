@@ -183,15 +183,18 @@ def get_or_create_cache(
     total_size = sum(len(d.content_bytes) for d in corpus_docs)
     cache_display_name = f"wildfire-rag-corpus-v{len(corpus_docs)}-{total_size}"
 
-    # Check for existing cache
+    # Check for existing cache — list all and filter client-side by display_name.
+    # ListCachedContentsConfig has no server-side `filter` parameter in this SDK version.
     try:
         existing = client.caches.list(  # type: ignore[attr-defined]
-            config=types.ListCachedContentsConfig(
-                filter=f'displayName="{cache_display_name}"',
-            ),
+            config=types.ListCachedContentsConfig(),
         )
         for cache in existing:
-            if hasattr(cache, "name") and cache.name:
+            if (
+                hasattr(cache, "name") and cache.name
+                and hasattr(cache, "display_name")
+                and cache.display_name == cache_display_name
+            ):
                 logger.info("Cache hit: %s", cache.name)
                 return cache.name
     except Exception as exc:
@@ -202,20 +205,20 @@ def get_or_create_cache(
     for doc in corpus_docs:
         if doc.mime_type == "text/plain":
             text = doc.content_bytes.decode("utf-8", errors="replace")
-            corpus_parts.append(types.Part.from_text(f"--- {doc.filename} ---\n{text}"))
+            corpus_parts.append(types.Part(text=f"--- {doc.filename} ---\n{text}"))
         else:
             corpus_parts.append(types.Part.from_bytes(
                 data=doc.content_bytes, mime_type=doc.mime_type,
             ))
 
-    # Create new cache
+    # Create new cache — `model` is a top-level arg to create(), not part of the config.
     try:
         cache = client.caches.create(  # type: ignore[attr-defined]
+            model=model,
             config=types.CreateCachedContentConfig(
-                model=model,
                 display_name=cache_display_name,
                 system_instruction=system_prompt,
-                contents=[types.Content(parts=corpus_parts, role="user")],
+                contents=types.Content(parts=corpus_parts, role="user"),
                 ttl=f"{ttl_seconds}s",
             ),
         )
