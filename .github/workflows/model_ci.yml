@@ -11,32 +11,40 @@ on:
 env:
   PYTHON_VERSION: "3.11"
 
-defaults:
-  run:
-    working-directory: model-pipeline
-
 jobs:
   lint:
     name: "Stage 1 — Lint & Type Check"
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with: { python-version: "${{ env.PYTHON_VERSION }}" }
-      - run: pip install ruff mypy
-      - run: ruff check src/ tests/
-      - run: mypy src/ --ignore-missing-imports --no-strict-optional
+      - uses: actions/checkout@v4.2.2
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: "${{ env.PYTHON_VERSION }}"
+      - name: Install linters
+        working-directory: model-pipeline
+        run: pip install ruff mypy
+      - name: Ruff lint
+        working-directory: model-pipeline
+        run: ruff check src/ tests/
+      - name: Mypy type check
+        working-directory: model-pipeline
+        run: mypy src/ --ignore-missing-imports --no-strict-optional
 
   test:
     name: "Stage 2 — Unit Tests (>= 90% coverage)"
     runs-on: ubuntu-latest
     needs: lint
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with: { python-version: "${{ env.PYTHON_VERSION }}" }
-      - run: pip install -r requirements.txt
-      - run: pytest tests/ -v --cov=src --cov-report=xml --cov-fail-under=90
+      - uses: actions/checkout@v4.2.2
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: "${{ env.PYTHON_VERSION }}"
+      - name: Install dependencies
+        working-directory: model-pipeline
+        run: pip install -r requirements.txt
+      - name: Run unit tests with coverage
+        working-directory: model-pipeline
+        run: pytest tests/ -v --cov=src --cov-report=xml --cov-fail-under=90
 
   build:
     name: "Stage 3 — Container Build"
@@ -44,43 +52,67 @@ jobs:
     needs: test
     if: github.event_name == 'push'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.2.2
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
-      - run: docker buildx build --platform linux/amd64,linux/arm64 -t wildfire-model:${{ github.sha }} .
+      - name: Build multi-platform image
+        # for docker commands. Dockerfile must live at model-pipeline/Dockerfile.
+        run: |
+          docker buildx build \
+            --platform linux/amd64,linux/arm64 \
+            -t wildfire-model:${{ github.sha }} \
+            ./model-pipeline
 
   integration:
     name: "Stage 4 — Integration Test"
     runs-on: ubuntu-latest
     needs: build
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with: { python-version: "${{ env.PYTHON_VERSION }}" }
-      - run: pip install -r requirements.txt
-      - run: pytest tests/ -v -k integration || echo "Integration tests pending model implementation"
+      - uses: actions/checkout@v4.2.2
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: "${{ env.PYTHON_VERSION }}"
+      - name: Install dependencies
+        working-directory: model-pipeline
+        run: pip install -r requirements.txt
+      # NOTE: The `|| echo` escape hatch is intentional scaffolding while
+      # integration tests are pending. Remove it once OBJ-1 is implemented
+      # so real failures are not swallowed.
+      - name: Run integration tests
+        working-directory: model-pipeline
+        run: pytest tests/ -v -k integration || echo "Integration tests pending model implementation"
 
   validate:
     name: "Stage 5 — Model Validation (AUC-PR > 0.75)"
     runs-on: ubuntu-latest
     needs: integration
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with: { python-version: "${{ env.PYTHON_VERSION }}" }
-      - run: pip install -r requirements.txt
-      - run: echo "Pending OBJ-1 implementation"
+      - uses: actions/checkout@v4.2.2
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: "${{ env.PYTHON_VERSION }}"
+      - name: Install dependencies
+        working-directory: model-pipeline
+        run: pip install -r requirements.txt
+      - name: Validate model metrics
+        working-directory: model-pipeline
+        run: echo "Pending OBJ-1 implementation"
 
   bias_gate:
     name: "Stage 6 — Bias Gate (BLOCKING)"
     runs-on: ubuntu-latest
     needs: validate
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with: { python-version: "${{ env.PYTHON_VERSION }}" }
-      - run: pip install -r requirements.txt
-      - run: echo "Pending OBJ-1 predictions + FEMA NRI data"
+      - uses: actions/checkout@v4.2.2
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: "${{ env.PYTHON_VERSION }}"
+      - name: Install dependencies
+        working-directory: model-pipeline
+        run: pip install -r requirements.txt
+      - name: Run bias gate checks
+        working-directory: model-pipeline
+        run: echo "Pending OBJ-1 predictions + FEMA NRI data"
 
   push_artifact:
     name: "Stage 7 — Artifact Push"
@@ -88,18 +120,22 @@ jobs:
     needs: bias_gate
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
-      - uses: actions/checkout@v4
-      - run: echo "Pending Stages 5+6 pass"
+      - uses: actions/checkout@v4.2.2
+      - name: Push artifact
+        run: echo "Pending Stages 5+6 pass"
 
   vertex_sync:
     name: "Stage 8 — Vertex AI Sync (non-blocking)"
     runs-on: ubuntu-latest
     needs: push_artifact
-    if: always()
+    # *skipped* (e.g. on PRs), burning runner minutes and risking credential errors.
+    # Now it only runs if push_artifact actually executed (succeeded or failed).
+    if: always() && needs.push_artifact.result != 'skipped'
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
-      - run: echo "Non-blocking sync"
+      - uses: actions/checkout@v4.2.2
+      - name: Sync to Vertex AI
+        run: echo "Non-blocking sync"
 
   deploy:
     name: "Stage 9 — Deploy"
@@ -107,8 +143,9 @@ jobs:
     needs: push_artifact
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
-      - uses: actions/checkout@v4
-      - run: echo "Pending infrastructure provisioning"
+      - uses: actions/checkout@v4.2.2
+      - name: Deploy
+        run: echo "Pending infrastructure provisioning"
 
   notify_failure:
     name: "Notify on Failure"
@@ -116,7 +153,9 @@ jobs:
     needs: [lint, test, build, integration, validate, bias_gate]
     if: failure()
     steps:
-      - run: |
+      # No working-directory set — runner.temp is always available on a fresh runner.
+      - name: Slack failure notification
+        run: |
           curl -X POST "${{ secrets.SLACK_WEBHOOK_URL }}" \
             -H "Content-Type: application/json" \
             -d '{"text":":x: *Model Pipeline FAILED* — ${{ github.ref }} @ ${{ github.sha }}"}' \
