@@ -1,0 +1,18 @@
+{
+  "run_id": "test-fixture-d",
+  "is_deployable": false,
+  "risk_level": "LOW",
+  "firms_hotspot_count": 0,
+  "metrics": { "auc_pr": 0.55, "f1": 0.48, "fnr": 0.35 },
+  "xgboost_top_cells": [],
+  "cell2fire_geojson": null,
+  "propagator_summary": null,
+  "telemetry": {
+    "temperature_max": 22.0,
+    "wind_speed_mph": 5.0,
+    "relative_humidity": 65.0,
+    "soil_moisture": 0.30
+  },
+  "fema_nri_tracts": [],
+  "bias_report": { "gate_result": "FAIL", "observed_disparity": 0.18 }
+}

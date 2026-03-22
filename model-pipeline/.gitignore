@@ -1,19 +1,51 @@
+# ---------- Python ----------
 __pycache__/
 *.py[cod]
 *.egg-info/
 dist/
+build/
+
+# ---------- Tooling caches ----------
 .mypy_cache/
 .pytest_cache/
 .ruff_cache/
 htmlcov/
 coverage.xml
+
+# ---------- MLflow ----------
 mlruns/
 mlruns.db
+
+# ---------- Virtual environments ----------
+.venv/
+venv/
+
+# ---------- IDE ----------
+.idea/
+*.iml
+.vscode/
+
+# ---------- Logs ----------
 *.log
+
+# ---------- Secrets ----------
 .env
-.env.local
+.env.*
 gcp-key.json
+
+# ---------- Runtime outputs (regenerable) ----------
+reports/
+review_manifest.json
+
+# ---------- Corpus (large binaries — distribute via GCS/shared drive) ----------
+corpus/raw/
+corpus/processed/
+.coverage
+# ---------- Data (large geospatial files) ----------
 data/static/fema_nri/*.shp
 data/static/fema_nri/*.dbf
 data/static/fema_nri/*.shx
 data/static/fema_nri/*.prj
+check_files.py
+model-pipeline-audit.zip
+.coverage

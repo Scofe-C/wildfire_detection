@@ -122,7 +122,7 @@ class GeminiDisasterReporter(BaseModel):
             Path to ``reporting_config.yaml``.
         """
         config_path = Path(model_path)
-        with open(config_path) as fh:
+        with open(config_path, encoding="utf-8") as fh:
             self._config = yaml.safe_load(fh) or {}
 
         # Resolve paths relative to config file location
@@ -479,7 +479,7 @@ class GeminiDisasterReporter(BaseModel):
         manifest_path = self._output_dir / "review_manifest.json"  # type: ignore[operator]
         try:
             if manifest_path.exists():
-                with open(manifest_path) as f:
+                with open(manifest_path,encoding="utf-8") as f:
                     manifest = _json.load(f)
             else:
                 manifest = []
@@ -491,7 +491,7 @@ class GeminiDisasterReporter(BaseModel):
             }
             manifest.append(entry)
 
-            with open(manifest_path, "w") as f:
+            with open(manifest_path, "w",encoding="utf-8") as f:
                 _json.dump(manifest, f, indent=2)
 
             logger.info("Review manifest updated: %s entries", len(manifest))

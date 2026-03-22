@@ -33,7 +33,7 @@ import json
 import logging
 import sys
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -397,7 +397,7 @@ def build_chunk(
         source_pdf=source_pdf,
         pages_extracted=pages_extracted,
         extraction_method=extraction_method,
-        extracted_at=datetime.now(timezone.utc).isoformat(),
+        extracted_at=datetime.now(UTC).isoformat(),
         char_count=len(text),
         tables=tables,
         content=text,

@@ -195,10 +195,10 @@ class AdminToggle:
             logger.warning("No config path set — toggle state not persisted to disk.")
             return
         try:
-            with open(self._config_path) as fh:
+            with open(self._config_path, encoding="utf-8") as fh:
                 raw = yaml.safe_load(fh) or {}
             raw.setdefault("admin_toggle", {})["current_state"] = state
-            with open(self._config_path, "w") as fh:
+            with open(self._config_path, "w", encoding="utf-8") as fh:
                 yaml.safe_dump(raw, fh, default_flow_style=False, sort_keys=False)
         except Exception:
             logger.exception("Failed to persist admin toggle state to %s", self._config_path)

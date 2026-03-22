@@ -193,7 +193,7 @@ class TestAdminToggle:
         assert toggle.is_on is False
 
         # Re-read from file
-        with open(cfg_file) as fh:
+        with open(cfg_file, encoding="utf-8") as fh:
             reloaded = yaml.safe_load(fh)
         assert reloaded["admin_toggle"]["current_state"] is False
 

@@ -15,11 +15,12 @@ import logging
 import os
 from typing import Any
 
-from dotenv import load_dotenv; load_dotenv()
+from dotenv import load_dotenv
 
 from src.models.obj3_gemini.adapters.base_adapter import LLMAdapter, LLMGenerationError
 from src.models.obj3_gemini.context_builder import ContextBundle
 
+load_dotenv()
 logger = logging.getLogger(__name__)
 
 
