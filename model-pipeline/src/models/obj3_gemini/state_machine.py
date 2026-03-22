@@ -41,25 +41,43 @@ class EmergencySubState(enum.Enum):
 # Mode resolution
 # ---------------------------------------------------------------------------
 
+VALID_RISK_LEVELS = {"LOW", "MODERATE", "HIGH", "CRITICAL"}
+
+
 def resolve_mode(
     pipeline_result: dict[str, Any],
-) -> tuple[OperationalMode, EmergencySubState | None]:
+) -> tuple[OperationalMode, EmergencySubState | None, bool]:
     """Determine operational mode from ML pipeline outputs.
+
+    Uses a 9-cell decision matrix plus an ``is_deployable`` safety gate.
 
     Parameters
     ----------
     pipeline_result:
         Raw dict from the pipeline (matches ``mock_pipeline_result.json``).
         Must contain ``risk_level`` (str) and ``firms_hotspot_count`` (int).
+        Optionally contains ``is_deployable`` (bool, default ``True``).
 
     Returns
     -------
-    tuple of (OperationalMode, EmergencySubState | None)
+    tuple of (OperationalMode, EmergencySubState | None, disagreement_flag: bool)
+        The third element is ``True`` when satellite hotspots conflict with
+        the ML risk assessment (LOW/MODERATE risk but FIRMS hotspots > 0).
 
     Raises
     ------
     ValueError
-        If required fields are missing from *pipeline_result*.
+        If required fields are missing or ``risk_level`` is unrecognised.
+
+    Verification matrix::
+
+        | risk_level     | firms_hotspot_count | is_deployable | → mode      | → disagreement_flag |
+        |----------------|---------------------|---------------|-------------|---------------------|
+        | LOW/MODERATE   | 0                   | True          | QUIET       | False               |
+        | HIGH/CRITICAL  | 0                   | True          | ACTIVE      | False               |
+        | LOW/MODERATE   | >0                  | True          | ACTIVE      | True                |
+        | HIGH/CRITICAL  | >0                  | True          | EMERGENCY   | False               |
+        | ANY            | ANY                 | False         | QUIET       | False               |
     """
     if "risk_level" not in pipeline_result:
         raise ValueError("pipeline_result missing required field: 'risk_level'")
@@ -69,16 +87,31 @@ def resolve_mode(
     risk = pipeline_result["risk_level"].upper()
     firms_count: int = int(pipeline_result["firms_hotspot_count"])
 
-    # EMERGENCY: critical risk OR any FIRMS hotspots
-    if risk == "CRITICAL" or firms_count > 0:
-        return OperationalMode.EMERGENCY, EmergencySubState.ACTIVE_FIRE
+    # Validate risk_level against known values
+    if risk not in VALID_RISK_LEVELS:
+        raise ValueError(
+            f"Unknown risk_level: {risk!r}. Expected one of {VALID_RISK_LEVELS}"
+        )
 
-    # ACTIVE: high or moderate risk, no confirmed fire
-    if risk in ("HIGH", "MODERATE"):
-        return OperationalMode.ACTIVE, None
+    # Gate 1: Non-deployable model → always QUIET, no disagreement.
+    # Default is True (fail-open for backward compat with older pipeline
+    # results that don't include the field).
+    is_deployable = pipeline_result.get("is_deployable", True)
+    if is_deployable is False:
+        return OperationalMode.QUIET, None, False
 
-    # QUIET: low (or moderate with no hotspots — already handled above)
-    return OperationalMode.QUIET, None
+    # Gate 2: Route by 9-cell matrix
+    if firms_count == 0:
+        if risk in ("HIGH", "CRITICAL"):
+            return OperationalMode.ACTIVE, None, False
+        # LOW, MODERATE
+        return OperationalMode.QUIET, None, False
+
+    # firms_count > 0
+    if risk in ("HIGH", "CRITICAL"):
+        return OperationalMode.EMERGENCY, EmergencySubState.ACTIVE_FIRE, False
+    # LOW, MODERATE + firms > 0 → MODEL DISAGREEMENT
+    return OperationalMode.ACTIVE, None, True
 
 
 def mode_to_report_type(

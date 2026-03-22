@@ -19,7 +19,7 @@ pytestmark = pytest.mark.integration
 def _ollama_available() -> bool:
     try:
         from src.models.obj3_gemini.adapters.ollama_adapter import OllamaAdapter
-        adapter = OllamaAdapter({"ollama": {"model": "qwen2.5:14b"}})
+        adapter = OllamaAdapter({"ollama": {"model": "qwen2.5:7b"}})
         return adapter.is_available()
     except Exception:
         return False
@@ -27,15 +27,27 @@ def _ollama_available() -> bool:
 
 @pytest.fixture()
 def reporter(tmp_path):
-    """Create a reporter with isolated output dir (avoid polluting real reports/)."""
+    """Create a reporter with isolated output dir (avoid polluting real reports/).
+
+    Directory layout mirrors production so reporter.py path arithmetic works:
+        tmp_path/
+            configs/reporting_config.yaml   ← config_path
+            templates/                      ← config_path.parent.parent / "templates"
+            reports/                        ← output dir
+    """
     import yaml
 
     from src.models.obj3_gemini.reporter import GeminiDisasterReporter
 
-    # Write a temporary config pointing at tmp_path for output
+    # Write a temporary config inside a configs/ subdirectory
+    # reporter.py does: base_dir = config_path.parent.parent
+    # so config must be one level deeper to match production layout
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+
     config = {
         "llm_backend": "ollama",
-        "ollama": {"model": "qwen2.5:14b", "base_url": "http://localhost:11434", "temperature": 0.0, "max_retries": 2},
+        "ollama": {"model": "qwen2.5:7b", "base_url": "http://localhost:11434", "temperature": 0.0, "max_retries": 2},
         "corpus": {"version": "v1", "local_dir": "corpus/", "max_corpus_chars": 500000},
         "reporting": {
             "confidence_threshold": 0.70,
@@ -46,10 +58,12 @@ def reporter(tmp_path):
         },
         "admin_toggle": {"default": True, "current_state": True, "persistence": "local"},
     }
-    config_file = tmp_path / "reporting_config.yaml"
+    config_file = config_dir / "reporting_config.yaml"
     config_file.write_text(yaml.safe_dump(config))
 
-    # Create templates dir
+    # Copy real templates to where reporter.py expects them
+    # reporter.py: self._template_dir = config_path.parent.parent / "templates"
+    # config_path.parent.parent = tmp_path → so templates go to tmp_path/templates/
     import shutil
 
     from tests.obj3.conftest import TEMPLATE_DIR
@@ -103,8 +117,8 @@ class TestFullPipeline:
         result = reporter.generate_report(pipeline_result=mock_pipeline_result)
         if result.json_path:
             assert result.json_path.exists()
-            content = json.loads(result.json_path.read_text())
+            content = json.loads(result.json_path.read_text(encoding="utf-8"))
             assert "report_type" in content
         if result.markdown_path:
             assert result.markdown_path.exists()
-            assert len(result.markdown_path.read_text()) > 0
+            assert len(result.markdown_path.read_text(encoding="utf-8")) > 0

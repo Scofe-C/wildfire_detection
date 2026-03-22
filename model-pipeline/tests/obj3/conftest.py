@@ -12,42 +12,124 @@ from src.models.obj3_gemini.state_machine import AdminToggle
 # ---------------------------------------------------------------------------
 # Path constants
 # ---------------------------------------------------------------------------
+PROJECT_ROOT = Path(__file__).resolve().parents[2]  # tests/obj3/ → model-pipeline/
+TEMPLATE_DIR = PROJECT_ROOT / "templates"
 FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures"
-TEMPLATE_DIR = Path(__file__).resolve().parents[2] / "templates"
 CONFIG_DIR = Path(__file__).resolve().parents[2] / "configs"
 
 
 # ---------------------------------------------------------------------------
-# Pipeline result fixtures
+# Pipeline result fixtures (A-E) — match mock JSON files
 # ---------------------------------------------------------------------------
 
 @pytest.fixture()
-def mock_pipeline_result() -> dict:
-    """Load the standard QUIET-mode pipeline result fixture."""
-    with open(FIXTURE_DIR / "mock_pipeline_result.json") as fh:
-        return json.load(fh)
+def fixture_a_quiet() -> dict:
+    """Fixture A: LOW + 0 firms + deployable → QUIET → daily."""
+    return {
+        "run_id": "test-fixture-a", "is_deployable": True,
+        "risk_level": "LOW", "firms_hotspot_count": 0,
+        "metrics": {"auc_pr": 0.82, "f1": 0.74, "fnr": 0.12},
+        "xgboost_top_cells": [], "cell2fire_geojson": None,
+        "propagator_summary": None,
+        "telemetry": {"temperature_max": 28.5, "wind_speed_mph": 12.0,
+                      "relative_humidity": 58.0, "soil_moisture": 0.22},
+        "fema_nri_tracts": [],
+        "bias_report": {"gate_result": "PASS", "observed_disparity": 0.02},
+    }
 
 
 @pytest.fixture()
-def emergency_pipeline_result(mock_pipeline_result: dict) -> dict:
-    """Pipeline result that triggers EMERGENCY mode."""
-    result = dict(mock_pipeline_result)
-    result["risk_level"] = "CRITICAL"
-    result["firms_hotspot_count"] = 5
-    result["xgboost_top_cells"] = [
-        {"h3_index": "8928308280fffff", "probability": 0.91, "lat": 37.4, "lon": -119.5},
-        {"h3_index": "8928308281fffff", "probability": 0.87, "lat": 37.5, "lon": -119.6},
-    ]
-    return result
+def fixture_b_active() -> dict:
+    """Fixture B: HIGH + 0 firms + deployable → ACTIVE → high_risk."""
+    return {
+        "run_id": "test-fixture-b", "is_deployable": True,
+        "risk_level": "HIGH", "firms_hotspot_count": 0,
+        "metrics": {"auc_pr": 0.78, "f1": 0.70, "fnr": 0.15},
+        "xgboost_top_cells": [
+            {"h3_index": "8928308280fffff", "probability": 0.81, "lat": 34.1, "lon": -118.3},
+        ],
+        "cell2fire_geojson": None, "propagator_summary": None,
+        "telemetry": {"temperature_max": 38.0, "wind_speed_mph": 25.0,
+                      "relative_humidity": 15.0, "soil_moisture": 0.08},
+        "fema_nri_tracts": [{"tract_id": "06037701000", "nri_score": 42.5}],
+        "bias_report": {"gate_result": "PASS", "observed_disparity": 0.04},
+    }
 
 
 @pytest.fixture()
-def active_pipeline_result(mock_pipeline_result: dict) -> dict:
-    """Pipeline result that triggers ACTIVE mode."""
-    result = dict(mock_pipeline_result)
-    result["risk_level"] = "HIGH"
-    result["firms_hotspot_count"] = 0
-    return result
+def fixture_c_emergency() -> dict:
+    """Fixture C: HIGH + 12 firms + deployable → EMERGENCY → incident."""
+    return {
+        "run_id": "test-fixture-c", "is_deployable": True,
+        "risk_level": "HIGH", "firms_hotspot_count": 12,
+        "metrics": {"auc_pr": 0.85, "f1": 0.76, "fnr": 0.10},
+        "xgboost_top_cells": [
+            {"h3_index": "8928308280fffff", "probability": 0.92, "lat": 34.1, "lon": -118.3},
+            {"h3_index": "8928308281fffff", "probability": 0.88, "lat": 34.2, "lon": -118.4},
+        ],
+        "cell2fire_geojson": '{"type": "FeatureCollection", "features": []}',
+        "propagator_summary": "Fire spreading NE at 2.3 mph, 150 acres estimated.",
+        "telemetry": {"temperature_max": 41.0, "wind_speed_mph": 35.0,
+                      "relative_humidity": 8.0, "soil_moisture": 0.04},
+        "fema_nri_tracts": [{"tract_id": "06037701000", "nri_score": 78.2}],
+        "bias_report": {"gate_result": "PASS", "observed_disparity": 0.03},
+    }
+
+
+@pytest.fixture()
+def fixture_d_non_deployable() -> dict:
+    """Fixture D: LOW + 0 firms + NOT deployable → QUIET → daily."""
+    return {
+        "run_id": "test-fixture-d", "is_deployable": False,
+        "risk_level": "LOW", "firms_hotspot_count": 0,
+        "metrics": {"auc_pr": 0.55, "f1": 0.48, "fnr": 0.35},
+        "xgboost_top_cells": [],
+        "cell2fire_geojson": None, "propagator_summary": None,
+        "telemetry": {"temperature_max": 22.0, "wind_speed_mph": 5.0,
+                      "relative_humidity": 65.0, "soil_moisture": 0.30},
+        "fema_nri_tracts": [],
+        "bias_report": {"gate_result": "FAIL", "observed_disparity": 0.18},
+    }
+
+
+@pytest.fixture()
+def fixture_e_disagreement() -> dict:
+    """Fixture E: LOW + 7 firms + deployable → ACTIVE + disagreement → high_risk.
+    MOST CRITICAL SAFETY TEST. review_status is guaranteed PENDING_REVIEW
+    because disagreement_flag fires before the LLM is called."""
+    return {
+        "run_id": "test-fixture-e", "is_deployable": True,
+        "risk_level": "LOW", "firms_hotspot_count": 7,
+        "metrics": {"auc_pr": 0.80, "f1": 0.72, "fnr": 0.13},
+        "xgboost_top_cells": [
+            {"h3_index": "8928308280fffff", "probability": 0.15, "lat": 37.4, "lon": -119.5},
+        ],
+        "cell2fire_geojson": None,
+        "propagator_summary": None,
+        "telemetry": {"temperature_max": 26.0, "wind_speed_mph": 8.0,
+                      "relative_humidity": 55.0, "soil_moisture": 0.20},
+        "fema_nri_tracts": [],
+        "bias_report": {"gate_result": "PASS", "observed_disparity": 0.02},
+    }
+
+
+# Backward-compat aliases for existing tests that reference old fixture names
+@pytest.fixture()
+def mock_pipeline_result(fixture_a_quiet) -> dict:
+    """Alias for fixture_a_quiet (backward compat)."""
+    return fixture_a_quiet
+
+
+@pytest.fixture()
+def active_pipeline_result(fixture_b_active) -> dict:
+    """Alias for fixture_b_active (backward compat)."""
+    return fixture_b_active
+
+
+@pytest.fixture()
+def emergency_pipeline_result(fixture_c_emergency) -> dict:
+    """Alias for fixture_c_emergency (backward compat)."""
+    return fixture_c_emergency
 
 
 # ---------------------------------------------------------------------------

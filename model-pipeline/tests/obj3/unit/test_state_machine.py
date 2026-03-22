@@ -1,4 +1,4 @@
-"""Unit tests for state_machine.py — §5.1 test_state_machine."""
+"""Unit tests for state_machine.py — 9-cell routing matrix + is_deployable gate."""
 
 from __future__ import annotations
 
@@ -13,38 +13,103 @@ from src.models.obj3_gemini.state_machine import (
 )
 
 # ---------------------------------------------------------------------------
-# resolve_mode tests
+# resolve_mode tests — 9-cell matrix + is_deployable gate
 # ---------------------------------------------------------------------------
 
 class TestResolveMode:
-    def test_quiet_mode_low_risk(self, mock_pipeline_result):
-        mode, sub = resolve_mode(mock_pipeline_result)
+    """Tests for the 9-cell routing matrix + is_deployable gate."""
+
+    # --- Row 1: LOW/MODERATE + firms=0 → QUIET ---
+    def test_low_risk_no_firms_quiet(self):
+        r = {"risk_level": "LOW", "firms_hotspot_count": 0, "is_deployable": True}
+        mode, sub, flag = resolve_mode(r)
         assert mode == OperationalMode.QUIET
         assert sub is None
+        assert flag is False
 
-    def test_active_mode_high_risk(self, active_pipeline_result):
-        mode, sub = resolve_mode(active_pipeline_result)
+    def test_moderate_risk_no_firms_quiet(self):
+        r = {"risk_level": "MODERATE", "firms_hotspot_count": 0, "is_deployable": True}
+        mode, sub, flag = resolve_mode(r)
+        assert mode == OperationalMode.QUIET
+        assert sub is None
+        assert flag is False
+
+    # --- Row 2: HIGH/CRITICAL + firms=0 → ACTIVE ---
+    def test_high_risk_no_firms_active(self):
+        r = {"risk_level": "HIGH", "firms_hotspot_count": 0, "is_deployable": True}
+        mode, sub, flag = resolve_mode(r)
         assert mode == OperationalMode.ACTIVE
         assert sub is None
+        assert flag is False
 
-    def test_emergency_mode_critical(self):
-        result = {"risk_level": "CRITICAL", "firms_hotspot_count": 0}
-        mode, sub = resolve_mode(result)
-        assert mode == OperationalMode.EMERGENCY
-        assert sub == EmergencySubState.ACTIVE_FIRE
-
-    def test_emergency_mode_firms_hotspot(self):
-        result = {"risk_level": "LOW", "firms_hotspot_count": 5}
-        mode, sub = resolve_mode(result)
-        assert mode == OperationalMode.EMERGENCY
-        assert sub == EmergencySubState.ACTIVE_FIRE
-
-    def test_moderate_risk_no_hotspot(self):
-        result = {"risk_level": "MODERATE", "firms_hotspot_count": 0}
-        mode, sub = resolve_mode(result)
+    def test_critical_risk_no_firms_active(self):
+        r = {"risk_level": "CRITICAL", "firms_hotspot_count": 0, "is_deployable": True}
+        mode, sub, flag = resolve_mode(r)
         assert mode == OperationalMode.ACTIVE
         assert sub is None
+        assert flag is False
 
+    # --- Row 3: LOW/MODERATE + firms>0 → ACTIVE + disagreement ---
+    def test_low_risk_with_firms_active_disagreement(self):
+        r = {"risk_level": "LOW", "firms_hotspot_count": 7, "is_deployable": True}
+        mode, sub, flag = resolve_mode(r)
+        assert mode == OperationalMode.ACTIVE
+        assert sub is None
+        assert flag is True   # ← MODEL DISAGREEMENT
+
+    def test_moderate_risk_with_firms_active_disagreement(self):
+        r = {"risk_level": "MODERATE", "firms_hotspot_count": 3, "is_deployable": True}
+        mode, sub, flag = resolve_mode(r)
+        assert mode == OperationalMode.ACTIVE
+        assert sub is None
+        assert flag is True
+
+    # --- Row 4: HIGH/CRITICAL + firms>0 → EMERGENCY ---
+    def test_high_risk_with_firms_emergency(self):
+        r = {"risk_level": "HIGH", "firms_hotspot_count": 12, "is_deployable": True}
+        mode, sub, flag = resolve_mode(r)
+        assert mode == OperationalMode.EMERGENCY
+        assert sub == EmergencySubState.ACTIVE_FIRE
+        assert flag is False
+
+    def test_critical_risk_with_firms_emergency(self):
+        r = {"risk_level": "CRITICAL", "firms_hotspot_count": 5, "is_deployable": True}
+        mode, sub, flag = resolve_mode(r)
+        assert mode == OperationalMode.EMERGENCY
+        assert sub == EmergencySubState.ACTIVE_FIRE
+        assert flag is False
+
+    # --- Row 5: is_deployable=False → always QUIET ---
+    def test_non_deployable_low_no_firms_quiet(self):
+        r = {"risk_level": "LOW", "firms_hotspot_count": 0, "is_deployable": False}
+        mode, sub, flag = resolve_mode(r)
+        assert mode == OperationalMode.QUIET
+        assert flag is False
+
+    def test_non_deployable_high_with_firms_still_quiet(self):
+        """Even HIGH + firms>0 → QUIET when model is not deployable."""
+        r = {"risk_level": "HIGH", "firms_hotspot_count": 12, "is_deployable": False}
+        mode, sub, flag = resolve_mode(r)
+        assert mode == OperationalMode.QUIET
+        assert flag is False
+
+    def test_non_deployable_critical_with_firms_still_quiet(self):
+        r = {"risk_level": "CRITICAL", "firms_hotspot_count": 5, "is_deployable": False}
+        mode, sub, flag = resolve_mode(r)
+        assert mode == OperationalMode.QUIET
+        assert flag is False
+
+    # --- Disagreement safety test (Fixture E) ---
+    def test_fixture_e_disagreement_guaranteed_pending(self):
+        """Fixture E: LOW + 7 firms + deployable → ACTIVE + disagreement.
+        review_status is guaranteed PENDING_REVIEW regardless of LLM output
+        because disagreement_flag fires trigger #3."""
+        r = {"risk_level": "LOW", "firms_hotspot_count": 7, "is_deployable": True}
+        mode, sub, flag = resolve_mode(r)
+        assert mode == OperationalMode.ACTIVE
+        assert flag is True  # This alone guarantees PENDING_REVIEW in reporter.py
+
+    # --- Error cases ---
     def test_missing_risk_level_raises(self):
         with pytest.raises(ValueError, match="risk_level"):
             resolve_mode({"firms_hotspot_count": 0})
@@ -52,6 +117,11 @@ class TestResolveMode:
     def test_missing_firms_count_raises(self):
         with pytest.raises(ValueError, match="firms_hotspot_count"):
             resolve_mode({"risk_level": "LOW"})
+
+    def test_unknown_risk_level_raises(self):
+        r = {"risk_level": "EXTREME", "firms_hotspot_count": 0}
+        with pytest.raises(ValueError, match="Unknown risk_level"):
+            resolve_mode(r)
 
 
 # ---------------------------------------------------------------------------

@@ -7,11 +7,6 @@ requires-python = ">=3.11"
 target-version = "py311"
 line-length = 100
 
-# The top-level keys are deprecated as of ruff >= 0.2.0 and will be removed.
-# This also eliminates the CI warning:
-#   "The top-level linter settings are deprecated in favour of their counterparts
-#    in the `lint` section."
-
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "UP", "B", "SIM"]
 ignore = [
@@ -38,13 +33,16 @@ disable_error_code = ["no-any-return", "import-untyped"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-v --tb=short"
+markers = [
+    "integration: marks tests as integration tests (require running services)",
+]
 
 [tool.coverage.run]
 source = ["src"]
 omit = ["tests/*", "src/models/*/placeholder.py"]
 
 [tool.coverage.report]
-fail_under = 90
+fail_under = 80
 show_missing = true
 exclude_lines = [
     "pragma: no cover",

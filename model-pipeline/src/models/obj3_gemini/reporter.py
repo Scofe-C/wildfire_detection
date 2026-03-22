@@ -245,7 +245,7 @@ class GeminiDisasterReporter(BaseModel):
             latency_ms=latency,
         )
 
-    def validate(self, report_result: ReportResult) -> ValidationResult:  # type: ignore[override]
+    def validate(self, report_result: ReportResult, *, disagreement_flag: bool = False) -> ValidationResult:  # type: ignore[override]
         """Run all 4 validation criteria on a ReportResult.
 
         Does NOT raise — caller decides how to handle failures.
@@ -266,15 +266,19 @@ class GeminiDisasterReporter(BaseModel):
         threshold = self._config.get("reporting", {}).get("confidence_threshold", 0.70)
         vr.confidence_ok = parsed.report_confidence >= threshold
 
-        # 4. Review flag correct
-        if parsed.report_confidence < threshold:
-            vr.review_flag_correct = parsed.human_review_required is True
-        else:
-            vr.review_flag_correct = True  # Flag can be True or False when above threshold
+        # 4. Review flag correct (Option A — verify hrr matches deterministic computation)
+        expected_hrr = _compute_human_review_required(parsed, disagreement_flag, self._config)
+        vr.review_flag_correct = parsed.human_review_required == expected_hrr
 
         # Special rule: Final reports always require human review
         if report_result.report_type == "final":
             vr.review_flag_correct = parsed.human_review_required is True
+
+        # Consistency: review_status must match human_review_required
+        if parsed.review_status == "PENDING_REVIEW" and not parsed.human_review_required:
+            vr.review_flag_correct = False
+        if parsed.review_status == "AUTO_APPROVED" and parsed.human_review_required:
+            vr.review_flag_correct = False
 
         return vr
 
@@ -288,6 +292,9 @@ class GeminiDisasterReporter(BaseModel):
             "human_input_included": parsed.human_input_included,
             "data_sources_used": parsed.data_sources_used,
             "human_review_required": parsed.human_review_required,
+            "review_status": parsed.review_status,
+            "disagreement_flag": parsed.disagreement_flag,
+            "grounding_search_count": parsed.grounding_search_count,
             "report_type": parsed.report_type,
             "latency_ms": report_result.latency_ms,
         }
@@ -319,8 +326,9 @@ class GeminiDisasterReporter(BaseModel):
         human_inputs = human_inputs or []
 
         # 1–2: Resolve mode
+        disagreement_flag = False
         if mode is None:
-            mode, sub_state = resolve_mode(pipeline_result)
+            mode, sub_state, disagreement_flag = resolve_mode(pipeline_result)
 
         report_type = mode_to_report_type(mode, sub_state)
         logger.info("Mode: %s/%s → report_type: %s", mode.value, sub_state, report_type)
@@ -340,8 +348,24 @@ class GeminiDisasterReporter(BaseModel):
         # 5–6: Generate + parse
         result = self.predict(context)
 
+        # 6.5: Deterministic stamping (post-LLM, pre-validate)
+        if result.parsed_report is not None:
+            # Stamp disagreement_flag from state machine
+            result.parsed_report.disagreement_flag = disagreement_flag
+
+            # Compute human_review_required (OR logic across 3 independent triggers)
+            hrr = _compute_human_review_required(
+                result.parsed_report, disagreement_flag, self._config,
+            )
+            result.parsed_report.human_review_required = hrr
+
+            # Stamp review_status
+            result.parsed_report.review_status = (
+                "PENDING_REVIEW" if hrr else "AUTO_APPROVED"
+            )
+
         # 7: Validate
-        validation = self.validate(result)
+        validation = self.validate(result, disagreement_flag=disagreement_flag)
 
         # 8: Render
         rendered_content = ""
@@ -367,6 +391,23 @@ class GeminiDisasterReporter(BaseModel):
                 dt=now,
                 fmt=fmt,
                 output_dir=self._output_dir,
+            )
+
+        # 9.5: Append to review manifest if PENDING_REVIEW
+        if (
+            result.parsed_report is not None
+            and result.parsed_report.review_status == "PENDING_REVIEW"
+            and self._output_dir
+        ):
+            self._append_review_manifest(
+                incident_id=result.incident_id,
+                report_type=report_type,
+                json_path=json_path,
+                rendered_path=rendered_path,
+                disagreement_flag=disagreement_flag,
+                confidence=result.parsed_report.report_confidence,
+                grounding_count=result.parsed_report.grounding_search_count,
+                generated_at=now.isoformat(),
             )
 
         # 10: GCS sync
@@ -416,7 +457,7 @@ class GeminiDisasterReporter(BaseModel):
     def _check_sections(report: BaseReport) -> bool:
         """Check that all required fields in the report are non-empty."""
         data = report.model_dump()
-        for field_name, field_info in report.model_fields.items():
+        for field_name, field_info in type(report).model_fields.items():
             if field_info.is_required():
                 val = data.get(field_name)
                 if val is None:
@@ -427,3 +468,59 @@ class GeminiDisasterReporter(BaseModel):
                     # Some fields allow empty list (e.g. notable_changes)
                     pass
         return True
+
+    def _append_review_manifest(self, **entry_kwargs: Any) -> None:
+        """Append an entry to review_manifest.json (create if missing).
+
+        Best-effort: a manifest write failure must NOT crash report generation.
+        """
+        import json as _json
+
+        manifest_path = self._output_dir / "review_manifest.json"  # type: ignore[operator]
+        try:
+            if manifest_path.exists():
+                with open(manifest_path) as f:
+                    manifest = _json.load(f)
+            else:
+                manifest = []
+
+            # Convert Path objects to strings for JSON serialization
+            entry = {
+                k: str(v) if isinstance(v, Path) else v
+                for k, v in entry_kwargs.items()
+            }
+            manifest.append(entry)
+
+            with open(manifest_path, "w") as f:
+                _json.dump(manifest, f, indent=2)
+
+            logger.info("Review manifest updated: %s entries", len(manifest))
+        except Exception:
+            logger.exception("Failed to update review manifest at %s", manifest_path)
+
+
+# ---------------------------------------------------------------------------
+# Module-level helpers
+# ---------------------------------------------------------------------------
+
+def _compute_human_review_required(
+    report: BaseReport,
+    disagreement_flag: bool,
+    config: dict[str, Any],
+) -> bool:
+    """Deterministic OR logic — 3 independent triggers.
+
+    1. report_confidence < threshold (default 0.7)
+    2. grounding_search_count < min_grounding (default 3)
+    3. disagreement_flag is True
+
+    Returns True if ANY trigger fires.
+    """
+    threshold = config.get("reporting", {}).get("confidence_threshold", 0.70)
+    min_grounding = config.get("reporting", {}).get("min_grounding_sources", 3)
+
+    trigger_low_confidence = report.report_confidence < threshold
+    trigger_low_grounding = report.grounding_search_count < min_grounding
+    trigger_disagreement = disagreement_flag
+
+    return trigger_low_confidence or trigger_low_grounding or trigger_disagreement

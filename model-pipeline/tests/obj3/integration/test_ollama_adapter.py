@@ -26,7 +26,7 @@ def _ollama_available() -> bool:
 def adapter():
     from src.models.obj3_gemini.adapters.ollama_adapter import OllamaAdapter
     return OllamaAdapter({"ollama": {
-        "model": "qwen2.5:14b",
+        "model": "qwen2.5:7b",
         "base_url": "http://localhost:11434",
         "temperature": 0.0,
         "max_retries": 2,

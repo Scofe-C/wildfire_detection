@@ -92,6 +92,15 @@ class BaseReport(BaseModel):
     risk_level: Literal["LOW", "MODERATE", "HIGH", "CRITICAL"]
     human_review_required: bool
     human_input_included: bool
+    # B1: review_status — stamped by reporter.py AFTER the LLM call, not by
+    # the LLM itself.  Default is PENDING_REVIEW (fail-safe).
+    review_status: Literal["PENDING_REVIEW", "AUTO_APPROVED"] = "PENDING_REVIEW"
+    # B2: grounding fields — populated by the LLM; read by reporter.py for
+    # the deterministic human_review_required calculation.
+    grounding_sources: list[str] = Field(default_factory=list)
+    grounding_search_count: int = Field(default=0, ge=0)
+    # B3: disagreement_flag — set by state machine before the LLM is called.
+    disagreement_flag: bool = False
     disclaimer: str
     data_sources_used: list[str]
 

@@ -6,7 +6,7 @@ llm_backend: "ollama"
 
 # --- Ollama (Phase 1: local model) ---
 ollama:
-  model: "qwen2.5:14b"
+  model: "qwen2.5:7b"
   base_url: "http://localhost:11434"
   temperature: 0.0
   max_retries: 2

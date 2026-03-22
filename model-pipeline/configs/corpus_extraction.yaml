@@ -1,0 +1,221 @@
+# =============================================================================
+# Corpus Extraction Configuration
+# =============================================================================
+# Controls how extract_corpus.py processes the 6 reference PDFs into
+# structured JSON chunks for corpus_loader.py and Vertex AI context caching.
+#
+# Hybrid strategy:
+#   - page_override: [start, end]  → use exact page range (1-indexed, inclusive)
+#   - page_override: null          → use keyword search across all pages
+#
+# After first run, check ExtractionSummary for any "Skipped (too short)" chunks.
+# Those need a page_override added — open the PDF, note the pages, re-run.
+# =============================================================================
+
+extraction:
+  input_dir: corpus/raw
+  output_dir: corpus/processed
+  min_chunk_chars: 200      # Chunks below this are skipped and logged as warnings
+  max_chunk_chars: 12000    # Hard cap — truncated chunks are logged as warnings
+  overlap_lines: 2          # Lines of context overlap between adjacent matched pages
+
+# =============================================================================
+# Document Definitions
+# Each document maps to one PDF. Each chunk maps to one output .json file.
+# output_geography overrides the document-level geography for a specific chunk.
+# extract_tables: true enables pdfplumber table extraction for that chunk.
+# =============================================================================
+
+documents:
+
+  # ---------------------------------------------------------------------------
+  # ICS-209 — Incident Status Summary
+  # Most critical document — defines our report schema fields directly.
+  # ---------------------------------------------------------------------------
+  ics209:
+    path: "ics/ICS 209 Fillable PDF Form.pdf"
+    source_name: "ICS Form 209 — Incident Status Summary"
+    source_org: "FEMA / NIMS"
+    geography: shared
+    chunks:
+      - id: field_definitions
+        keywords: ["block", "instructions", "complete", "enter"]
+        page_override: null
+        extract_tables: true
+
+      - id: resource_summary
+        keywords: ["resources assigned", "personnel", "engines", "helicopters", "crews"]
+        page_override: null
+        extract_tables: true
+
+      - id: incident_status
+        keywords: ["percent contained", "estimated containment", "acres", "structures"]
+        page_override: null
+        extract_tables: false
+
+  # ---------------------------------------------------------------------------
+  # NIMS ICS Forms Booklet — Full completion guide for all ICS forms
+  # Page overrides set here because the booklet is large (~200 pages) and
+  # keyword search will over-match. Adjust page numbers after opening the PDF.
+  # ---------------------------------------------------------------------------
+  nims_booklet:
+    path: "ics/nims ics forms booklet (v3).pdf"
+    source_name: "NIMS ICS Forms Booklet (v3)"
+    source_org: "FEMA / NIMS"
+    geography: shared
+    chunks:
+      - id: ics209_completion_guide
+        keywords: ["209", "incident status summary", "block", "completion"]
+        page_override: null       # TODO: set after opening PDF, e.g. [88, 112]
+        extract_tables: true
+
+      - id: ics201_briefing_guide
+        keywords: ["201", "incident briefing", "map", "sketch", "objectives"]
+        page_override: null       # TODO: set after opening PDF
+        extract_tables: false
+
+      - id: ics204_assignment_guide
+        keywords: ["204", "assignment list", "branch", "division", "work assignment"]
+        page_override: null
+        extract_tables: true
+
+  # ---------------------------------------------------------------------------
+  # NWCG Incident Response Pocket Guide (IRPG) — PMS 461, 2025 Edition
+  # Grounds resource_recommendations and risk_level vocabulary.
+  # ---------------------------------------------------------------------------
+  irpg:
+    path: nwcg/pms461.pdf
+    source_name: "Incident Response Pocket Guide, PMS 461 (2025)"
+    source_org: "NWCG"
+    geography: shared
+    chunks:
+      - id: incident_complexity
+        keywords: ["complexity", "type 1", "type 2", "type 3", "type 4", "type 5"]
+        page_override: null
+        extract_tables: true
+
+      - id: resource_typing
+        keywords: ["resource", "typing", "engine", "crew", "helicopter", "dozer"]
+        page_override: null
+        extract_tables: true
+
+      - id: risk_management
+        keywords: ["lces", "watch out", "risk management", "hazard", "safety zone"]
+        page_override: null
+        extract_tables: false
+
+      - id: wui_considerations
+        keywords: ["wildland urban interface", "wui", "structure", "triage", "defensible"]
+        page_override: null
+        extract_tables: false
+
+  # ---------------------------------------------------------------------------
+  # NIFC — Understanding the IMSR 2024
+  # Benchmark for report tone, structure, and content.
+  # California and Texas sections routed to geography-specific output dirs.
+  # ---------------------------------------------------------------------------
+  imsr_guide:
+    path: "nifc/Understanding the IMSR 2024.pdf"
+    source_name: "Understanding the Incident Management Situation Report (2024)"
+    source_org: "NIFC"
+    geography: shared
+    chunks:
+      - id: report_structure
+        keywords: ["section", "column", "format", "field", "how to read"]
+        page_override: null
+        extract_tables: true
+
+      - id: preparedness_levels
+        keywords: ["preparedness level", "pl 1", "pl 2", "pl 3", "pl 4", "pl 5"]
+        page_override: null
+        extract_tables: true
+
+      - id: ca_geographic_area
+        keywords: ["california", "pacific southwest", "southwest coordination"]
+        page_override: null
+        output_geography: california
+        extract_tables: false
+
+      - id: tx_geographic_area
+        keywords: ["texas", "southern area", "southwest area"]
+        page_override: null
+        output_geography: texas
+        extract_tables: false
+
+  # ---------------------------------------------------------------------------
+  # FEMA National Risk Index — Technical Documentation
+  # Grounds affected_communities and vulnerable_populations scoring.
+  # ---------------------------------------------------------------------------
+  fema_nri:
+    path: fema/fema_national-risk-index_technical-documentation.pdf
+    source_name: "FEMA National Risk Index — Technical Documentation"
+    source_org: "FEMA"
+    geography: shared
+    chunks:
+      - id: risk_scoring_methodology
+        keywords: ["expected annual loss", "social vulnerability", "composite score",
+                   "risk index", "methodology", "formula"]
+        page_override: null
+        extract_tables: true
+
+      - id: wildfire_hazard_type
+        keywords: ["wildfire", "hazard type", "frequency", "exposure", "historic loss"]
+        page_override: null
+        extract_tables: true
+
+      - id: vulnerability_indicators
+        keywords: ["vulnerable population", "social vulnerability", "community resilience",
+                   "cdc svi", "disability", "elderly"]
+        page_override: null
+        extract_tables: false
+
+      - id: ca_risk_scores
+        keywords: ["california", "wildfire", "risk rating", "very high", "county"]
+        page_override: null
+        output_geography: california
+        extract_tables: true
+
+      - id: tx_risk_scores
+        keywords: ["texas", "wildfire", "risk rating", "county", "annual loss"]
+        page_override: null
+        output_geography: texas
+        extract_tables: true
+
+  # ---------------------------------------------------------------------------
+  # Scott & Burgan Fuel Models — USFS GTR RMRS-153
+  # Grounds spread_summary — prevents hallucinated fire behavior descriptions.
+  # Table extraction critical here: the 40 fuel models are in tabular format.
+  # ---------------------------------------------------------------------------
+  scott_burgan:
+    path: usfs/rmrs_gtr153.pdf
+    source_name: "Standard Fire Behavior Fuel Models (Scott & Burgan 2005, GTR RMRS-153)"
+    source_org: "USDA Forest Service"
+    geography: shared
+    chunks:
+      - id: fuel_model_table
+        keywords: ["fuel model", "fbfm", "gr", "gs", "sh", "tu", "tl", "nb", "sb"]
+        page_override: null
+        extract_tables: true
+
+      - id: fire_behavior_characteristics
+        keywords: ["spread rate", "flame length", "crown fire", "spotting", "rate of spread",
+                   "fireline intensity"]
+        page_override: null
+        extract_tables: true
+
+      - id: fuel_moisture_reference
+        keywords: ["fuel moisture", "dead fuel", "live fuel", "1-hour", "10-hour", "100-hour"]
+        page_override: null
+        extract_tables: true
+
+      - id: ca_fuel_types
+        keywords: ["california", "chaparral", "coastal", "shrub", "manzanita"]
+        page_override: null
+        output_geography: california
+        extract_tables: false
+
+      - id: tx_fuel_types
+        keywords: ["texas", "grassland", "savanna", "plains", "mesquite"]
+        page_override: null
+        output_geography: texas
+        extract_tables: false

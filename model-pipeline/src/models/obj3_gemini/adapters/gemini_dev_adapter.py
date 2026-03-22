@@ -1,6 +1,6 @@
 """Gemini Developer API adapter — Phase 2 (free-tier API key).
 
-Uses the ``google-generativeai`` SDK with an API key from env var
+Uses the ``google-genai`` SDK with an API key from env var
 ``GEMINI_API_KEY``.  No context caching — corpus is injected inline.
 
 Free-tier limits (Gemini 2.5 Flash):
@@ -14,6 +14,8 @@ import json
 import logging
 import os
 from typing import Any
+
+from dotenv import load_dotenv; load_dotenv()
 
 from src.models.obj3_gemini.adapters.base_adapter import LLMAdapter, LLMGenerationError
 from src.models.obj3_gemini.context_builder import ContextBundle
@@ -32,19 +34,19 @@ class GeminiDevAdapter(LLMAdapter):
         gemini_cfg = config.get("gemini_dev", {})
         self._model_name: str = gemini_cfg.get("model", "gemini-2.5-flash")
         self._api_key: str = os.environ.get("GEMINI_API_KEY", "")
-        self._model: Any = None  # lazy-init GenerativeModel
+        self._client: Any = None  # lazy-init genai.Client
 
     def _ensure_client(self) -> None:
-        """Lazy-initialise the Google Generative AI client."""
-        if self._model is not None:
+        """Lazy-initialise the Google Gen AI client."""
+        if self._client is not None:
             return
 
         try:
-            import google.generativeai as genai
+            from google import genai
         except ImportError as exc:
             raise LLMGenerationError(
-                "The 'google-generativeai' package is required for Phase 2. "
-                "Install with: pip install google-generativeai"
+                "The 'google-genai' package is required for Phase 2. "
+                "Install with: pip install google-genai"
             ) from exc
 
         if not self._api_key:
@@ -53,25 +55,16 @@ class GeminiDevAdapter(LLMAdapter):
                 "Get a free API key from https://aistudio.google.com/apikey"
             )
 
-        genai.configure(api_key=self._api_key)
-        self._model = genai.GenerativeModel(
-            model_name=self._model_name,
-        )
+        self._client = genai.Client(api_key=self._api_key)
         logger.info("Gemini Dev client initialised (model=%s)", self._model_name)
 
     def generate(self, context_bundle: ContextBundle, schema: dict[str, Any]) -> str:
         """Send context to Gemini Developer API and return raw JSON string.
 
-        Uses ``response_mime_type="application/json"`` and ``response_schema``
+        Uses ``response_mime_type="application/json"`` and ``response_json_schema``
         in generation config for structured output.
         """
-        try:
-            import google.generativeai as genai
-        except ImportError as exc:
-            raise LLMGenerationError(
-                "The 'google-generativeai' package is required for Phase 2. "
-                "Install with: pip install google-generativeai"
-            ) from exc
+        from google.genai import types
 
         self._ensure_client()
 
@@ -87,19 +80,17 @@ class GeminiDevAdapter(LLMAdapter):
         user_parts.append(context_bundle.instruction)
         user_content = "\n\n".join(user_parts)
 
-        # Create a model with system instruction for this call
-        model = genai.GenerativeModel(
-            model_name=self._model_name,
-            system_instruction=system_instruction,
-            generation_config=genai.GenerationConfig(
-                response_mime_type="application/json",
-                response_schema=schema,
-                temperature=0.0,
-            ),
-        )
-
         try:
-            response = model.generate_content(user_content)
+            response = self._client.models.generate_content(
+                model=self._model_name,
+                contents=user_content,
+                config=types.GenerateContentConfig(
+                    system_instruction=system_instruction,
+                    response_mime_type="application/json",
+                    response_json_schema=schema,
+                    temperature=0.0,
+                ),
+            )
             raw = response.text
         except Exception as exc:
             raise LLMGenerationError(f"Gemini Dev API error: {exc}") from exc
@@ -120,9 +111,9 @@ class GeminiDevAdapter(LLMAdapter):
     def is_available(self) -> bool:
         """Check if Gemini Developer API is accessible and the target model exists."""
         try:
-            import google.generativeai as genai
+            from google import genai
         except ImportError:
-            logger.warning("google-generativeai package not installed")
+            logger.warning("google-genai package not installed")
             return False
 
         if not self._api_key:
@@ -130,8 +121,8 @@ class GeminiDevAdapter(LLMAdapter):
             return False
 
         try:
-            genai.configure(api_key=self._api_key)
-            models = [m.name for m in genai.list_models()]
+            client = genai.Client(api_key=self._api_key)
+            models = [m.name for m in client.models.list()]
             # Model names are like "models/gemini-2.5-flash"
             target = f"models/{self._model_name}"
             available = any(target in name for name in models)

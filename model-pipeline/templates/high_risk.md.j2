@@ -2,9 +2,17 @@
 **Report ID**: {{ incident_id }}
 **Status**: {{ risk_level }} RISK | **Mode**: {{ operating_mode }}
 **Confidence**: {{ "%.0f"|format(report_confidence * 100) }}% | **Human Review Required**: {{ human_review_required }}
+**Review Status**: {{ review_status }}
 
 ---
 
+{% if review_status == "PENDING_REVIEW" %}
+
+> **⚠️ PENDING HUMAN REVIEW** — This report has not been approved by a human reviewer.
+> {% if disagreement_flag %}Reason: Model disagreement detected (satellite hotspots conflict with risk assessment).{% endif %}
+> Do not use for operational decisions until reviewed.
+
+{% endif %}
 ## Risk Summary
 
 {{ risk_summary }}

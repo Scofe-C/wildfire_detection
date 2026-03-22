@@ -21,7 +21,7 @@ class OllamaAdapter(LLMAdapter):
 
     def __init__(self, config: dict[str, Any]) -> None:
         ollama_cfg = config.get("ollama", {})
-        self._model: str = ollama_cfg.get("model", "qwen2.5:14b")
+        self._model: str = ollama_cfg.get("model", "qwen2.5:7b")
         self._base_url: str = ollama_cfg.get("base_url", "http://localhost:11434")
         self._temperature: float = float(ollama_cfg.get("temperature", 0.0))
         self._max_retries: int = int(ollama_cfg.get("max_retries", 2))
@@ -101,7 +101,7 @@ class OllamaAdapter(LLMAdapter):
             client = ollama_lib.Client(host=self._base_url)
             model_list = client.list()
             available = [m.model for m in model_list.models]
-            # Check both exact match and base name (e.g. "qwen2.5:14b" vs "qwen2.5:14b")
+            # Check both exact match and base name (e.g. "qwen2.5:7b" vs "qwen2.5:14b")
             return any(
                 self._model in name or name.startswith(self._model.split(":")[0])
                 for name in available

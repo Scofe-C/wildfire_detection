@@ -17,6 +17,7 @@
         .timeline-event { margin-bottom: 15px; }
         .timeline-event .ts { color: #3498db; font-weight: bold; }
         .disclaimer { background: #fff3cd; padding: 12px; border: 1px solid #ffc107; border-radius: 4px; margin-top: 30px; font-style: italic; }
+        .review-banner { background: #f8d7da; border: 2px solid #c0392b; border-radius: 6px; padding: 16px; margin: 20px 0; }
         @media print { body { max-width: 100%; } }
     </style>
 </head>
@@ -30,7 +31,16 @@
     <span><strong>Generated:</strong> {{ generated_at }}</span>
     <span><strong>Risk Level:</strong> {{ risk_level }}</span>
     <span><strong>Confidence:</strong> {{ "%.0f"|format(report_confidence * 100) }}%</span>
+    <span><strong>Review Status:</strong> {{ review_status }}</span>
 </div>
+
+{% if review_status == "PENDING_REVIEW" %}
+<div style="background: #f8d7da; border: 2px solid #c0392b; border-radius: 6px; padding: 16px; margin: 20px 0; font-size: 1.1em;">
+    <strong>⚠️ PENDING HUMAN REVIEW</strong> — This report has not been approved by a human reviewer.
+    {% if disagreement_flag %}<br>Reason: Model disagreement detected (satellite hotspots conflict with risk assessment).{% endif %}
+    <br>Do not use for operational decisions until reviewed.
+</div>
+{% endif %}
 
 <h2>Incident Timeline</h2>
 <div class="timeline">
