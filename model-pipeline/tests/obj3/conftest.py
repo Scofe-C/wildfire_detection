@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pytest
 
+from src.models.obj3_gemini.state_machine import AdminToggle
+
 # ---------------------------------------------------------------------------
 # Path constants
 # ---------------------------------------------------------------------------
@@ -206,14 +208,12 @@ def valid_high_risk_json() -> dict:
 # ---------------------------------------------------------------------------
 
 @pytest.fixture()
-def toggle_on() -> "AdminToggle":
+def toggle_on() -> AdminToggle:
     """AdminToggle in ON state (local persistence, no file writes)."""
-    from src.models.obj3_gemini.state_machine import AdminToggle
     return AdminToggle({"default": True, "current_state": True, "persistence": "local"})
 
 
 @pytest.fixture()
-def toggle_off() -> "AdminToggle":
+def toggle_off() -> AdminToggle:
     """AdminToggle in OFF state."""
-    from src.models.obj3_gemini.state_machine import AdminToggle
     return AdminToggle({"default": False, "current_state": False, "persistence": "local"})

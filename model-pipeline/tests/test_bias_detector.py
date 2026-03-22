@@ -1,5 +1,4 @@
 import numpy as np
-import pytest
 
 from src.bias.detector import false_negative_rate, run_bias_gate
 

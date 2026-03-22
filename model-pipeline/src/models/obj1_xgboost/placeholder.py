@@ -2,9 +2,12 @@
 TDD Sections 5.1-5.5. Must be sklearn-compatible for Fairlearn."""
 
 from __future__ import annotations
+
 from pathlib import Path
 from typing import Any
+
 import pandas as pd
+
 from src.models.base import BaseModel
 
 

@@ -10,8 +10,6 @@ import json
 
 import pytest
 
-from src.models.obj3_gemini.context_builder import ContextBundle
-
 pytestmark = pytest.mark.integration
 
 

@@ -14,8 +14,6 @@ import os
 
 import pytest
 
-from src.models.obj3_gemini.context_builder import ContextBundle
-
 pytestmark = pytest.mark.integration
 
 _HAS_API_KEY = bool(os.environ.get("GEMINI_API_KEY"))

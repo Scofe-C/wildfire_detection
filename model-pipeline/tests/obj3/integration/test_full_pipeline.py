@@ -29,6 +29,7 @@ def _ollama_available() -> bool:
 def reporter(tmp_path):
     """Create a reporter with isolated output dir (avoid polluting real reports/)."""
     import yaml
+
     from src.models.obj3_gemini.reporter import GeminiDisasterReporter
 
     # Write a temporary config pointing at tmp_path for output
@@ -50,6 +51,7 @@ def reporter(tmp_path):
 
     # Create templates dir
     import shutil
+
     from tests.obj3.conftest import TEMPLATE_DIR
     tmp_templates = tmp_path / "templates"
     shutil.copytree(TEMPLATE_DIR, tmp_templates)

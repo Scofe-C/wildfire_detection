@@ -7,11 +7,10 @@ raw DataFrames (see implementation plan for rationale).
 
 from __future__ import annotations
 
-import json
 import logging
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -38,7 +37,7 @@ from src.models.obj3_gemini.state_machine import (
     mode_to_report_type,
     resolve_mode,
 )
-from src.reports.report_manager import make_filename, save_report, sync_to_gcs
+from src.reports.report_manager import save_report, sync_to_gcs
 
 logger = logging.getLogger(__name__)
 
@@ -356,7 +355,7 @@ class GeminiDisasterReporter(BaseModel):
                 fmt = "md"
 
         # 9: Save
-        now = datetime.now(tz=timezone.utc)
+        now = datetime.now(tz=UTC)
         json_path: Path | None = None
         rendered_path: Path | None = None
         if result.raw_json and self._output_dir:

@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any
 
 import jinja2
 
@@ -45,7 +44,7 @@ def get_template(report_type: str, fmt: str) -> str:
     try:
         return _TEMPLATE_MAP[report_type][fmt]
     except KeyError:
-        raise ValueError(f"No template for report_type={report_type!r}, format={fmt!r}")
+        raise ValueError(f"No template for report_type={report_type!r}, format={fmt!r}") from None
 
 
 def _get_jinja_env(template_dir: Path, autoescape: bool = False) -> jinja2.Environment:
@@ -131,7 +130,7 @@ def render_pdf(html_str: str, css_string: str = "") -> bytes:
         PDF file content.
     """
     try:
-        from weasyprint import HTML, CSS
+        from weasyprint import CSS, HTML
     except ImportError as exc:
         raise ImportError(
             "WeasyPrint is required for PDF generation. "

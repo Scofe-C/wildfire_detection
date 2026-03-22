@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 from src.models.obj3_gemini.state_machine import (
@@ -18,7 +18,6 @@ from src.models.obj3_gemini.state_machine import (
     OperationalMode,
     mode_to_report_type,
 )
-
 
 # ---------------------------------------------------------------------------
 # Data classes
@@ -239,7 +238,7 @@ def assemble(
     schema_dict = schema_cls.model_json_schema()
 
     incident_id = pipeline_result.get("run_id") or str(uuid.uuid4())
-    dt_str = datetime.now(tz=timezone.utc).isoformat()
+    dt_str = datetime.now(tz=UTC).isoformat()
 
     reporting_cfg = config.get("reporting", {})
     max_ml = reporting_cfg.get("max_ml_block_chars", 20_000)

@@ -2,9 +2,12 @@
 TDD Sections 6.1-6.4. Cell2Fire primary, PROPAGATOR secondary (demo only)."""
 
 from __future__ import annotations
+
 from pathlib import Path
 from typing import Any
+
 import pandas as pd
+
 from src.models.base import BaseModel
 
 

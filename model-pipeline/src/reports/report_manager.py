@@ -200,9 +200,8 @@ def list_reports(
             dt = datetime.fromtimestamp(json_file.stat().st_mtime)
 
         # Apply date filter
-        if date_range:
-            if dt.date() < date_range[0] or dt.date() > date_range[1]:
-                continue
+        if date_range and (dt.date() < date_range[0] or dt.date() > date_range[1]):
+            continue
 
         # Find companion rendered file
         rendered = None

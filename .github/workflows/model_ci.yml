@@ -11,6 +11,10 @@ on:
 env:
   PYTHON_VERSION: "3.11"
 
+  # Eliminates the deprecation warning on actions/checkout and actions/setup-python.
+  # Safe to remove this line after June 2 once Node 24 becomes the runner default.
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   lint:
     name: "Stage 1 — Lint & Type Check"
@@ -56,7 +60,7 @@ jobs:
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
       - name: Build multi-platform image
-        # for docker commands. Dockerfile must live at model-pipeline/Dockerfile.
+        # Dockerfile must live at model-pipeline/Dockerfile.
         run: |
           docker buildx build \
             --platform linux/amd64,linux/arm64 \
@@ -67,6 +71,10 @@ jobs:
     name: "Stage 4 — Integration Test"
     runs-on: ubuntu-latest
     needs: build
+    # NOTE: `build` is skipped on PRs (push-only). GitHub treats a skipped
+    # dependency as satisfied, so this job still runs on PRs — but against
+    # no built image. Acceptable while Stage 4 is a no-op. Revisit when
+    # OBJ-1 is implemented and real integration tests are added.
     steps:
       - uses: actions/checkout@v4.2.2
       - uses: actions/setup-python@v5.6.0
@@ -75,9 +83,8 @@ jobs:
       - name: Install dependencies
         working-directory: model-pipeline
         run: pip install -r requirements.txt
-      # NOTE: The `|| echo` escape hatch is intentional scaffolding while
-      # integration tests are pending. Remove it once OBJ-1 is implemented
-      # so real failures are not swallowed.
+      # NOTE: `|| echo` escape hatch is intentional scaffolding.
+      # Remove once OBJ-1 is implemented so real failures are not swallowed.
       - name: Run integration tests
         working-directory: model-pipeline
         run: pytest tests/ -v -k integration || echo "Integration tests pending model implementation"
@@ -128,8 +135,9 @@ jobs:
     name: "Stage 8 — Vertex AI Sync (non-blocking)"
     runs-on: ubuntu-latest
     needs: push_artifact
-    # *skipped* (e.g. on PRs), burning runner minutes and risking credential errors.
-    # Now it only runs if push_artifact actually executed (succeeded or failed).
+    # Guarded: only runs if push_artifact actually executed (not skipped on PRs).
+    # `always()` alone would trigger this on PRs, burning runner minutes
+    # and risking credential errors against a non-existent artifact.
     if: always() && needs.push_artifact.result != 'skipped'
     continue-on-error: true
     steps:
@@ -153,7 +161,8 @@ jobs:
     needs: [lint, test, build, integration, validate, bias_gate]
     if: failure()
     steps:
-      # No working-directory set — runner.temp is always available on a fresh runner.
+      # No checkout needed — curl has no dependency on repo contents.
+      # No working-directory — fresh runner always has a valid default.
       - name: Slack failure notification
         run: |
           curl -X POST "${{ secrets.SLACK_WEBHOOK_URL }}" \

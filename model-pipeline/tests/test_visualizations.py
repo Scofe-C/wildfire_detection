@@ -1,10 +1,13 @@
-import numpy as np
-import pytest
 from pathlib import Path
 
+import numpy as np
+import pytest
+
 from src.validation.visualizations import (
-    plot_precision_recall_curve, plot_confusion_matrix,
-    plot_model_comparison, generate_all_visualizations,
+    generate_all_visualizations,
+    plot_confusion_matrix,
+    plot_model_comparison,
+    plot_precision_recall_curve,
 )
 
 

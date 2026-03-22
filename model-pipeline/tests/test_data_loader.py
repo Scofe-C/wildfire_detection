@@ -1,10 +1,11 @@
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import pytest
-from pathlib import Path
 
-from src.data.schema import FeatureSchema, FeatureSpec, load_schema, validate_dataframe
 from src.data.loader import DataLoadError, load_backfill, split_features_target
+from src.data.schema import FeatureSchema, FeatureSpec, load_schema, validate_dataframe
 
 
 @pytest.fixture

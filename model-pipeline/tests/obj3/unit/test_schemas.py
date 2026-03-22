@@ -5,12 +5,11 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from src.models.obj3_gemini.schemas.base_schema import REQUIRED_DISCLAIMER
+from src.models.obj3_gemini.schemas import SCHEMA_MAP
 from src.models.obj3_gemini.schemas.daily_schema import DailyReport
 from src.models.obj3_gemini.schemas.final_schema import FinalReport
 from src.models.obj3_gemini.schemas.high_risk_schema import HighRiskReport
 from src.models.obj3_gemini.schemas.incident_schema import IncidentReport
-from src.models.obj3_gemini.schemas import SCHEMA_MAP
 
 
 class TestDailyReport:

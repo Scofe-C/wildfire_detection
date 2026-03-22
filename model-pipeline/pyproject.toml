@@ -6,10 +6,24 @@ requires-python = ">=3.11"
 [tool.ruff]
 target-version = "py311"
 line-length = 100
-select = ["E", "F", "W", "I", "N", "UP", "B", "SIM"]
-ignore = ["E501"]
 
-[tool.ruff.isort]
+# The top-level keys are deprecated as of ruff >= 0.2.0 and will be removed.
+# This also eliminates the CI warning:
+#   "The top-level linter settings are deprecated in favour of their counterparts
+#    in the `lint` section."
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "SIM"]
+ignore = [
+    "E501",  # line too long — handled by line-length above
+    "N803",  # argument name should be lowercase — suppressed: `X` is the universal
+             # ML convention for a feature matrix (pd.DataFrame). Renaming to `x`
+             # throughout model, bias, and validation code would harm readability.
+    "N806",  # variable in function should be lowercase — same rationale as N803.
+             # Affects: X, X_syn, X_out, X_aug, X_up in ML pipeline code.
+]
+
+[tool.ruff.lint.isort]
 known-first-party = ["src"]
 
 [tool.mypy]
