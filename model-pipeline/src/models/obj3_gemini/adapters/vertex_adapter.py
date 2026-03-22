@@ -84,7 +84,7 @@ class VertexAdapter(LLMAdapter):
         call), uses ``cached_content`` to avoid re-transmitting the corpus.
         """
         try:
-            from google import genai
+            from google import genai  # noqa: F401
             from google.genai import types
         except ImportError as exc:
             raise LLMGenerationError(
@@ -143,7 +143,7 @@ class VertexAdapter(LLMAdapter):
     def is_available(self) -> bool:
         """Check if Vertex AI endpoint is accessible and the model is listed."""
         try:
-            from google import genai
+            from google import genai  # noqa: F401
         except ImportError:
             logger.warning("google-genai package not installed")
             return False
@@ -191,7 +191,7 @@ class VertexAdapter(LLMAdapter):
             Cache resource name, or None if corpus is too small for caching.
         """
         try:
-            from google import genai
+            from google import genai  # noqa: F401
             from google.genai import types
         except ImportError as exc:
             raise CacheCreationError(

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import jinja2
 import pytest
 
 from src.models.obj3_gemini.renderer import (
@@ -62,7 +63,7 @@ class TestRenderMissingField:
         with tempfile.TemporaryDirectory() as td:
             bad_template = Path(td) / "daily.md.j2"
             bad_template.write_text("{{ nonexistent_field }}")
-            with pytest.raises(Exception):  # jinja2.UndefinedError
+            with pytest.raises(jinja2.UndefinedError):
                 render_markdown(report, Path(td))
 
 
