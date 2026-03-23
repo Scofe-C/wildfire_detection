@@ -363,6 +363,8 @@ class GeminiDisasterReporter(BaseModel):
             result.parsed_report.review_status = (
                 "PENDING_REVIEW" if hrr else "AUTO_APPROVED"
             )
+            # Re-serialize so the saved JSON reflects deterministic stamps
+            result.raw_json = result.parsed_report.model_dump_json(indent=2)
 
         # 7: Validate
         validation = self.validate(result, disagreement_flag=disagreement_flag)
