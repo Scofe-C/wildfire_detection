@@ -1,7 +1,13 @@
 """Corpus loader — load RAG reference documents for context injection.
 
 Phase 1/2: loads corpus files and concatenates as plain text.
-Phase 3 (Vertex AI): creates/reuses a context cache (stub for now).
+Phase 3 (Vertex AI): creates/reuses a context cache.
+
+Supports three file types:
+  - ``.json`` — extracted chunks (prefers ``distilled_content`` if available,
+    falls back to ``content``)
+  - ``.txt`` — plain text files
+  - ``.pdf`` — binary PDF files (for Vertex AI cache or placeholder reference)
 """
 
 from __future__ import annotations
@@ -43,14 +49,17 @@ class CacheCreationError(Exception):
 # ---------------------------------------------------------------------------
 
 def load_corpus_texts(corpus_dir: Path, version: str) -> list[CorpusDocument]:
-    """Load all ``.pdf`` and ``.txt`` files from ``corpus/{version}/``.
+    """Load corpus files from ``corpus/{version}/`` (recursive).
+
+    Supports ``.json`` (extracted chunks with ``content`` / ``distilled_content``
+    field), ``.txt``, and ``.pdf`` files.  Subdirectories are walked recursively.
 
     Parameters
     ----------
     corpus_dir:
         Root corpus directory (e.g. ``corpus/``).
     version:
-        Corpus version folder name (e.g. ``"v1"``).
+        Corpus version folder name (e.g. ``"processed"``).
 
     Returns
     -------
@@ -61,27 +70,62 @@ def load_corpus_texts(corpus_dir: Path, version: str) -> list[CorpusDocument]:
     CorpusLoadError
         If the versioned directory does not exist or contains no documents.
     """
+    import json as _json
+
     target = Path(corpus_dir) / version
     if not target.is_dir():
         raise CorpusLoadError(f"Corpus directory does not exist: {target}")
 
     docs: list[CorpusDocument] = []
-    for path in sorted(target.iterdir()):
-        if path.suffix.lower() in (".pdf", ".txt"):
-            mime = "application/pdf" if path.suffix.lower() == ".pdf" else "text/plain"
+    distilled_count = 0
+
+    for path in sorted(target.rglob("*")):
+        if not path.is_file():
+            continue
+        suffix = path.suffix.lower()
+
+        if suffix == ".json":
+            # Extracted chunk — prefer distilled_content, fall back to content
+            try:
+                raw = _json.loads(path.read_bytes().decode("utf-8", errors="replace"))
+                content_text = raw.get("distilled_content") or raw.get("content", "")
+                used_distilled = "distilled_content" in raw and raw["distilled_content"]
+                if not content_text:
+                    logger.warning("Corpus JSON has no content: %s", path.name)
+                    continue
+                # Prefix with source metadata for LLM context
+                source_name = raw.get("source_name", path.stem)
+                header = f"[{source_name}]"
+                full_text = f"{header}\n{content_text}"
+                docs.append(CorpusDocument(
+                    filename=path.name,
+                    content_bytes=full_text.encode("utf-8"),
+                    mime_type="text/plain",
+                ))
+                if used_distilled:
+                    distilled_count += 1
+            except Exception as exc:
+                logger.warning("Failed to parse corpus JSON %s: %s", path.name, exc)
+        elif suffix == ".txt":
             docs.append(CorpusDocument(
                 filename=path.name,
                 content_bytes=path.read_bytes(),
-                mime_type=mime,
+                mime_type="text/plain",
+            ))
+        elif suffix == ".pdf":
+            docs.append(CorpusDocument(
+                filename=path.name,
+                content_bytes=path.read_bytes(),
+                mime_type="application/pdf",
             ))
 
     if not docs:
-        raise CorpusLoadError(f"Corpus directory is empty (no .pdf/.txt files): {target}")
+        raise CorpusLoadError(f"Corpus directory is empty (no .json/.pdf/.txt files): {target}")
 
     total_size = sum(len(d.content_bytes) for d in docs)
     logger.info(
-        "Loaded %d corpus documents (%.1f KB) from %s",
-        len(docs), total_size / 1024, target,
+        "Loaded %d corpus documents (%.1f KB, %d distilled) from %s",
+        len(docs), total_size / 1024, distilled_count, target,
     )
     return docs
 

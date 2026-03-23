@@ -2,6 +2,7 @@
 # Single source of truth for all OBJ-3 runtime settings.
 
 # Active LLM backend: "ollama" | "gemini_dev" | "vertex_ai"
+# Override priority: CLI --backend > env var LLM_BACKEND > this value
 llm_backend: "gemini_dev"
 
 # --- Ollama (Phase 1: local model) ---
@@ -25,15 +26,15 @@ vertex_ai:
 
 # --- RAG Corpus ---
 corpus:
-  version: "v1"
+  version: "processed"
   local_dir: "corpus/"
   gcs_prefix: "corpus/"
   max_corpus_chars: 500000
 
 # --- Reporting ---
 reporting:
-  min_grounding_sources: 3
   confidence_threshold: 0.70
+  min_grounding_sources: 3
   output_dir: "reports/disaster_reports"
   gcs_bucket: ""
   max_ml_block_chars: 20000
