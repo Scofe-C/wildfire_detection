@@ -4,33 +4,48 @@
 # Controls how extract_corpus.py processes the 6 reference PDFs into
 # structured JSON chunks for corpus_loader.py and Vertex AI context caching.
 #
-# Hybrid strategy:
-#   - page_override: [start, end]  → use exact page range (1-indexed, inclusive)
-#   - page_override: null          → use keyword search across all pages
+# PAGE OVERRIDE GUIDE:
+#   - page_override: [start, end]  → 1-indexed, inclusive
+#   - page_override: null          → keyword search (avoid — causes bad extraction)
 #
-# After first run, check ExtractionSummary for any "Skipped (too short)" chunks.
-# Those need a page_override added — open the PDF, note the pages, re-run.
+# DOCUMENT TYPES (used by distill_corpus.py to select prompt):
+#   - form_schema        → ICS forms: extract as structured field registry
+#   - tabular_reference  → Fuel model tables: verbatim numeric extraction
+#   - prose_guide        → IRPG, IMSR: CoT-guided compression
+#   - methodology_doc    → FEMA NRI: formula + score extraction
+#
+# HOW TO FIND CORRECT PAGE NUMBERS:
+#   Run: python scripts/audit_corpus_pages.py --doc <doc_id> > audit_<doc_id>.txt
+#   Then open the .txt file and search for your target section headings.
+#   Update page_override values below and re-run:
+#   python scripts/extract_corpus.py --config configs/corpus_extraction.yaml --doc <doc_id>
+#
+# PAGES MARKED [VERIFY]: estimated from public TOC / research. Run audit script to confirm.
+# PAGES MARKED [AUDIT REQUIRED]: document structure unknown — audit script mandatory.
 # =============================================================================
 
 extraction:
   input_dir: corpus/raw
   output_dir: corpus/processed
-  min_chunk_chars: 200      # Chunks below this are skipped and logged as warnings
-  max_chunk_chars: 12000    # Hard cap — truncated chunks are logged as warnings
-  overlap_lines: 2          # Lines of context overlap between adjacent matched pages
+  min_chunk_chars: 200
+  max_chunk_chars: 12000
+  overlap_lines: 2
 
 # =============================================================================
 # Document Definitions
-# Each document maps to one PDF. Each chunk maps to one output .json file.
-# output_geography overrides the document-level geography for a specific chunk.
-# extract_tables: true enables pdfplumber table extraction for that chunk.
 # =============================================================================
 
 documents:
 
   # ---------------------------------------------------------------------------
   # ICS-209 — Incident Status Summary
-  # Most critical document — defines our report schema fields directly.
+  # WARNING: This is a fillable PDF form. pdfplumber extract_text() returns
+  # only static label text, NOT form field values. Pages contain block labels
+  # and instructions — this is actually what we want for the RAG corpus
+  # (we want the schema definition, not a filled-out instance).
+  #
+  # Audit note: Run audit script and look for "Block" headers and instruction
+  # text. The form is ~4 pages + instruction pages.
   # ---------------------------------------------------------------------------
   ics209:
     path: "ics/ICS 209 Fillable PDF Form.pdf"
@@ -39,24 +54,28 @@ documents:
     geography: shared
     chunks:
       - id: field_definitions
+        doc_type: form_schema              # distill_corpus.py uses schema extraction prompt
         keywords: ["block", "instructions", "complete", "enter"]
-        page_override: null
+        page_override: [1, 4]             # [VERIFY] Form is ~4 pages; instructions on pp.2-4
         extract_tables: true
 
       - id: resource_summary
+        doc_type: form_schema
         keywords: ["resources assigned", "personnel", "engines", "helicopters", "crews"]
-        page_override: null
+        page_override: [4, 6]             # [VERIFY] Resource commitment summary (Page 4 of form)
         extract_tables: true
 
       - id: incident_status
+        doc_type: form_schema
         keywords: ["percent contained", "estimated containment", "acres", "structures"]
-        page_override: null
-        extract_tables: false
+        page_override: [1, 3]             # [VERIFY] Incident status fields on pp.1-2, instructions pp.2-3
+        extract_tables: true              # FIXED: was false — ICS-209 tables are critical
 
   # ---------------------------------------------------------------------------
-  # NIMS ICS Forms Booklet — Full completion guide for all ICS forms
-  # Page overrides set here because the booklet is large (~200 pages) and
-  # keyword search will over-match. Adjust page numbers after opening the PDF.
+  # NIMS ICS Forms Booklet — Full completion guide (~200 pages)
+  # [AUDIT REQUIRED] Run audit script to find page ranges for each ICS form.
+  # The booklet contains completion guides for ICS-201 through ICS-215A.
+  # Search audit output for "209", "201", "204" section headers.
   # ---------------------------------------------------------------------------
   nims_booklet:
     path: "ics/nims ics forms booklet (v3).pdf"
@@ -65,23 +84,51 @@ documents:
     geography: shared
     chunks:
       - id: ics209_completion_guide
+        doc_type: form_schema
         keywords: ["209", "incident status summary", "block", "completion"]
-        page_override: null       # TODO: set after opening PDF, e.g. [88, 112]
+        page_override: null               # [AUDIT REQUIRED] — run: python scripts/audit_corpus_pages.py --doc nims_booklet
         extract_tables: true
 
       - id: ics201_briefing_guide
+        doc_type: form_schema
         keywords: ["201", "incident briefing", "map", "sketch", "objectives"]
-        page_override: null       # TODO: set after opening PDF
+        page_override: null               # [AUDIT REQUIRED]
         extract_tables: false
 
       - id: ics204_assignment_guide
+        doc_type: form_schema
         keywords: ["204", "assignment list", "branch", "division", "work assignment"]
-        page_override: null
+        page_override: null               # [AUDIT REQUIRED]
         extract_tables: true
 
   # ---------------------------------------------------------------------------
-  # NWCG Incident Response Pocket Guide (IRPG) — PMS 461, 2025 Edition
-  # Grounds resource_recommendations and risk_level vocabulary.
+  # NWCG IRPG — Incident Response Pocket Guide, PMS 461 (2025)
+  #
+  # IMPORTANT: Content page numbers in the TOC ≠ physical PDF page numbers.
+  # The PDF has ~14 pages of front matter (cover, introduction, TOC) before
+  # content page 1. Physical page = content page + ~14.
+  #
+  # Verified TOC (from public PDF at nwcg.gov):
+  #   Content p.1  = Risk Management Process
+  #   Content p.5  = LCES
+  #   Content p.6  = Safety Zones
+  #   Content p.7  = Downhill Fireline Checklist
+  #   Content p.8  = Indicators of Incident Complexity
+  #   Content p.11 = WUI Firefighting
+  #   Content p.17 = Specific Hazards (gray pages)
+  #   Content p.33 = Fire Environment (orange pages)
+  #   Content p.44 = Fine Fuel Moisture (FFM) and Probability of Ignition
+  #   Content p.49 = Fine Fuel Moisture and Fire Behavior
+  #   Content p.61 = Aviation (blue pages)
+  #   Content p.83 = Other References (white pages): engine typing, water tender
+  #   Content p.86 = Chainsaw Operations
+  #   Content p.87 = Working with Heavy Equipment
+  #   Content p.89 = Engine Typing Standards
+  #   Content p.107= Emergency Medical Care (red pages)
+  #
+  # Page offsets below are ESTIMATES. Run audit script to confirm exact values:
+  #   python scripts/audit_corpus_pages.py --doc irpg > audit_irpg.txt
+  #   Then search for "Risk Management", "LCES", "Complexity", etc.
   # ---------------------------------------------------------------------------
   irpg:
     path: nwcg/pms461.pdf
@@ -90,29 +137,32 @@ documents:
     geography: shared
     chunks:
       - id: incident_complexity
+        doc_type: prose_guide
         keywords: ["complexity", "type 1", "type 2", "type 3", "type 4", "type 5"]
-        page_override: null
+        page_override: [22, 26]           # [VERIFY] Content p.8-10 + offset ~14
         extract_tables: true
 
       - id: resource_typing
+        doc_type: prose_guide
         keywords: ["resource", "typing", "engine", "crew", "helicopter", "dozer"]
-        page_override: null
+        page_override: [97, 120]          # [VERIFY] Content p.83-106 (Other References) + offset ~14
         extract_tables: true
 
       - id: risk_management
+        doc_type: prose_guide
         keywords: ["lces", "watch out", "risk management", "hazard", "safety zone"]
-        page_override: null
+        page_override: [15, 46]           # [VERIFY] Content p.1-32 (Op.Engagement + Specific Hazards) + offset ~14
         extract_tables: false
 
       - id: wui_considerations
+        doc_type: prose_guide
         keywords: ["wildland urban interface", "wui", "structure", "triage", "defensible"]
-        page_override: null
+        page_override: [25, 32]           # [VERIFY] Content p.11-18 + offset ~14
         extract_tables: false
 
   # ---------------------------------------------------------------------------
   # NIFC — Understanding the IMSR 2024
-  # Benchmark for report tone, structure, and content.
-  # California and Texas sections routed to geography-specific output dirs.
+  # [AUDIT REQUIRED] Run audit script to confirm section page ranges.
   # ---------------------------------------------------------------------------
   imsr_guide:
     path: "nifc/Understanding the IMSR 2024.pdf"
@@ -121,30 +171,41 @@ documents:
     geography: shared
     chunks:
       - id: report_structure
+        doc_type: prose_guide
         keywords: ["section", "column", "format", "field", "how to read"]
-        page_override: null
+        page_override: null               # [AUDIT REQUIRED] — run: python scripts/audit_corpus_pages.py --doc imsr_guide
         extract_tables: true
 
       - id: preparedness_levels
+        doc_type: prose_guide
         keywords: ["preparedness level", "pl 1", "pl 2", "pl 3", "pl 4", "pl 5"]
-        page_override: null
+        page_override: null               # [AUDIT REQUIRED]
         extract_tables: true
 
       - id: ca_geographic_area
+        doc_type: prose_guide
         keywords: ["california", "pacific southwest", "southwest coordination"]
-        page_override: null
+        page_override: null               # [AUDIT REQUIRED]
         output_geography: california
         extract_tables: false
 
       - id: tx_geographic_area
+        doc_type: prose_guide
         keywords: ["texas", "southern area", "southwest area"]
-        page_override: null
+        page_override: null               # [AUDIT REQUIRED]
         output_geography: texas
         extract_tables: false
 
   # ---------------------------------------------------------------------------
-  # FEMA National Risk Index — Technical Documentation
-  # Grounds affected_communities and vulnerable_populations scoring.
+  # FEMA NRI — National Risk Index Technical Documentation
+  # [AUDIT REQUIRED] Large document (~100+ pages). Structure:
+  #   - Section 1: EAL methodology, risk equation, scoring formulas
+  #   - Section 2: Per-hazard sections (~2 pages each, 18 hazards)
+  #     Wildfire is hazard #17, estimated ~pages 50-70 range
+  #   - Section 3+: Social Vulnerability, Community Resilience
+  #
+  # Run: python scripts/audit_corpus_pages.py --doc fema_nri > audit_fema_nri.txt
+  # Search for: "Expected Annual Loss", "Wildfire", "Social Vulnerability", "California"
   # ---------------------------------------------------------------------------
   fema_nri:
     path: fema/fema_national-risk-index_technical-documentation.pdf
@@ -153,38 +214,64 @@ documents:
     geography: shared
     chunks:
       - id: risk_scoring_methodology
+        doc_type: methodology_doc
         keywords: ["expected annual loss", "social vulnerability", "composite score",
                    "risk index", "methodology", "formula"]
-        page_override: null
+        page_override: null               # [AUDIT REQUIRED] — likely pages [1, 25] range
         extract_tables: true
 
       - id: wildfire_hazard_type
+        doc_type: methodology_doc
         keywords: ["wildfire", "hazard type", "frequency", "exposure", "historic loss"]
-        page_override: null
+        page_override: null               # [AUDIT REQUIRED] — wildfire section ~pages [50, 70] range
         extract_tables: true
 
       - id: vulnerability_indicators
+        doc_type: methodology_doc
         keywords: ["vulnerable population", "social vulnerability", "community resilience",
                    "cdc svi", "disability", "elderly"]
-        page_override: null
+        page_override: null               # [AUDIT REQUIRED]
         extract_tables: false
 
       - id: ca_risk_scores
+        doc_type: methodology_doc
         keywords: ["california", "wildfire", "risk rating", "very high", "county"]
-        page_override: null
+        page_override: null               # [AUDIT REQUIRED] — if CA data has dedicated pages
         output_geography: california
         extract_tables: true
 
       - id: tx_risk_scores
+        doc_type: methodology_doc
         keywords: ["texas", "wildfire", "risk rating", "county", "annual loss"]
-        page_override: null
+        page_override: null               # [AUDIT REQUIRED]
         output_geography: texas
         extract_tables: true
 
   # ---------------------------------------------------------------------------
-  # Scott & Burgan Fuel Models — USFS GTR RMRS-153
-  # Grounds spread_summary — prevents hallucinated fire behavior descriptions.
-  # Table extraction critical here: the 40 fuel models are in tabular format.
+  # Scott & Burgan — Standard Fire Behavior Fuel Models (GTR RMRS-153, 72 pp)
+  #
+  # CRITICAL: Fuel models are organized by TYPE (GR/GS/SH/TU/TL/SB/NB),
+  # NOT by geography. There is no "California section" or "Texas section".
+  # CA/TX fuel type chunks MUST use the full fuel model page range [3, 69].
+  # The distillation prompt will filter for geographically relevant models.
+  #
+  # Verified TOC (from public USFS PDF):
+  #   p.1-3  = Introduction
+  #   p.4-7  = Characteristics (naming, dynamic models)
+  #   p.8-11 = Fuel Model Selection Guide
+  #   p.12-16= Fuel Model Crosswalks (old→new model mapping)
+  #   p.17-69= Fuel Models (all 40 standard models, 2 pages each)
+  #             NB (nonburnable): p.19-20
+  #             GR (grass): p.21-30
+  #             GS (grass-shrub): p.31-36
+  #             SH (shrub — includes chaparral/manzanita): p.37-46
+  #             TU (timber understory): p.47-56
+  #             TL (timber litter): p.57-64
+  #             SB (slash-blowdown): p.65-69
+  #   p.70-72= References (SKIP — contains no fuel model data)
+  #
+  # Page offsets: minimal front matter (~2 pages), so content ≈ physical page.
+  # [VERIFY] with: python scripts/audit_corpus_pages.py --doc scott_burgan
   # ---------------------------------------------------------------------------
   scott_burgan:
     path: usfs/rmrs_gtr153.pdf
@@ -193,29 +280,34 @@ documents:
     geography: shared
     chunks:
       - id: fuel_model_table
+        doc_type: tabular_reference       # verbatim numeric extraction — NO paraphrasing
         keywords: ["fuel model", "fbfm", "gr", "gs", "sh", "tu", "tl", "nb", "sb"]
-        page_override: null
+        page_override: [3, 69]            # [VERIFY] All 40 fuel models; skips cover+abstract (pp.1-2) and references (pp.70-72)
         extract_tables: true
 
       - id: fire_behavior_characteristics
+        doc_type: prose_guide
         keywords: ["spread rate", "flame length", "crown fire", "spotting", "rate of spread",
                    "fireline intensity"]
-        page_override: null
+        page_override: [1, 16]            # [VERIFY] Intro + characteristics + selection guide
         extract_tables: true
 
       - id: fuel_moisture_reference
+        doc_type: tabular_reference
         keywords: ["fuel moisture", "dead fuel", "live fuel", "1-hour", "10-hour", "100-hour"]
-        page_override: null
+        page_override: [6, 16]            # [VERIFY] Moisture scenarios (p.8) + selection guide tables
         extract_tables: true
 
       - id: ca_fuel_types
+        doc_type: tabular_reference
         keywords: ["california", "chaparral", "coastal", "shrub", "manzanita"]
-        page_override: null
+        page_override: [37, 69]           # SH (shrub, incl. chaparral) + TU/TL — CA-relevant fuel types
         output_geography: california
-        extract_tables: false
+        extract_tables: true              # FIXED: was false
 
       - id: tx_fuel_types
+        doc_type: tabular_reference
         keywords: ["texas", "grassland", "savanna", "plains", "mesquite"]
-        page_override: null
+        page_override: [21, 36]           # GR (grass) + GS (grass-shrub) — TX-relevant fuel types
         output_geography: texas
-        extract_tables: false
+        extract_tables: true              # FIXED: was false
