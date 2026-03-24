@@ -28,7 +28,7 @@ extraction:
   input_dir: corpus/raw
   output_dir: corpus/processed
   min_chunk_chars: 200
-  max_chunk_chars: 12000
+  max_chunk_chars: 100000   # Soft ceiling only — distillation compresses to 8000. Hard truncation removed.
   overlap_lines: 2
 
 # =============================================================================
@@ -86,19 +86,19 @@ documents:
       - id: ics209_completion_guide
         doc_type: form_schema
         keywords: ["209", "incident status summary", "block", "completion"]
-        page_override: null               # [AUDIT REQUIRED] — run: python scripts/audit_corpus_pages.py --doc nims_booklet
+        page_override: [130, 165]         # [VERIFY] ICS-209 is near end of booklet (~form 9 of 14)
         extract_tables: true
 
       - id: ics201_briefing_guide
         doc_type: form_schema
         keywords: ["201", "incident briefing", "map", "sketch", "objectives"]
-        page_override: null               # [AUDIT REQUIRED]
+        page_override: [5, 35]            # [VERIFY] ICS-201 is first form, pages ~5-35
         extract_tables: false
 
       - id: ics204_assignment_guide
         doc_type: form_schema
         keywords: ["204", "assignment list", "branch", "division", "work assignment"]
-        page_override: null               # [AUDIT REQUIRED]
+        page_override: [65, 90]           # [VERIFY] ICS-204 is 4th form in sequence
         extract_tables: true
 
   # ---------------------------------------------------------------------------
@@ -162,7 +162,12 @@ documents:
 
   # ---------------------------------------------------------------------------
   # NIFC — Understanding the IMSR 2024
-  # [AUDIT REQUIRED] Run audit script to confirm section page ranges.
+  # CONFIRMED: This PDF is only 4 pages total (verified by audit).
+  # No California or Texas sections exist — it is a national overview document.
+  # Original ca_geographic_area / tx_geographic_area chunks REMOVED (returned
+  # 0 chars — keywords do not appear in a 4-page national summary).
+  # All content (IMSR structure, preparedness levels PL1-5, suppression
+  # strategies: Full/Confine/Point/Monitoring) is in a single chunk.
   # ---------------------------------------------------------------------------
   imsr_guide:
     path: "nifc/Understanding the IMSR 2024.pdf"
@@ -170,42 +175,31 @@ documents:
     source_org: "NIFC"
     geography: shared
     chunks:
-      - id: report_structure
+      - id: full_guide
         doc_type: prose_guide
-        keywords: ["section", "column", "format", "field", "how to read"]
-        page_override: null               # [AUDIT REQUIRED] — run: python scripts/audit_corpus_pages.py --doc imsr_guide
+        keywords: ["imsr", "preparedness level", "suppression", "incident"]
+        page_override: [1, 4]             # Confirmed: entire document is 4 pages
         extract_tables: true
-
-      - id: preparedness_levels
-        doc_type: prose_guide
-        keywords: ["preparedness level", "pl 1", "pl 2", "pl 3", "pl 4", "pl 5"]
-        page_override: null               # [AUDIT REQUIRED]
-        extract_tables: true
-
-      - id: ca_geographic_area
-        doc_type: prose_guide
-        keywords: ["california", "pacific southwest", "southwest coordination"]
-        page_override: null               # [AUDIT REQUIRED]
-        output_geography: california
-        extract_tables: false
-
-      - id: tx_geographic_area
-        doc_type: prose_guide
-        keywords: ["texas", "southern area", "southwest area"]
-        page_override: null               # [AUDIT REQUIRED]
-        output_geography: texas
-        extract_tables: false
 
   # ---------------------------------------------------------------------------
   # FEMA NRI — National Risk Index Technical Documentation
-  # [AUDIT REQUIRED] Large document (~100+ pages). Structure:
-  #   - Section 1: EAL methodology, risk equation, scoring formulas
-  #   - Section 2: Per-hazard sections (~2 pages each, 18 hazards)
-  #     Wildfire is hazard #17, estimated ~pages 50-70 range
-  #   - Section 3+: Social Vulnerability, Community Resilience
   #
-  # Run: python scripts/audit_corpus_pages.py --doc fema_nri > audit_fema_nri.txt
-  # Search for: "Expected Annual Loss", "Wildfire", "Social Vulnerability", "California"
+  # ARCHITECTURE DECISION: Per-county risk score tables (CA/TX) are NOT in
+  # the RAG corpus. Reasons:
+  #   1. Raw county tables are 600K–730K chars — datasets, not reference docs
+  #   2. Per-county lookups are better served by direct FEMA NRI API at runtime
+  #   3. What Gemini needs for grounding is the METHODOLOGY (what scores mean,
+  #      how they are calculated) not raw data rows
+  #
+  # Three focused chunks covering what the LLM actually needs:
+  #   1. risk_scoring_methodology — EAL formula, rating thresholds, score tiers
+  #   2. wildfire_risk_overview   — wildfire-specific methodology + FSim source
+  #   3. vulnerability_indicators — SVI/BRIC definitions for vulnerable_populations
+  #
+  # [AUDIT REQUIRED] for all 3 — run:
+  #   python scripts/audit_corpus_pages.py --doc fema_nri > audit_fema.txt
+  # Search for: "Expected Annual Loss", "Wildfire", "Social Vulnerability"
+  # These are methodology sections, typically 2-5 pages each near the front.
   # ---------------------------------------------------------------------------
   fema_nri:
     path: fema/fema_national-risk-index_technical-documentation.pdf
@@ -217,35 +211,27 @@ documents:
         doc_type: methodology_doc
         keywords: ["expected annual loss", "social vulnerability", "composite score",
                    "risk index", "methodology", "formula"]
-        page_override: null               # [AUDIT REQUIRED] — likely pages [1, 25] range
+        page_override: [1, 15]            # [VERIFY] Intro, EAL formula, rating tiers, scoring equation
         extract_tables: true
 
-      - id: wildfire_hazard_type
+      - id: wildfire_risk_overview
         doc_type: methodology_doc
-        keywords: ["wildfire", "hazard type", "frequency", "exposure", "historic loss"]
-        page_override: null               # [AUDIT REQUIRED] — wildfire section ~pages [50, 70] range
+        # Replaces wildfire_hazard_type + ca_risk_scores + tx_risk_scores
+        # Contains: burn probability methodology, FSim data source, rating
+        # definitions (Very High/High/Medium/Low/Very Low), EAL calculation
+        # for wildfire consequence types (buildings, population, agriculture).
+        # Does NOT contain per-county rows — those are excluded by page_override.
+        keywords: ["wildfire", "burn probability", "fsim", "flame length",
+                   "historic loss ratio", "exposure"]
+        page_override: [85, 95]           # [VERIFY] Wildfire section 2.17 — burn probability, FSim, EAL
         extract_tables: true
 
       - id: vulnerability_indicators
         doc_type: methodology_doc
         keywords: ["vulnerable population", "social vulnerability", "community resilience",
                    "cdc svi", "disability", "elderly"]
-        page_override: null               # [AUDIT REQUIRED]
+        page_override: [105, 120]         # [VERIFY] Social Vulnerability (CDC SVI) + Community Resilience (BRIC)
         extract_tables: false
-
-      - id: ca_risk_scores
-        doc_type: methodology_doc
-        keywords: ["california", "wildfire", "risk rating", "very high", "county"]
-        page_override: null               # [AUDIT REQUIRED] — if CA data has dedicated pages
-        output_geography: california
-        extract_tables: true
-
-      - id: tx_risk_scores
-        doc_type: methodology_doc
-        keywords: ["texas", "wildfire", "risk rating", "county", "annual loss"]
-        page_override: null               # [AUDIT REQUIRED]
-        output_geography: texas
-        extract_tables: true
 
   # ---------------------------------------------------------------------------
   # Scott & Burgan — Standard Fire Behavior Fuel Models (GTR RMRS-153, 72 pp)
@@ -289,7 +275,7 @@ documents:
         doc_type: prose_guide
         keywords: ["spread rate", "flame length", "crown fire", "spotting", "rate of spread",
                    "fireline intensity"]
-        page_override: [1, 16]            # [VERIFY] Intro + characteristics + selection guide
+        page_override: [3, 16]            # FIXED from [1,16]: skip cover/abstract/acknowledgments on pp.1-2
         extract_tables: true
 
       - id: fuel_moisture_reference
@@ -310,4 +296,4 @@ documents:
         keywords: ["texas", "grassland", "savanna", "plains", "mesquite"]
         page_override: [21, 36]           # GR (grass) + GS (grass-shrub) — TX-relevant fuel types
         output_geography: texas
-        extract_tables: true              # FIXED: was false
+        extract_tables: true

@@ -41,6 +41,12 @@ except ImportError:
     print("ERROR: pdfplumber not installed. Run: pip install pdfplumber --break-system-packages")
     sys.exit(1)
 
+# Fix for Chinese Windows locale (GBK) — force UTF-8 output so bullet
+# characters (U+2022) and other non-ASCII chars don't crash the script.
+if sys.stdout.encoding and sys.stdout.encoding.upper() not in ("UTF-8", "UTF8"):
+    import io
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+
 
 # ---------------------------------------------------------------------------
 # PDF registry — maps doc_id to relative path from project root

@@ -106,7 +106,7 @@ class ExtractionSummary:
         print(f"  Documents processed  : {self.documents_processed}")
         print(f"  Chunks written       : {self.chunks_written}")
         print(f"  Skipped (too short)  : {self.chunks_skipped}")
-        print(f"  Truncated (too long) : {self.chunks_truncated}")
+        print(f"  Oversized (warned)   : {self.chunks_truncated}  ← content preserved, distillation compresses")
         print("\n  Output locations:")
         for geo, count in sorted(self.output_counts.items()):
             print(f"    corpus/processed/{geo:20s} → {count:3d} files")
@@ -385,8 +385,11 @@ def build_chunk(
         )
 
     if len(text) > max_chunk_chars:
-        text = text[:max_chunk_chars]
-        was_truncated = True
+        # WARNING only — content preserved in full.
+        # Distillation (distill_corpus.py) compresses to ~8,000 chars downstream.
+        # Hard truncation here destroys data before distillation can make
+        # intelligent compression decisions. DO NOT truncate.
+        was_truncated = True  # flag reused as "oversized" warning for summary
 
     return ChunkResult(
         doc_id=doc_id,
@@ -400,7 +403,7 @@ def build_chunk(
         extracted_at=datetime.now(UTC).isoformat(),
         char_count=len(text),
         tables=tables,
-        content=text,
+        content=text,          # full content, never truncated
         was_truncated=was_truncated,
         was_skipped=was_skipped,
         skip_reason=skip_reason,
@@ -540,7 +543,8 @@ def run_extraction(
 
             if chunk.was_truncated:
                 logger.warning(
-                    "    TRUNCATED: '%s' exceeded %d chars, truncated.", full_id, max_chars
+                    "    OVERSIZED: '%s' is %d chars (threshold %d) — content preserved, distillation will compress.",
+                    full_id, chunk.char_count, max_chars
                 )
                 summary.chunks_truncated += 1
 
