@@ -4,7 +4,7 @@
 
 This directory contains the ML model pipeline infrastructure for the Wildfire Prediction & Disaster Response platform. It handles everything after the data pipeline produces features and before a model reaches production: validation, bias detection, experiment tracking, visualization, alerting, and CI/CD.
 
-OBJ-1 (XGBoost) and OBJ-2 (Cell2Fire) are placeholders — the infrastructure is fully implemented and tested, and once a model is plugged in, validation, bias gating, tracking, and deployment happen automatically. **OBJ-3 (Gemini Disaster Reporting)** is fully implemented with 3 swappable LLM backends, 4 structured report types, and Jinja2 rendering.
+**OBJ-1 (XGBoost)** is a placeholder — the infrastructure is fully implemented and tested, and once a model is plugged in, validation, bias gating, tracking, and deployment happen automatically. **OBJ-2 (Cell2Fire)** is fully implemented as a C++ subprocess wrapper with weather CSV formatting, raster clipping, burn probability parsing, and Dice coefficient validation. **OBJ-3 (Gemini Disaster Reporting)** is fully implemented with 3 swappable LLM backends, 4 structured report types, and Jinja2 rendering.
 
 ```
 data-pipeline/                          model-pipeline/ (this directory)
@@ -38,7 +38,7 @@ model-pipeline/
 │   └── model_config.yaml           # thresholds, paths, tracking, alert config
 ├── src/
 │   ├── data/                       # load + validate parquet from data pipeline
-│   ├── models/                     # abstract interface + OBJ-1/2 stubs + OBJ-3 (implemented)
+│   ├── models/                     # abstract interface + OBJ-1 stub + OBJ-2 (Cell2Fire) + OBJ-3 (Gemini)
 │   ├── validation/                 # metrics, model selection gate, visualizations
 │   ├── bias/                       # Fairlearn FNR gate + FEMA NRI spatial join
 │   ├── tracking/                   # MLflow local + Vertex AI Experiments
@@ -152,8 +152,9 @@ Defines the contract that OBJ-1, OBJ-2, and OBJ-3 must implement.
 | `compute_artifact_hash(model_path)` | path | SHA-256 hex string | Reproducibility tracking |
 
 **What to do next:**
-- Teammates: subclass `BaseModel` in `obj1_xgboost/` and `obj2_spread/`, implement all 4 methods.
+- Teammates: subclass `BaseModel` in `obj1_xgboost/`, implement all 4 methods.
 - ~~Owner: subclass in `obj3_gemini/` for Gemini disaster reporting.~~ ✅ **Done** — see section 4.9.
+- ~~Teammates: subclass `BaseModel` in `obj2_spread/`.~~ ✅ **Done** — see section 4.8.
 
 ---
 
@@ -186,14 +187,49 @@ Defines the contract that OBJ-1, OBJ-2, and OBJ-3 must implement.
 
 ---
 
-### 4.8 `src/models/obj2_spread/placeholder.py` — OBJ-2 Stub
+### 4.8 `src/models/obj2_spread/cell2fire_spread.py` — OBJ-2 Cell2Fire Fire Spread
 
-**Status:** Not implemented. Two classes: `Cell2FireSpread` (primary) and `PropagatorSpread` (secondary, demo only).
+**Status:** Fully implemented. Physics-based C++ simulator wrapped as a `BaseModel`. Runs Monte Carlo fire spread simulations from DEM + fuel + weather inputs, outputs burn probability grids.
 
-**What teammates need to do:**
-1. `Cell2FireSpread`: wrap the C++ binary via subprocess, feed DEM + fuel map + wind.
-2. `PropagatorSpread`: wrap the Python API, include `DISCLAIMER` in every output.
-3. Both must return GeoJSON-structured DataFrame from `predict()`.
+**Helper functions:**
+
+| Function | Purpose |
+|---|---|
+| `format_weather_csv(weather_df, output_path)` | Maps pipeline weather columns (e.g. `wind_speed_10m`, `temperature_2m`) → Cell2Fire CSV format (`ws`, `wd`, `tmp`, `rh`) |
+| `clip_raster_to_aoi(raster_path, bounds, output_path, target_resolution)` | Clips DEM/fuel GeoTIFFs to a bounding box with optional resampling |
+| `parse_burn_probability(output_dir, n_simulations)` | Reads Cell2Fire `ForestGrid*.csv` output grids → 2D burn probability array |
+| `burn_grid_to_geodataframe(burn_prob, transform, crs, threshold)` | Converts burn probability grid → `GeoDataFrame` of burned polygons |
+| `compute_dice_coefficient(predicted_mask, actual_mask)` | Dice = 2·\|P∩A\| / (\|P\|+\|A\|), range [0, 1]. Primary validation metric |
+
+**`Cell2FireSpread` (implements `BaseModel`):**
+
+| Method | What it does |
+|---|---|
+| `load_model(path)` | Loads simulation config JSON (ignition points, AOI bounds, raster paths) + base params from `model_config.yaml`. Warns if C++ binary not on PATH |
+| `predict(X)` | Prepares weather CSV + clips rasters → runs C++ binary via subprocess → parses burn grids → maps burn probability back to H3 cells in `X` |
+| `validate(X, y)` | Dice coefficient vs actual burn labels (CAL FIRE perimeters intersected with H3 grid) + AUC-PR/F1/FNR for pipeline compatibility |
+| `explain(X)` | Parameter sensitivity sweep over `sweep_space` in `model_config.yaml`; returns most-influential parameter by burn-area range |
+
+**Inputs required:**
+- DEM: GeoTIFF float32 (elevation, metres) — USGS 3DEP
+- Fuel: GeoTIFF int16 (LANDFIRE FBFM40 codes)
+- Weather: pipeline-format DataFrame (columns auto-mapped)
+- Ignition: `ignition_points` list of `(row, col)` tuples in simulation config JSON
+
+**Validation gate:** Dice coefficient >= `obj2.cell2fire.validation.minimum_dice` (default 0.50)
+
+**Setup:**
+1. Install Cell2Fire C++ binary (`Cell2Fire` on PATH, or set `obj2.cell2fire.binary_path` in `model_config.yaml`)
+2. Place DEM and fuel GeoTIFFs at paths configured under `obj2.cell2fire.raster_inputs`
+3. Create a simulation config JSON:
+```json
+{
+    "ignition_points": [[120, 85], [121, 86]],
+    "aoi_bounds": [-121.5, 38.5, -120.5, 39.5],
+    "params": {"n_simulations": 200}
+}
+```
+4. Call `model.load_model("path/to/simulation_config.json")`
 
 ---
 
@@ -666,7 +702,7 @@ Located at `.github/workflows/model_ci.yml` (repo root level).
 | 8. Vertex AI sync | Non-blocking | No |
 | 9. Deploy | Cloud Run service update | Yes |
 
-Stages 5-9 are placeholder `echo` commands until OBJ-1 is implemented.
+Stages 5-9 are placeholder `echo` commands until OBJ-1 is implemented. OBJ-2 and OBJ-3 are ready to be wired in once OBJ-1 provides the primary metrics.
 
 ---
 
@@ -680,3 +716,39 @@ Stages 5-9 are placeholder `echo` commands until OBJ-1 is implemented.
 These stages depend on `models/ignition` and `data/static/fema_nri` — they won't run until those exist.
 
 ---
+
+## 7. What To Do Next
+
+### Implementation status
+
+| Objective | Status | Notes |
+|---|---|---|
+| OBJ-1 XGBoost ignition model | **Placeholder** | Implement `src/models/obj1_xgboost/placeholder.py` |
+| OBJ-2 Cell2Fire spread simulation | ✅ **Done** | See section 4.8 — requires C++ binary + rasters |
+| OBJ-3 Gemini disaster reporting | ✅ **Done** | See section 4.9 — requires Vertex AI / Ollama setup |
+
+### For Teammates — OBJ-1 (XGBoost)
+
+1. Replace `src/models/obj1_xgboost/placeholder.py` with real `XGBoostFireRisk`.
+2. `load_model()` → load XGBoost `.json` or `.ubj` weights.
+3. `predict(X)` → return DataFrame with `prediction` and `probability` columns.
+4. `validate(X, y)` → call `src.validation.metrics.compute_all_metrics()`.
+5. `explain(X)` → call `shap.TreeExplainer`.
+6. Save trained model to `models/ignition/{version}/`.
+7. Run the orchestrator to verify end-to-end.
+
+### Running OBJ-2 (Cell2Fire)
+
+Prerequisites before calling `model.predict()`:
+1. Build and install the Cell2Fire C++ binary, ensure it is on `PATH` (or set `obj2.cell2fire.binary_path` in `configs/model_config.yaml`).
+2. Place DEM and LANDFIRE FBFM40 fuel GeoTIFFs at the paths configured under `obj2.cell2fire.raster_inputs`.
+3. Create a simulation config JSON with `ignition_points`, `aoi_bounds`, and any `params` overrides (see section 4.8 for the JSON schema).
+
+### Before Demo
+
+1. OBJ-1 implemented and passing the orchestrator.
+2. Validation gate passing (AUC-PR > 0.75).
+3. Bias gate passing (FNR disparity < 5%).
+4. Three visualization PNGs in `reports/visualizations/`.
+5. MLflow viewable: `mlflow ui --backend-store-uri sqlite:///mlruns.db`.
+6. CI/CD stages 1-6 green on GitHub Actions.
