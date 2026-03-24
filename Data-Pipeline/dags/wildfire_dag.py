@@ -46,15 +46,22 @@ from airflow.operators.bash import BashOperator
 from airflow.utils.dates import days_ago
 from airflow.utils.task_group import TaskGroup
 
+from dags.utils.slack_notify import (
+    notify_slack,
+    sla_on_failure_callback,
+    sla_on_success_callback,
+    notify_anomaly_alert,
+)
+
 # ---------------------------------------------------------------------------
 # DAG-level configuration
 # ---------------------------------------------------------------------------
 DAG_ID = "wildfire_data_pipeline"
 SCHEDULE_INTERVAL = "0 */6 * * *"  # Fallback cron; watchdog_sensor_dag overrides
 
-# Resolution tiers (Improvement 1a + watchdog escalation):
-#   64 km (H3 res 2) — coarse default scan, ~200 cells CA+TX
-#   22 km (H3 res 5) — fire-confirmed detailed scan, ~800-1000 cells CA
+# Resolution tiers (watchdog escalation):
+#   quiet mode:  64 km (H3 res 2) — coarse default scan, ~200 cells CA+TX
+#   fire mode:   22 km (H3 res 5) — fire-confirmed detailed scan, ~800-1000 cells CA
 DEFAULT_RESOLUTION_KM = 64  # Watchdog escalates to 22 on confirmed fire
 
 # Region definitions — mirrors schema_config.yaml geographic_scope
@@ -119,6 +126,8 @@ default_args = {
     "retry_exponential_backoff": True,
     "max_retry_delay": timedelta(minutes=30),
     "execution_timeout": timedelta(hours=1),
+    "on_failure_callback": sla_on_failure_callback,
+    "on_success_callback": sla_on_success_callback,
 }
 
 # ---------------------------------------------------------------------------
@@ -448,30 +457,14 @@ def task_detect_anomalies(**context):
             f"Anomalies in {len(anomalies_found)} features: "
             + ", ".join(a["feature"] for a in anomalies_found)
         )
-        _send_anomaly_alert(anomalies_found)
+        notify_anomaly_alert(anomalies_found)
     else:
         logger.info("No anomalies detected")
 
     context["ti"].xcom_push(key="anomalies", value=anomalies_found)
 
 
-def _send_anomaly_alert(anomalies: list[dict]):
-    webhook_url = os.environ.get("SLACK_WEBHOOK_URL")
-    if not webhook_url:
-        return
-    try:
-        import requests
-        msg = (
-            ":warning: *Wildfire Pipeline Anomaly Alert*\n"
-            + "\n".join(
-                f"• `{a['feature']}`: {a['outlier_count']} outliers "
-                f"(z>{a['z_threshold']}, {a['season']})"
-                for a in anomalies
-            )
-        )
-        requests.post(webhook_url, json={"text": msg}, timeout=10)
-    except Exception as e:
-        logger.warning(f"Slack alert failed: {e}")
+# _send_anomaly_alert removed — use notify_anomaly_alert from dags.utils.slack_notify
 
 
 def task_export_to_parquet(**context):
@@ -564,6 +557,7 @@ def task_export_spatial(**context):
 with DAG(
     dag_id=DAG_ID,
     default_args=default_args,
+    on_failure_callback=notify_slack,
     description="Wildfire data pipeline with regional sharding (CA + TX parallel TaskGroups)",
     schedule_interval=SCHEDULE_INTERVAL,
     start_date=days_ago(1),
@@ -713,7 +707,7 @@ with DAG(
 
             # GCS credentials check
             if [ -z "${GOOGLE_APPLICATION_CREDENTIALS:-}" ] && [ -z "${GOOGLE_CLOUD_PROJECT:-}" ]; then
-                echo "WARNING: No GCS credentials found — dvc push may fail."
+                echo "WARNING: No GCS credentials found — push to remote may fail."
             fi
 
             # DVC add — stage the data files

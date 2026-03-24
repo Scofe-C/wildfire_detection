@@ -358,16 +358,41 @@ def _apply_fill_strategies(df: pd.DataFrame, registry) -> pd.DataFrame:
     return df
 
 
+_STATIC_STUB_COLS = {
+    "fuel_model_fbfm40", "canopy_cover_pct", "vegetation_type",
+    "ndvi", "elevation_m", "slope_degrees", "aspect_degrees",
+    "dominant_fuel_fraction",
+}
+
+_EXCLUDE_FROM_QUALITY = {
+    "grid_id", "latitude", "longitude", "timestamp",
+    "resolution_km", "region", "data_quality_flag",
+}
+
+
 def _compute_quality_flags(fused: pd.DataFrame) -> pd.Series:
-    """Compute data quality flags: 0 = good, 3 = >30% nulls in feature columns."""
+    """Compute data quality flags.
+
+    Flag values:
+      0 = good (all dynamic sources present)
+      3 = >30% nulls in non-static feature columns (partial data)
+      4 = static source unavailable (LANDFIRE/SRTM/MODIS stubs)
+    """
     flags = pd.Series(0, index=fused.index, dtype="int8")
 
-    core_cols = [
+    # Check dynamic columns (weather + fire) — exclude static stubs
+    dynamic_cols = [
         c for c in fused.columns
-        if c not in ["grid_id", "latitude", "longitude", "timestamp", "resolution_km", "data_quality_flag"]
+        if c not in _EXCLUDE_FROM_QUALITY and c not in _STATIC_STUB_COLS
     ]
-    if core_cols:
-        null_fraction = fused[core_cols].isnull().mean(axis=1)
+    if dynamic_cols:
+        null_fraction = fused[dynamic_cols].isnull().mean(axis=1)
         flags = flags.where(null_fraction < 0.3, 3)
+
+    # Flag 4: static source unavailable (all static cols are NaN for this row)
+    static_present = [c for c in _STATIC_STUB_COLS if c in fused.columns]
+    if static_present:
+        all_static_null = fused[static_present].isnull().all(axis=1)
+        flags = flags.where(~all_static_null, flags.where(flags == 3, 4))
 
     return flags

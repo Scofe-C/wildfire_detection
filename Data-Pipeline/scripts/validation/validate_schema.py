@@ -4,7 +4,6 @@ from typing import Any, Dict, List, Tuple
 
 import great_expectations as ge
 import pandas as pd
-import great_expectations as gx
 from scripts.utils.grid_utils import generate_full_grid
 
 

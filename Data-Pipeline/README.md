@@ -210,12 +210,16 @@ data-pipeline/
 │   │                                #        --input data/processed/fused
 │   │                                #        --output-dir data/processed/spatial
 │   │                                #        --resolution-km 64
-│   ├── backfill/
-│   │   └── historical_backfill.py   # Historical window replay for ML training data
+│   ├── backfill/                    # (Historical replay — to be implemented)
+│   │
+│   ├── reporting/
+│   │   ├── report_generator.py      # LLM-based pipeline reports (Phase 2)
+│   │   └── prompts.py               # Prompt templates for Gemini
 │   │
 │   └── utils/
+│       ├── datetime_utils.py        # Shared UTC datetime coercion
 │       ├── gcs_state.py             # GCS watchdog state I/O (race-safe writes)
-│       ├── grid_utils.py            # H3 grid generation, spatial pruning, focal grid
+│       ├── grid_utils.py            # H3 grid generation, spatial pruning, haversine
 │       ├── rate_limiter.py          # Token-bucket rate limiter with jitter
 │       └── schema_loader.py         # FeatureRegistry from schema_config.yaml
 │
@@ -233,7 +237,7 @@ data-pipeline/
 │   ├── test_dags/                   # DAG structure, task count, dependencies
 │   ├── test_dvc/                    # DVC stage hashes, lock file integrity
 │   ├── test_backfill/               # Historical replay correctness
-│   └── test_intergration/           # End-to-end pipeline integration
+│   └── test_integration/           # End-to-end pipeline integration
 │
 ├── configs/
 │   └── schema_config.yaml           # ← SINGLE SOURCE OF TRUTH for all features
@@ -268,6 +272,10 @@ data-pipeline/
 | USGS SRTM (30m DEM) | Elevation + terrain | Static | Terrain features |
 
 All data is indexed to an **H3 hexagonal grid** at configurable resolution. Static layers are cached after the first download and skipped on all subsequent runs.
+
+> **Note:** LANDFIRE, SRTM, and MODIS NDVI data sources are not yet wired into the pipeline.
+> Static feature columns currently output `NaN` with `data_quality_flag=4`.
+> See [`missing_sources_and_todo.md`](missing_sources_and_todo.md) for download URLs and implementation steps.
 
 ---
 
@@ -425,9 +433,20 @@ cat data/processed/baselines/stats_latest.json | python -m json.tool
 5. Update the baseline with the current window's values (Welford — no full recompute)
 6. Write `anomaly_last_run.json` summary
 
-### Slack alerts
+### Slack Notifications
 
-When anomalies are found, a Slack message is posted to `SLACK_WEBHOOK_URL`. If absent, alerts are silently skipped and the pipeline does not fail.
+All Slack notification logic lives in `dags/utils/slack_notify.py`:
+
+| Callback | Trigger | Behavior |
+|----------|---------|----------|
+| `sla_on_failure_callback` | Any task failure | Tracks consecutive failures per task via XCom. Escalates to SLA BREACH after 3 consecutive failures. |
+| `sla_on_success_callback` | Any task success | Resets the consecutive failure counter to 0. |
+| `notify_slack` | DAG-level failure | Basic failure alert with DAG/task/run info. |
+| `notify_anomaly_alert` | Anomalies detected | Posts outlier details (feature, z-score, season). |
+
+Both `wildfire_data_pipeline` and `watchdog_sensor` DAGs have `on_failure_callback` and `on_success_callback` wired in `default_args`, plus a DAG-level `on_failure_callback` for catastrophic failures.
+
+If `SLACK_WEBHOOK_URL` is not set, all notifications are silently skipped and the pipeline does not fail.
 
 ```bash
 # Run standalone (also called by dvc repro detect_anomalies)
@@ -560,7 +579,7 @@ docker run --rm \
 | `test_export/` | Tabular Parquet + spatial .npz consistency |
 | `test_utils/` | H3 grid cell counts, focal grid, spatial pruning |
 | `test_dags/` | DAG structure, task count, dependency edges |
-| `test_intergration/` | End-to-end pipeline with mocked APIs |
+| `test_integration/` | End-to-end pipeline with mocked APIs |
 
 ---
 
@@ -696,6 +715,7 @@ logger.warning(f"Anomaly: '{col}' has {outlier_count} outliers (z>{z_threshold})
 | DVC remote unreachable | `version_with_dvc` task fails; exported data is still on disk |
 | Malformed GCS trigger file | `watchdog_sensor_dag` logs error, skips file, does not trigger pipeline |
 | Slack webhook failure | Caught, logged as WARNING — never raises or fails a task |
+| Any task failure | SLA-aware Slack callback tracks consecutive failures; escalates after 3 |
 
 ---
 

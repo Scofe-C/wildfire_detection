@@ -60,14 +60,21 @@ class TestLoadAndProcessStatic:
         for col in EXPECTED_COLUMNS:
             assert col in df.columns, f"Missing expected column: {col}"
 
-    def test_no_nan_in_key_columns(self, temp_output_dir):
-        """Grid ID and terrain columns should not contain NaN."""
+    def test_no_nan_in_identifier_columns(self, temp_output_dir):
+        """Grid ID must not contain NaN. Static features are NaN stubs until
+        LANDFIRE/SRTM sources are wired (see missing_sources_and_todo.md)."""
         result_path = load_and_process_static(resolution_km=22, output_dir=temp_output_dir)
         df = pd.read_parquet(result_path)
 
-        for col in ["grid_id", "elevation_m", "slope_degrees", "aspect_degrees"]:
+        # Identifiers must be complete
+        assert not df["grid_id"].isna().any(), "grid_id must not contain NaN"
+
+        # Static feature columns should be NaN (stubs) until real data is wired
+        for col in ["elevation_m", "slope_degrees", "aspect_degrees"]:
             if col in df.columns:
-                assert not df[col].isna().any(), f"Column '{col}' contains NaN values"
+                assert df[col].isna().all(), (
+                    f"Column '{col}' should be NaN (stub) until SRTM is wired"
+                )
 
     def test_force_rebuild_regenerates(self, temp_output_dir):
         """force_rebuild=True should regenerate even when cache exists."""

@@ -7,9 +7,9 @@ import pytest
 
 from scripts.fusion.priority_resolver import (
     resolve_priorities,
-    _haversine_km,
     OVERRIDABLE_FIRE_COLS,
 )
+from scripts.utils.grid_utils import haversine_km as _haversine_km
 
 
 @pytest.fixture

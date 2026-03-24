@@ -8,6 +8,8 @@ Owner: Person A (FIRMS ingestion)
 Consumers: Person A (FIRMS), Person B (Open-Meteo, NWS)
 """
 
+from __future__ import annotations
+
 import logging
 import random
 import time

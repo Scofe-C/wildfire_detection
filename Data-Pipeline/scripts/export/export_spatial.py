@@ -14,6 +14,8 @@ Grid construction:
   - Missing cells filled with NaN sentinel
 """
 
+from __future__ import annotations
+
 import logging
 from pathlib import Path
 from typing import Optional
@@ -23,16 +25,16 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-# Feature channels for spatial grid (order matters)
+# Feature channels for spatial grid — 24 channels (order matters for CNN/GCN)
 SPATIAL_FEATURE_CHANNELS = [
     # fire (6)
     "active_fire_count",
     "mean_frp",
-    "median_frp",               # was missing — restores 20-channel spec
+    "median_frp",
     "max_confidence",
     "nearest_fire_distance_km",
     "fire_detected_binary",
-    # weather (9)
+    # weather (10)
     "temperature_2m",
     "relative_humidity_2m",
     "wind_speed_10m",
@@ -40,16 +42,19 @@ SPATIAL_FEATURE_CHANNELS = [
     "precipitation",
     "soil_moisture_0_to_7cm",
     "vpd",
+    "fire_weather_index",
     "days_since_last_precipitation",
     "cumulative_wind_run_24h",
     # derived weather (1)
     "drought_index_proxy",
-    # terrain (4)
+    # terrain + vegetation (7)
     "elevation_m",
     "slope_degrees",
     "aspect_degrees",
-    "fuel_model_fbfm40",        # was "fuel_model" — column name in fused df
+    "fuel_model_fbfm40",
     "canopy_cover_pct",
+    "vegetation_type",
+    "ndvi",
 ]
 
 

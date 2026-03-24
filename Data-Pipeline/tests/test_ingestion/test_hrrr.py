@@ -515,7 +515,7 @@ class TestHRRRBackgroundMerge:
 
     def test_merged_output_covers_all_cells(self, focal_grid_df, tmp_path):
         """All cells in grid_centroids should appear in the merged CSV."""
-        from scripts.ingestion.ingest_weather import _merge_hrrr_with_background
+        from scripts.ingestion.ingest_weather import _merge_hrrr_with_focal_background
         from scripts.utils.rate_limiter import RateLimiter, RateLimitConfig
 
         # Write a minimal HRRR CSV for focal cells only (first 2 cells)
@@ -559,11 +559,16 @@ class TestHRRRBackgroundMerge:
             "max_retries": 1,
         }
 
+        focal_centroids = focal_grid_df[["grid_id", "latitude", "longitude"]]
         with patch("scripts.ingestion.ingest_weather._fetch_open_meteo_batch",
-                   return_value=bg_weather):
-            result_path = _merge_hrrr_with_background(
+                   return_value=bg_weather), \
+             patch("scripts.ingestion.ingest_weather._get_focal_centroids",
+                   return_value=focal_centroids):
+            result_path = _merge_hrrr_with_focal_background(
                 hrrr_path=hrrr_path,
-                grid_centroids=focal_grid_df[["grid_id", "latitude", "longitude"]],
+                fire_cells=["cell_fire_1"],
+                h3_ring_max=1,
+                grid_centroids=focal_centroids,
                 execution_date=datetime(2026, 8, 15, 18, tzinfo=timezone.utc),
                 lookback_hours=2,
                 output_dir=str(tmp_path),
@@ -582,7 +587,7 @@ class TestHRRRBackgroundMerge:
 
     def test_hrrr_cells_have_flag_3(self, focal_grid_df, tmp_path):
         """HRRR focal cells must retain data_quality_flag=3 after merge."""
-        from scripts.ingestion.ingest_weather import _merge_hrrr_with_background
+        from scripts.ingestion.ingest_weather import _merge_hrrr_with_focal_background
         from scripts.utils.rate_limiter import RateLimiter, RateLimitConfig
 
         hrrr_data = pd.DataFrame({
@@ -609,11 +614,16 @@ class TestHRRRBackgroundMerge:
             "max_retries": 1,
         }
 
+        focal_centroids = focal_grid_df[["grid_id", "latitude", "longitude"]]
         with patch("scripts.ingestion.ingest_weather._fetch_open_meteo_batch",
-                   return_value=pd.DataFrame()):
-            result_path = _merge_hrrr_with_background(
+                   return_value=pd.DataFrame()), \
+             patch("scripts.ingestion.ingest_weather._get_focal_centroids",
+                   return_value=focal_centroids):
+            result_path = _merge_hrrr_with_focal_background(
                 hrrr_path=hrrr_path,
-                grid_centroids=focal_grid_df[["grid_id", "latitude", "longitude"]],
+                fire_cells=["cell_fire_1"],
+                h3_ring_max=1,
+                grid_centroids=focal_centroids,
                 execution_date=datetime(2026, 8, 15, 18, tzinfo=timezone.utc),
                 lookback_hours=2,
                 output_dir=str(tmp_path),

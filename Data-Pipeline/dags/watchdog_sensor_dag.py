@@ -46,6 +46,12 @@ from airflow.operators.python import PythonOperator
 from airflow.sensors.python import PythonSensor
 from airflow.utils.dates import days_ago
 
+from dags.utils.slack_notify import (
+    notify_slack,
+    sla_on_failure_callback,
+    sla_on_success_callback,
+)
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -312,7 +318,10 @@ with DAG(
         "retries": 2,
         "retry_delay": timedelta(minutes=1),
         "execution_timeout": timedelta(minutes=5),
+        "on_failure_callback": sla_on_failure_callback,
+        "on_success_callback": sla_on_success_callback,
     },
+    on_failure_callback=notify_slack,
     description=(
         "Polls GCS for fire trigger files from Cloud Function watchdog. "
         "Triggers wildfire_dag on confirmed detection."

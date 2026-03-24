@@ -14,7 +14,10 @@ Cross-platform compat:
   - get_cell_neighbors() uses h3.k_ring (3.x) or h3.grid_disk (4.x) — both work.
 """
 
+from __future__ import annotations
+
 import logging
+import math
 from typing import Optional
 
 import geopandas as gpd
@@ -114,6 +117,25 @@ def _h3_to_parent_compat(cell_id: str, res: int) -> str:
     if hasattr(h3, "h3_to_parent"):
         return h3.h3_to_parent(cell_id, res)  # 3.x
     return h3.cell_to_parent(cell_id, res)    # 4.x
+
+
+# Public aliases — used by fire_detector, priority_resolver, and other modules
+# that need H3 compat without importing heavy geospatial deps at top level.
+geo_to_h3_compat = _geo_to_h3_compat
+grid_disk_compat = _grid_disk_compat
+cell_to_latlng_compat = _cell_to_latlng_compat
+
+
+def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Great-circle distance between two points in kilometres (Haversine)."""
+    R = 6371.0
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = (math.sin(dlat / 2) ** 2
+         + math.cos(math.radians(lat1))
+         * math.cos(math.radians(lat2))
+         * math.sin(dlon / 2) ** 2)
+    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 
 # ---------------------------------------------------------------------------

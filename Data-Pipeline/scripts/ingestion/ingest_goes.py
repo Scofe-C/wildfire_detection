@@ -19,6 +19,7 @@ GOES NRT via FIRMS:
 
 import io
 import logging
+import math
 import os
 import time
 from datetime import datetime, timedelta, timezone
@@ -236,8 +237,9 @@ def fetch_goes_s3_detections(
                         for py, px in fire_pixels[:100]:  # cap at 100 pixels per file
                             # GOES projection simplified approximation
                             # Full implementation: use pyproj with GOES projection params
-                            approx_lon = float(x_coords[px]) * 180 / 3.14159  # placeholder
-                            approx_lat = float(y_coords[py]) * 180 / 3.14159  # placeholder
+                            # TODO: replace with proper GOES fixed-grid projection (pyproj + GOES ABI params)
+                            approx_lon = float(x_coords[px]) * 180 / math.pi  # placeholder approx
+                            approx_lat = float(y_coords[py]) * 180 / math.pi  # placeholder approx
                             if west <= approx_lon <= east and south <= approx_lat <= north:
                                 detections.append({
                                     "lat": approx_lat,

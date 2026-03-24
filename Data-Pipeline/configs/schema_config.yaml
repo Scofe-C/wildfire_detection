@@ -309,7 +309,7 @@ features:
 
   vegetation:
     - name: "fuel_model_fbfm40"
-      type: "int16"
+      type: "float64"   # Parquet-mr compat: int16 → float64 via safe_casts
       description: "Scott & Burgan 40 fuel model code (categorical)"
       source: "landfire"
       enabled: true
@@ -337,7 +337,7 @@ features:
         texas: "standard"
 
     - name: "vegetation_type"
-      type: "int16"
+      type: "float64"   # Parquet-mr compat: int16 → float64 via safe_casts
       description: "LANDFIRE Existing Vegetation Type code (categorical)"
       source: "landfire"
       enabled: true
@@ -453,7 +453,7 @@ features:
         texas: "standard"
 
     - name: "max_confidence"
-      type: "int8"
+      type: "int32"     # Parquet-mr compat: int8 → int32 via safe_casts
       description: "Maximum detection confidence in cell (0-100 for VIIRS)"
       source: "firms"
       enabled: true
@@ -484,7 +484,7 @@ features:
         texas: "critical"
 
     - name: "fire_detected_binary"
-      type: "int8"
+      type: "int32"     # Parquet-mr compat: int8 → int32 via safe_casts
       description: "Binary label: 1 if any fire detected in cell, 0 otherwise"
       source: "firms"
       enabled: true
@@ -499,7 +499,7 @@ features:
 
   derived:
     - name: "days_since_last_precipitation"
-      type: "int16"
+      type: "float64"   # Parquet-mr compat: int16 → float64 via safe_casts
       description: "Days since last precipitation > 1mm in cell"
       source: "computed"
       enabled: true
@@ -538,7 +538,7 @@ features:
 
   metadata:
     - name: "data_quality_flag"
-      type: "int8"
+      type: "int32"     # Parquet-mr compat: int8 → int32 via safe_casts
       # --- Improvement 2b: Expanded regional quality flag ---
       description: >
         0 = all sources fresh (Open-Meteo primary, all present),

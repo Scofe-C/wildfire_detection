@@ -62,13 +62,16 @@ These are NOT in requirements.txt yet — add them (see HRRR integration PR).
 from __future__ import annotations
 
 import logging
-import math
+import os
+import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
 import numpy as np
 import pandas as pd
+
+from scripts.utils.datetime_utils import coerce_to_utc
 
 logger = logging.getLogger(__name__)
 
@@ -157,7 +160,7 @@ def fetch_hrrr_for_focal_grid(
         return None
 
     # Normalize execution_date to UTC-aware datetime
-    execution_date = _to_utc(execution_date)
+    execution_date = coerce_to_utc(execution_date)
 
     # Resolve output directory
     if output_dir is None:
@@ -333,7 +336,7 @@ def _fetch_hrrr_fields(cycle_dt: datetime) -> Optional[dict]:
                 model="hrrr",
                 product="sfc",
                 fxx=0,          # f00 = analysis, not forecast
-                save_dir="/tmp/hrrr_cache",
+                save_dir=os.environ.get("HRRR_CACHE_DIR", tempfile.mkdtemp(prefix="hrrr_cache_")),
                 verbose=False,
             )
 
@@ -562,9 +565,4 @@ def _compute_vpd(temp_c: pd.Series, rh_pct: pd.Series) -> pd.Series:
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _to_utc(dt) -> datetime:
-    """Normalize any Airflow/Pendulum/proxy datetime to UTC-aware Python datetime."""
-    if hasattr(dt, "__wrapped__"):
-        dt = dt.__wrapped__
-    ts = pd.to_datetime(str(dt), utc=True)
-    return ts.to_pydatetime()
+# _to_utc removed — use coerce_to_utc from scripts.utils.datetime_utils
