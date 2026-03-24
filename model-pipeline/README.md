@@ -717,38 +717,4 @@ These stages depend on `models/ignition` and `data/static/fema_nri` — they won
 
 ---
 
-## 7. What To Do Next
 
-### Implementation status
-
-| Objective | Status | Notes |
-|---|---|---|
-| OBJ-1 XGBoost ignition model | **Placeholder** | Implement `src/models/obj1_xgboost/placeholder.py` |
-| OBJ-2 Cell2Fire spread simulation | ✅ **Done** | See section 4.8 — requires C++ binary + rasters |
-| OBJ-3 Gemini disaster reporting | ✅ **Done** | See section 4.9 — requires Vertex AI / Ollama setup |
-
-### For Teammates — OBJ-1 (XGBoost)
-
-1. Replace `src/models/obj1_xgboost/placeholder.py` with real `XGBoostFireRisk`.
-2. `load_model()` → load XGBoost `.json` or `.ubj` weights.
-3. `predict(X)` → return DataFrame with `prediction` and `probability` columns.
-4. `validate(X, y)` → call `src.validation.metrics.compute_all_metrics()`.
-5. `explain(X)` → call `shap.TreeExplainer`.
-6. Save trained model to `models/ignition/{version}/`.
-7. Run the orchestrator to verify end-to-end.
-
-### Running OBJ-2 (Cell2Fire)
-
-Prerequisites before calling `model.predict()`:
-1. Build and install the Cell2Fire C++ binary, ensure it is on `PATH` (or set `obj2.cell2fire.binary_path` in `configs/model_config.yaml`).
-2. Place DEM and LANDFIRE FBFM40 fuel GeoTIFFs at the paths configured under `obj2.cell2fire.raster_inputs`.
-3. Create a simulation config JSON with `ignition_points`, `aoi_bounds`, and any `params` overrides (see section 4.8 for the JSON schema).
-
-### Before Demo
-
-1. OBJ-1 implemented and passing the orchestrator.
-2. Validation gate passing (AUC-PR > 0.75).
-3. Bias gate passing (FNR disparity < 5%).
-4. Three visualization PNGs in `reports/visualizations/`.
-5. MLflow viewable: `mlflow ui --backend-store-uri sqlite:///mlruns.db`.
-6. CI/CD stages 1-6 green on GitHub Actions.
