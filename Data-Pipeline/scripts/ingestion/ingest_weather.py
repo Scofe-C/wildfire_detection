@@ -454,6 +454,31 @@ def _merge_hrrr_with_focal_background(
 
 
 # ---------------------------------------------------------------------------
+# NWS network availability probe
+# ---------------------------------------------------------------------------
+
+def _nws_is_reachable() -> bool:
+    """Quick DNS + TCP probe for api.weather.gov before entering the per-cell
+    NWS fallback loop.
+
+    Without this check, a Docker container with no external network access
+    will attempt one HTTPS request per failed cell, each hanging for the full
+    socket timeout (~10 s), turning a 113-cell batch into a ~19-minute crawl
+    that Airflow kills as a zombie task.
+
+    Uses a raw socket connect (port 443) with a 3-second timeout — fast
+    enough to not add meaningful latency when NWS IS reachable.
+    """
+    import socket
+    try:
+        socket.setdefaulttimeout(3)
+        with socket.create_connection(("api.weather.gov", 443), timeout=3):
+            return True
+    except (socket.timeout, socket.gaierror, OSError):
+        return False
+
+
+# ---------------------------------------------------------------------------
 # Core batched Open-Meteo fetch with NWS fallback
 # ---------------------------------------------------------------------------
 
@@ -468,12 +493,20 @@ def _batch_fetch_open_meteo(
 ) -> tuple[list[pd.DataFrame], list[str]]:
     """Fetch Open-Meteo in batches with per-cell NWS fallback on failure.
 
+    NWS fallback is skipped entirely if api.weather.gov is unreachable
+    (e.g. Docker container with no external DNS).  This prevents the
+    per-cell timeout spiral that causes Airflow zombie task kills.
+
     Returns:
         (list of DataFrames with weather rows, list of failed grid_ids)
     """
     batches = _create_coordinate_batches(grid_centroids, OPEN_METEO_MAX_LOCATIONS)
     all_rows: list[pd.DataFrame] = []
     failed_cells: list[str] = []
+
+    # Probe NWS reachability once before the batch loop — avoids per-cell
+    # DNS timeout spiral when running in a restricted network environment.
+    nws_available: Optional[bool] = None  # None = not yet checked
 
     for batch_idx, batch in enumerate(batches):
         logger.info(
@@ -502,15 +535,35 @@ def _batch_fetch_open_meteo(
             time.sleep(0.3)  # polite pause between successful batches
         else:
             logger.warning(
-                "  Open-Meteo failed for batch %d — attempting NWS fallback.",
+                "  Open-Meteo failed for batch %d — checking NWS fallback.",
                 batch_idx + 1,
             )
+
+            # Lazy-evaluate NWS reachability on first Open-Meteo failure
+            if nws_available is None:
+                nws_available = _nws_is_reachable()
+                if nws_available:
+                    logger.info("NWS api.weather.gov is reachable — fallback enabled.")
+                else:
+                    logger.warning(
+                        "NWS api.weather.gov is NOT reachable (DNS failure / no "
+                        "external network). Skipping NWS fallback for all batches. "
+                        "Failed cells will be forward-filled downstream."
+                    )
+
+            if not nws_available:
+                # Skip per-cell NWS attempts entirely — mark all as failed
+                failed_cells.extend(batch["grid_id"].astype(str).tolist())
+                continue
+
+            offshore_count = 0
             for _, cell in batch.iterrows():
                 lat = float(cell["latitude"])
                 lon = float(cell["longitude"])
                 # NWS covers CONUS land only — skip offshore / border points
                 if not (24.5 <= lat <= 49.5 and -125.0 <= lon <= -66.5):
                     failed_cells.append(str(cell["grid_id"]))
+                    offshore_count += 1
                     continue
 
                 nws_df = _fetch_nws_fallback(
@@ -526,6 +579,14 @@ def _batch_fetch_open_meteo(
                     all_rows.append(nws_df)
                 else:
                     failed_cells.append(str(cell["grid_id"]))
+
+            if offshore_count:
+                logger.info(
+                    "  Batch %d: %d offshore/out-of-bounds cells skipped "
+                    "(expected for large ring_max values near coastline).",
+                    batch_idx + 1,
+                    offshore_count,
+                )
 
     return all_rows, failed_cells
 
@@ -599,9 +660,16 @@ def _fetch_open_meteo_batch(
             # 4xx (except 429) — non-retryable
             if 400 <= resp.status_code < 500:
                 logger.error(
-                    "Open-Meteo non-retryable error: HTTP %d: %s",
+                    "Open-Meteo non-retryable error: HTTP %d\n"
+                    "  URL: %s\n"
+                    "  start=%s  end=%s  locations=%d\n"
+                    "  Response: %s",
                     resp.status_code,
-                    resp.text[:300],
+                    url,
+                    start_date.strftime("%Y-%m-%d"),
+                    end_date.strftime("%Y-%m-%d"),
+                    len(lats),
+                    resp.text[:400],
                 )
                 return None
 
@@ -774,7 +842,11 @@ def _parse_nws_wind_speed(speed_str: Optional[str]) -> Optional[float]:
     if speed_str is None:
         return None
     try:
-        s = str(speed_str).replace(" mph", "")
+        s = str(speed_str).strip().lower()
+        # NWS returns "Calm" or "0 mph" when wind is calm
+        if s in ("calm", "0", ""):
+            return 0.0
+        s = s.replace(" mph", "").replace("mph", "")
         parts = s.split(" to ")
         avg_mph = (
             (float(parts[0]) + float(parts[1])) / 2
@@ -794,6 +866,8 @@ def _parse_nws_wind_direction(direction: Optional[str]) -> Optional[float]:
         "E": 90, "ESE": 112.5, "SE": 135, "SSE": 157.5,
         "S": 180, "SSW": 202.5, "SW": 225, "WSW": 247.5,
         "W": 270, "WNW": 292.5, "NW": 315, "NNW": 337.5,
+        # NWS returns "CALM" when wind speed is 0 — map to 0 degrees
+        "CALM": 0,
     }
     return direction_map.get(str(direction).strip().upper())
 
@@ -989,7 +1063,15 @@ def _write_combined(
             out_dir, execution_date, reason="All weather API requests failed"
         )
 
-    combined = pd.concat(all_rows, ignore_index=True)
+    # Filter out empty or all-NA DataFrames before concat to suppress
+    # pandas FutureWarning about dtype inference on empty entries.
+    non_empty = [df for df in all_rows if not df.empty and not df.isna().all().all()]
+    if not non_empty:
+        return _write_empty_weather_csv(
+            out_dir, execution_date, reason="All weather rows were empty after filtering"
+        )
+
+    combined = pd.concat(non_empty, ignore_index=True)
     combined = _ensure_schema(combined)
     combined.to_csv(output_path, index=False)
 
