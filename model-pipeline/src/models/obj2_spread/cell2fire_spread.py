@@ -493,7 +493,7 @@ class Cell2FireSpread(BaseModel):
 
             # --- Prepare raster paths ---
             dem_path = self._resolve_raster("dem", work_dir)
-            fuel_path = self._resolve_raster("fuel", work_dir)
+            self._resolve_raster("fuel", work_dir)
 
             # --- Build ignition file ---
             ignition_points = self._config.get("ignition_points", [])
@@ -501,7 +501,7 @@ class Cell2FireSpread(BaseModel):
             with open(ignition_file, "w", newline="") as f:
                 writer = csv.writer(f)
                 writer.writerow(["Year", "Cell"])
-                for i, pt in enumerate(ignition_points):
+                for pt in ignition_points:
                     if isinstance(pt, (list, tuple)) and len(pt) == 2:
                         # Convert (row, col) to cell number (1-indexed)
                         row, col = pt
@@ -767,9 +767,6 @@ class Cell2FireSpread(BaseModel):
         """
         import rasterio
 
-        threshold = self._obj2_config.get("cell2fire", {}).get(
-            "validation", {}
-        ).get("minimum_dice", 0.50)
         # Use 0.5 as the burn/no-burn decision threshold
         burn_threshold = 0.5
 

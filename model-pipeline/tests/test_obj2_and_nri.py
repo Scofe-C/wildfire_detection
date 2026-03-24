@@ -9,12 +9,11 @@ from __future__ import annotations
 import json
 import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
 import pytest
-
 
 # =====================================================================
 # Dice coefficient tests
@@ -106,9 +105,8 @@ class TestFormatWeatherCSV:
             format_weather_csv,
         )
         df = pd.DataFrame({"ws": [5.0], "wd": [180], "tmp": [25.0], "rh": [40]})
-        with pytest.raises(Cell2FireError, match="No timestamp column"):
-            with tempfile.NamedTemporaryFile(suffix=".csv") as f:
-                format_weather_csv(df, f.name)
+        with pytest.raises(Cell2FireError, match="No timestamp column"), tempfile.NamedTemporaryFile(suffix=".csv") as f:
+            format_weather_csv(df, f.name)
 
     def test_missing_weather_column_raises(self):
         from src.models.obj2_spread.cell2fire_spread import (
@@ -120,9 +118,8 @@ class TestFormatWeatherCSV:
             "ws": [5.0, 7.0],
             # Missing wd, tmp, rh
         })
-        with pytest.raises(Cell2FireError, match="Missing weather columns"):
-            with tempfile.NamedTemporaryFile(suffix=".csv") as f:
-                format_weather_csv(df, f.name)
+        with pytest.raises(Cell2FireError, match="Missing weather columns"), tempfile.NamedTemporaryFile(suffix=".csv") as f:
+            format_weather_csv(df, f.name)
 
 
 # =====================================================================
@@ -264,17 +261,16 @@ class TestCell2FireSpreadInterface:
             Cell2FireSpread,
         )
         model = Cell2FireSpread()
-        with pytest.raises((FileNotFoundError, Cell2FireError)):
-            with patch(
-                "src.models.obj2_spread.cell2fire_spread._load_obj2_config",
-                return_value={
-                    "cell2fire": {
-                        "binary_path": "Cell2Fire",
-                        "default_params": {},
-                    }
-                },
-            ):
-                model.load_model(tmp_path / "nonexistent")
+        with pytest.raises((FileNotFoundError, Cell2FireError)), patch(
+            "src.models.obj2_spread.cell2fire_spread._load_obj2_config",
+            return_value={
+                "cell2fire": {
+                    "binary_path": "Cell2Fire",
+                    "default_params": {},
+                }
+            },
+        ):
+            model.load_model(tmp_path / "nonexistent")
 
     def test_repr(self):
         from src.models.obj2_spread.cell2fire_spread import Cell2FireSpread
@@ -362,6 +358,7 @@ class TestNRILoader:
     def test_compute_vulnerability_quartiles(self):
         import geopandas as gpd
         from shapely.geometry import Point
+
         from src.bias.nri_loader import compute_vulnerability_quartiles
 
         nri = gpd.GeoDataFrame({
@@ -380,6 +377,7 @@ class TestNRILoader:
     def test_spatial_join_fills_unknown_for_unmatched(self):
         import geopandas as gpd
         from shapely.geometry import Point
+
         from src.bias.nri_loader import spatial_join_predictions
 
         # Create NRI with tracts only near (0, 0)
