@@ -43,7 +43,7 @@ google-genai>=1.0.0
 
 # OBJ-3: Optional (PDF rendering — large dependency, install only when needed)
 # weasyprint>=68.0,<69.0
-
+python-dotenv>=1.0.0,<2.0.0
 # Dev / Test
 pytest>=7.4.0,<9.0.0
 pytest-cov>=4.1.0
