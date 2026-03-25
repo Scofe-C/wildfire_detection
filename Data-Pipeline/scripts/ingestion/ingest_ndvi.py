@@ -148,26 +148,29 @@ def download_ndvi(
 
     logger.info("Found %d MOD13A2 granules — downloading …", len(results))
 
-    downloaded_paths: list[Path] = []
-    for granule in results:
-        # earthaccess returns objects with .data_links() or similar
-        links = granule.data_links(access="direct") or granule.data_links()
-        for link in links:
-            filename = Path(link).name
-            dest = raw_dir / filename
-            if dest.exists() and not force:
-                downloaded_paths.append(dest)
-                continue
-            try:
-                earthaccess.download([granule], local_path=str(raw_dir))
-                if dest.exists():
-                    downloaded_paths.append(dest)
-            except Exception as exc:
-                logger.warning("Failed to download %s: %s", filename, exc)
-            break  # one file per granule
+    # Download all granules at once; earthaccess handles retries internally
+    try:
+        files = earthaccess.download(results, local_path=str(raw_dir))
+        downloaded_paths = [Path(f) for f in files if Path(f).exists()]
+    except Exception as exc:
+        logger.warning("Bulk download failed (%s); skipping NDVI.", exc)
+        downloaded_paths = []
 
-    logger.info("Downloaded %d NDVI files to %s", len(downloaded_paths), raw_dir)
-    return downloaded_paths
+    # Filter to files we can actually open: prefer GeoTIFF, accept HDF4
+    valid_paths: list[Path] = []
+    for p in downloaded_paths:
+        if p.suffix.lower() in (".tif", ".tiff", ".hdf", ".hdf4", ".h4", ".he4"):
+            valid_paths.append(p)
+        else:
+            # earthaccess may return XML/browse files alongside data
+            logger.debug("Skipping non-raster file: %s", p.name)
+
+    # If no valid raster files, check if earthaccess returned any path at all
+    if not valid_paths and downloaded_paths:
+        valid_paths = downloaded_paths  # try everything
+
+    logger.info("Downloaded %d NDVI raster files to %s", len(valid_paths), raw_dir)
+    return valid_paths
 
 
 def _earthdata_login(earthaccess) -> None:
@@ -304,8 +307,12 @@ def compute_ndvi_features(
     for hdf_path in ndvi_files:
         try:
             data_int16, transform, crs = _open_ndvi_band(hdf_path)
+            logger.info("Opened NDVI band from %s, shape=%s dtype=%s",
+                        hdf_path.name, data_int16.shape, data_int16.dtype)
         except Exception as exc:
-            logger.warning("Could not open %s: %s", hdf_path, exc)
+            logger.warning("Could not open %s: %s — "
+                           "If this is HDF4, install GDAL with HDF4 support "
+                           "or use a GeoTIFF source.", hdf_path.name, exc)
             continue
 
         # Reproject to WGS84
@@ -365,6 +372,93 @@ def compute_ndvi_features(
 
 
 # ---------------------------------------------------------------------------
+# AppEEARS CSV ingestion path (no HDF4/raster required)
+# ---------------------------------------------------------------------------
+
+def compute_ndvi_from_appeears(
+    appeears_csv: str | Path,
+    grid,
+    output_dir: str | Path,
+    resolution_km: int,
+) -> Path:
+    """Compute per-H3-cell NDVI from an AppEEARS Point Sample results CSV.
+
+    AppEEARS returns one row per (point, date). We average across dates to
+    produce a single seasonal-mean NDVI per H3 cell.
+
+    AppEEARS results CSV columns (example):
+        ID, Category, Latitude, Longitude, Date,
+        MOD13A2_061__1_km_16_days_NDVI,
+        MOD13A2_061__1_km_16_days_NDVI_QA, ...
+
+    Args:
+        appeears_csv:  Path to the downloaded AppEEARS results CSV.
+        grid:          GeoDataFrame from generate_full_grid (for grid_id list).
+        output_dir:    Where to write ndvi_features_<N>km.parquet.
+        resolution_km: Used in the output filename.
+
+    Returns:
+        Path to ndvi_features_<N>km.parquet.
+    """
+    out_path = Path(output_dir) / f"ndvi_features_{resolution_km}km.parquet"
+    df_raw = pd.read_csv(appeears_csv)
+
+    logger.info("AppEEARS CSV: %d rows, columns: %s", len(df_raw), list(df_raw.columns))
+
+    # Find the NDVI column (handles version differences in column naming)
+    ndvi_col = next(
+        (c for c in df_raw.columns if "NDVI" in c.upper() and "QA" not in c.upper()),
+        None,
+    )
+    if ndvi_col is None:
+        raise ValueError(
+            f"Could not find NDVI column in AppEEARS CSV. "
+            f"Available columns: {list(df_raw.columns)}"
+        )
+    logger.info("Using NDVI column: %s", ndvi_col)
+
+    # Find the ID column (grid_id)
+    id_col = next((c for c in df_raw.columns if c.upper() in ("ID", "GRID_ID")), None)
+    if id_col is None:
+        raise ValueError(f"No ID column found. Columns: {list(df_raw.columns)}")
+
+    df_raw[id_col] = df_raw[id_col].astype(str)
+
+    # AppEEARS fill value for MOD13A2 NDVI is -3000 (int16 nodata after scaling)
+    # After AppEEARS applies scale factor (0.0001), fill appears as -0.3
+    ndvi_vals = pd.to_numeric(df_raw[ndvi_col], errors="coerce")
+    df_raw = df_raw.copy()
+    df_raw["_ndvi"] = ndvi_vals.where(ndvi_vals > -0.29)  # mask fill / nodata
+
+    # Average all valid observations per cell
+    cell_ndvi = (
+        df_raw.groupby(id_col)["_ndvi"]
+        .mean()
+        .rename("ndvi")
+    )
+
+    # Align to master grid (left join so every cell has a row)
+    result = grid[["grid_id", "latitude", "longitude"]].copy()
+    result["grid_id"] = result["grid_id"].astype(str)
+    result = result.merge(
+        cell_ndvi.reset_index().rename(columns={id_col: "grid_id"}),
+        on="grid_id",
+        how="left",
+    )
+
+    valid = result["ndvi"].notna().sum()
+    logger.info(
+        "AppEEARS NDVI: %d/%d cells have valid values (mean=%.3f)",
+        valid, len(result),
+        result["ndvi"].mean() if valid > 0 else float("nan"),
+    )
+
+    result.to_parquet(out_path, index=False)
+    logger.info("Wrote NDVI features: %s (%d rows)", out_path, len(result))
+    return out_path
+
+
+# ---------------------------------------------------------------------------
 # Top-level entry point
 # ---------------------------------------------------------------------------
 
@@ -396,16 +490,25 @@ def run(
         logger.info("NDVI cache hit: %s", out_path)
         return out_path
 
-    if end_date is None:
-        end_date = datetime.date.today().isoformat()
-
-    ndvi_files = download_ndvi(
-        output_dir,
-        start_date=start_date,
-        end_date=end_date,
-        regions=regions,
-        force=force_rebuild,
-    )
+    # If local GeoTIFF files already exist in ndvi_raw/, use them directly
+    # without calling earthaccess (e.g. files downloaded from AppEEARS).
+    # force_rebuild only forces recomputing the output parquet, not re-downloading.
+    raw_dir = Path(output_dir) / "ndvi_raw"
+    local_tifs = sorted(raw_dir.glob("*.tif")) + sorted(raw_dir.glob("*.tiff"))
+    if local_tifs:
+        logger.info("Found %d local GeoTIFF(s) in %s — skipping earthaccess download.",
+                    len(local_tifs), raw_dir)
+        ndvi_files = local_tifs
+    else:
+        if end_date is None:
+            end_date = datetime.date.today().isoformat()
+        ndvi_files = download_ndvi(
+            output_dir,
+            start_date=start_date,
+            end_date=end_date,
+            regions=regions,
+            force=force_rebuild,
+        )
 
     grid = generate_full_grid(resolution_km)
     return compute_ndvi_features(grid, ndvi_files, output_dir, resolution_km)
@@ -429,6 +532,9 @@ def _parse_args() -> argparse.Namespace:
                    help="End of NDVI composite search (ISO date, default: today)")
     p.add_argument("--regions", nargs="+", default=None)
     p.add_argument("--force-rebuild", action="store_true")
+    p.add_argument("--appeears-csv", default=None,
+                   help="Path to AppEEARS Point Sample results CSV. "
+                        "When provided, skips earthaccess download entirely.")
     p.add_argument("--log-level", default="INFO",
                    choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     return p.parse_args()
@@ -440,12 +546,23 @@ if __name__ == "__main__":
         level=getattr(logging, args.log_level),
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
-    out = run(
-        resolution_km=args.resolution_km,
-        output_dir=args.output_dir,
-        start_date=args.start_date,
-        end_date=args.end_date,
-        regions=args.regions,
-        force_rebuild=args.force_rebuild,
-    )
+
+    if args.appeears_csv:
+        # AppEEARS path: no earthaccess / raster / HDF4 needed
+        grid = generate_full_grid(args.resolution_km)
+        out = compute_ndvi_from_appeears(
+            appeears_csv=args.appeears_csv,
+            grid=grid,
+            output_dir=args.output_dir,
+            resolution_km=args.resolution_km,
+        )
+    else:
+        out = run(
+            resolution_km=args.resolution_km,
+            output_dir=args.output_dir,
+            start_date=args.start_date,
+            end_date=args.end_date,
+            regions=args.regions,
+            force_rebuild=args.force_rebuild,
+        )
     print(f"Output: {out}")

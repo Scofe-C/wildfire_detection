@@ -180,12 +180,15 @@ data-pipeline/
 │   │   ├── ingest_goes.py           # GOES NRT quick-check + S3 direct access
 │   │   ├── ingest_weather.py        # Open-Meteo + NWS fallback (rate-limited)
 │   │   ├── ingest_hrrr.py           # NOAA HRRR rapid weather (emergency mode)
+│   │   ├── ingest_landfire.py       # LANDFIRE 2022 raster → H3 zonal stats (one-time)
+│   │   ├── ingest_srtm.py           # USGS SRTM 30m tiles → elevation/slope/aspect (one-time)
+│   │   ├── ingest_ndvi.py           # MODIS MOD13A2 NDVI via AppEEARS GeoTIFF (one-time)
 │   │   └── ingest_field_telemetry.py
 │   │
 │   ├── processing/
 │   │   ├── process_firms.py         # Spatial join, FRP clipping, confidence norm
-│   │   ├── process_static.py        # LANDFIRE + SRTM → H3 zonal statistics
-│   │   └── process_weather.py       # 6h aggregation + derived fire weather features
+│   │   ├── process_static.py        # Merge LANDFIRE + SRTM + NDVI parquets into unified cache
+│   │   └── process_weather.py       # 6h aggregation + Canadian FWI + derived fire weather features
 │   │
 │   ├── fusion/
 │   │   ├── fuse_features.py         # Left-join from master grid (all cells preserved)
@@ -212,7 +215,8 @@ data-pipeline/
 │   │                                #        --input data/processed/fused
 │   │                                #        --output-dir data/processed/spatial
 │   │                                #        --resolution-km 64
-│   ├── backfill/                    # (Historical replay — to be implemented)
+│   ├── backfill/
+│   │   └── historical_backfill.py   # Replay pipeline over any date range (resume-safe)
 │   │
 │   ├── reporting/
 │   │   ├── report_generator.py      # LLM-based pipeline reports (Phase 2)
@@ -220,9 +224,11 @@ data-pipeline/
 │   │
 │   └── utils/
 │       ├── datetime_utils.py        # Shared UTC datetime coercion
+│       ├── export_appeears_points.py# Generate AppEEARS upload CSV/GeoJSON from H3 grid
 │       ├── gcs_state.py             # GCS watchdog state I/O (race-safe writes)
 │       ├── grid_utils.py            # H3 grid generation, spatial pruning, haversine
 │       ├── rate_limiter.py          # Token-bucket rate limiter with jitter
+│       ├── run_pipeline_once.py     # Local end-to-end smoke test (no Airflow)
 │       └── schema_loader.py         # FeatureRegistry from schema_config.yaml
 │
 ├── tests/
@@ -268,34 +274,34 @@ data-pipeline/
 |---|---|---|---|---|
 | NASA FIRMS (VIIRS SNPP, NOAA-20, MODIS) | Active fire detections | Near real-time (~3h) | Primary fire label | ✅ Live |
 | GOES-R ABI FDC | Geostationary fire pixels | Every 10 min | Watchdog quick-check | ✅ Live |
-| Open-Meteo | Hourly weather (8 variables) | Hourly | Weather features | ✅ Live |
+| Open-Meteo | Hourly weather (7 variables) | Hourly | Weather features | ✅ Live |
 | NWS API | Forecast weather | Hourly | Weather fallback | ✅ Live |
 | NOAA HRRR | Rapid-refresh weather | Hourly | Emergency-mode weather | ✅ Live |
-| LANDFIRE 2022 | Fuel model, canopy, vegetation | Static (one-time) | Fuel features | ⚠️ Requires manual download |
-| USGS SRTM 30m | Elevation, slope, aspect | Static (one-time) | Terrain features | ⚠️ Requires manual download |
-| MODIS NDVI (MOD13A2) | Vegetation greenness | 16-day composite | NDVI feature | ⚠️ Requires manual download |
+| LANDFIRE 2022 (FBFM40, CC, EVT) | Fuel model, canopy cover, vegetation type | Static (one-time) | Fuel/veg features | ⚠️ Manual download — see §6a |
+| USGS SRTM 30m (OpenTopography) | Elevation, slope, aspect | Static (one-time) | Terrain features | ⚠️ Manual download — see §6b |
+| MODIS MOD13A2 v061 (NASA AppEEARS) | 1 km 16-day NDVI composite | Static (seasonal) | Vegetation greenness | ⚠️ Manual download — see §6c |
 
-All data is indexed to an **H3 hexagonal grid** at configurable resolution (default 64 km, escalates to 22 km on watchdog). Static layers are computed once and cached as parquet — all subsequent runs load the parquet directly.
+All data is indexed to an **H3 hexagonal grid** at configurable resolution (default 64 km, escalates to 22 km on watchdog). Static layers are computed once and cached as Parquet — all subsequent pipeline runs load the cache directly. Without static caches, static columns output `NaN` and `data_quality_flag=4/5` but the pipeline still runs.
 
 ---
 
 ## 6. Static Data Setup (One-Time)
 
-Static layers (LANDFIRE fuel, SRTM terrain, MODIS NDVI) must be downloaded once and placed in `data/static/` before the pipeline produces real feature values. Without them, static columns output `NaN` and `data_quality_flag=4` but the pipeline still runs.
+Static layers must be downloaded once. Without them the pipeline still runs — static columns output `NaN` with `data_quality_flag=4` (all static missing) or `5` (partial). Rebuild the cache any time a new source is added.
 
-### 6a. LANDFIRE 2022 — Fuel & Vegetation
+### 6a. LANDFIRE 2022 — Fuel Model, Canopy Cover, Vegetation Type
 
-**Download page:** https://landfire.gov/data/FullExtentDownloads → LF 2022 → CONUS → Fuel
+**Download:** https://landfire.gov/data/FullExtentDownloads → LF 2022 → CONUS
 
 Download and extract these three ZIPs:
 
-| Layer | ZIP filename | Keyword in extracted .tif |
+| Layer | ZIP | Column produced |
 |---|---|---|
-| Fuel model (FBFM40) | `LF2022_FBFM40_230_CONUS.zip` | `F40` or `FBFM40` |
-| Canopy cover | `LF2022_CC_230_CONUS.zip` | `_CC_` |
-| Vegetation type (EVT) | `LF2022_EVT_230_CONUS.zip` | `EVT` |
+| Fuel model (FBFM40) | `LF2022_FBFM40_230_CONUS.zip` | `fuel_model_fbfm40` |
+| Canopy cover (CC) | `LF2022_CC_230_CONUS.zip` | `canopy_cover_pct` |
+| Vegetation type (EVT) | `LF2022_EVT_230_CONUS.zip` | `vegetation_type`, `dominant_fuel_fraction` |
 
-Place extracted `.tif` files in:
+Place the extracted `.tif` files (any name containing `F40`/`FBFM40`, `_CC_`, `EVT`) in:
 ```
 data/static/landfire_raw/
     LC22_F40_230.tif
@@ -303,34 +309,36 @@ data/static/landfire_raw/
     LC22_EVT_230.tif
 ```
 
-Then run:
+Run:
 ```bash
 python -m scripts.ingestion.ingest_landfire --resolution-km 64 --output-dir data/static
 ```
 
-Output: `data/static/landfire_features_64km.parquet` — columns: `fuel_model_fbfm40`, `canopy_cover_pct`, `vegetation_type`, `dominant_fuel_fraction`
+The script clips the CONUS rasters to CA + TX, resamples to 0.01° (~1 km) to avoid OOM, reprojects to WGS84, and runs `rasterstats.zonal_stats()` on each H3 cell.
+
+Output: `data/static/landfire_features_64km.parquet`
 
 ---
 
 ### 6b. SRTM 30m — Elevation, Slope, Aspect
 
-**Source:** [OpenTopography](https://portal.opentopography.org/raster?opentopoID=OTSRTM.082015.4326.1) — register for a free API key at https://opentopography.org/developers
+**Source:** OpenTopography (https://opentopography.org/developers) — free API key required.
 
-The 450,000 km² per-request limit requires splitting CA and TX into tiles. Use these exact URLs (replace `YOUR_KEY`):
+The 450,000 km² per-request area limit requires 7 tiles total. Replace `YOUR_KEY` below:
 
-**California — 3 tiles:**
+**California — 3 tiles (south/mid/north):**
 ```
-# South (32.53 → 36.0)
+# South (32.53–36.0)
 https://portal.opentopography.org/API/globaldem?demtype=SRTMGL1&south=32.53&north=36.0&west=-124.48&east=-114.13&outputFormat=GTiff&API_Key=YOUR_KEY
 
-# Mid (36.0 → 39.0)
+# Mid (36.0–39.0)
 https://portal.opentopography.org/API/globaldem?demtype=SRTMGL1&south=36.0&north=39.0&west=-124.48&east=-114.13&outputFormat=GTiff&API_Key=YOUR_KEY
 
-# North (39.0 → 42.01)
+# North (39.0–42.01)
 https://portal.opentopography.org/API/globaldem?demtype=SRTMGL1&south=39.0&north=42.01&west=-124.48&east=-114.13&outputFormat=GTiff&API_Key=YOUR_KEY
 ```
 
-**Texas — 4 tiles (2×2):**
+**Texas — 4 tiles (2×2 grid):**
 ```
 # NW
 https://portal.opentopography.org/API/globaldem?demtype=SRTMGL1&south=31.17&north=36.50&west=-106.65&east=-100.08&outputFormat=GTiff&API_Key=YOUR_KEY
@@ -342,10 +350,10 @@ https://portal.opentopography.org/API/globaldem?demtype=SRTMGL1&south=25.84&nort
 https://portal.opentopography.org/API/globaldem?demtype=SRTMGL1&south=25.84&north=31.17&west=-100.08&east=-93.51&outputFormat=GTiff&API_Key=YOUR_KEY
 ```
 
-Save with these **exact filenames** in `data/static/srtm_raw/`:
+Save files in `data/static/srtm_raw/`. Filenames must contain `california` or `texas` (prefix variants `srtm_`, `strm_`, `strn_` are all accepted by the script):
 ```
 data/static/srtm_raw/
-    srtm_california_south.tif
+    srtm_california_south.tif   (or strm_california_south.tif)
     srtm_california_mid.tif
     srtm_california_north.tif
     srtm_texas_nw.tif
@@ -354,56 +362,66 @@ data/static/srtm_raw/
     srtm_texas_se.tif
 ```
 
-Then run:
+Run:
 ```bash
 python -m scripts.ingestion.ingest_srtm --resolution-km 64 --output-dir data/static
 ```
 
-Output: `data/static/srtm_features_64km.parquet` — columns: `elevation_m`, `slope_degrees`, `aspect_degrees`
+The script mosaics tiles per region (resampled to 0.01° during merge to avoid OOM), derives slope and aspect via `numpy.gradient`, and computes circular-mean aspect per H3 cell.
 
-The script automatically mosaics all tiles per region, derives slope/aspect via `numpy.gradient`, and computes circular-mean aspect per H3 cell.
+Output: `data/static/srtm_features_64km.parquet` — columns: `elevation_m`, `slope_degrees`, `aspect_degrees`
 
 ---
 
-### 6c. MODIS NDVI (MOD13A2 v061)
+### 6c. MODIS NDVI (MOD13A2 v061) via NASA AppEEARS
 
-**Download portal:** https://appeears.earthdatacloud.nasa.gov/ (free NASA Earthdata account)
+**Portal:** https://appeears.earthdatacloud.nasa.gov/ — free NASA Earthdata account required.
 
-1. Create a task → **Area Sample**
-2. Layer: `MOD13A2.061 / _1 km 16 days NDVI`
-3. Date range: last 6 months (e.g. `2024-10-01` → `2025-04-01`)
-4. Draw bounding box covering California + Texas (or use `-124.48, 25.84, -93.51, 42.01`)
-5. Download the resulting GeoTIFF(s)
+**Step 1 — generate the area polygon:**
+```bash
+python -m scripts.utils.export_appeears_points --geojson
+# writes: data/static/appeears_area.geojson
+```
 
-Place in:
+**Step 2 — submit an AppEEARS Area Sample task:**
+1. Sign in → Start → **Area Sample**
+2. Upload `data/static/appeears_area.geojson`
+3. Product: `MOD13A2.061`, Layer: `1 km 16 days NDVI`
+4. Date range: `01-01-2024` → `08-31-2024` (covers fire season)
+5. Projection: **Geographic (WGS84)**
+6. Submit → wait for email → download the GeoTIFF zip
+
+**Step 3 — place GeoTIFFs and process:**
 ```
 data/static/ndvi_raw/
-    MOD13A2*.tif    (one or more files)
+    MOD13A2.061__1_km_16_days_NDVI_20240525T000000_aid0001.tif
+    MOD13A2.061__1_km_16_days_NDVI_20240610T000000_aid0001.tif
+    ...  (all downloaded .tif files)
 ```
 
-Then run:
 ```bash
-python -m scripts.ingestion.ingest_ndvi --resolution-km 64 --output-dir data/static \
-    --start-date 2024-10-01 --end-date 2025-04-01
+python -m scripts.ingestion.ingest_ndvi --resolution-km 64 --output-dir data/static --force-rebuild
 ```
+
+The script auto-detects local GeoTIFFs in `ndvi_raw/` and skips earthaccess download. It averages all 16-day composites to produce a single seasonal-mean NDVI per H3 cell.
 
 Output: `data/static/ndvi_features_64km.parquet` — column: `ndvi` (scaled 0.0–1.0)
 
+> **Note:** `soil_moisture_0_to_7cm` is requested from Open-Meteo but returns null on the free tier — this is expected and does not indicate a pipeline error.
+
 ---
 
-### 6d. Wire everything into process_static
+### 6d. Rebuild the static cache
 
-Once any (or all) source parquets exist, regenerate the static feature cache:
+After adding any new source parquet, regenerate the unified static cache:
 ```bash
-python -m scripts.processing.process_static   # uses load_and_process_static() internally
-# or force rebuild:
 python -c "
 from scripts.processing.process_static import load_and_process_static
 load_and_process_static(64, 'data/static', force_rebuild=True)
 "
 ```
 
-Missing sources fall back to `NaN` gracefully — partial static data is better than none.
+Missing sources fall back to `NaN` gracefully — partial static data is flagged `data_quality_flag=5` and still used for training.
 
 ---
 
@@ -423,14 +441,15 @@ All 28 features are defined in `configs/schema_config.yaml` — the single sourc
 
 ### Data Quality Flag Codes
 
-| Code | Meaning |
-|---|---|
-| 0 | All sources present — full confidence |
-| 1 | Weather gap-filled via NWS fallback |
-| 2 | Weather forward-filled from previous window |
-| 3 | HRRR substituted for Open-Meteo |
-| 4 | FIRMS data absent — fire features set to zero |
-| 5 | Multiple sources missing — exclude from training |
+| Code | Meaning | Action |
+|---|---|---|
+| 0 | All sources present — full confidence | Use for training |
+| 2 | Weather from NWS fallback (Open-Meteo unavailable) | Use with caution |
+| 3 | >30 % of dynamic feature columns are null | Inspect before use |
+| 4 | All static columns null — no LANDFIRE/SRTM cache for this cell | Exclude from training |
+| 5 | Some static columns null — boundary cell or missing tile | Use for training (partial static) |
+
+Phase 2 placeholder columns (`fire_weather_index` is now computed; `ndvi` requires AppEEARS download) are excluded from quality flag null-rate calculations so they do not inflate flag=3 counts.
 
 ---
 
