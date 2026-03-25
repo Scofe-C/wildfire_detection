@@ -481,6 +481,7 @@ class Cell2FireSpread(BaseModel):
 
         work_dir = Path(tempfile.mkdtemp(prefix="cell2fire_"))
         output_dir = work_dir / "output"
+        shutil.copy("/home/ibrahim/C2F-W/data/ScottAndBurgan/Hom_Fuel_101_40x40-asc/spain_lookup_table.csv", work_dir / "spain_lookup_table.csv")
         output_dir.mkdir()
 
         try:

@@ -1,113 +1,70 @@
-# =============================================================================
-# Wildfire Model Pipeline — Master Configuration
-# =============================================================================
-# Every threshold, path, and parameter in one file.
-# Modules load this via:
-#   with open("configs/model_config.yaml") as f: config = yaml.safe_load(f)
-#
-# Keys consumed by:
-#   paths.*                → orchestrator.py (PipelineConfig)
-#   validation.*           → orchestrator.py, model_selector.py
-#   bias_gate.*            → detector.py, orchestrator.py
-#   shap.*                 → alerter.py (drift alerts)
-#   tracking.*             → mlflow_logger.py, vertex_sync.py
-#   notifications.*        → alerter.py
-#   obj2.*                 → src/models/obj2_spread/
-# =============================================================================
-
-# ---------------------------------------------------------------------------
-# 1. Paths — where each module reads / writes
-# ---------------------------------------------------------------------------
 paths:
-  backfill_dir: "../data-pipeline/data/processed/backfill"
-  models_dir: "models/ignition"
-  validation_dir: "reports/validation"
-  bias_dir: "reports/bias_gate"
-  visualizations_dir: "reports/visualizations"
-  fema_nri_cache: "data/static/fema_nri"
-
-# ---------------------------------------------------------------------------
-# 2. Validation gate (CI/CD Stage 5)
-# ---------------------------------------------------------------------------
+  backfill_dir: ../data-pipeline/data/processed/backfill
+  models_dir: models/ignition
+  validation_dir: reports/validation
+  bias_dir: reports/bias_gate
+  visualizations_dir: reports/visualizations
+  fema_nri_cache: data/static/fema_nri
 validation:
-  auc_pr_threshold: 0.75         # model must beat this to pass
-  decision_threshold: 0.5        # probability → binary cutoff
-
-# ---------------------------------------------------------------------------
-# 3. Bias gate (CI/CD Stage 6 — BLOCKING)
-# ---------------------------------------------------------------------------
+  auc_pr_threshold: 0.75
+  decision_threshold: 0.5
 bias_gate:
-  max_disparity: 0.05            # max FNR difference across NRI quartiles
-
-# ---------------------------------------------------------------------------
-# 4. SHAP drift detection
-# ---------------------------------------------------------------------------
+  max_disparity: 0.05
 shap:
-  min_soil_moisture_importance: 0.10   # alert if SHAP drops below 10%
-
-# ---------------------------------------------------------------------------
-# 5. Experiment tracking
-# ---------------------------------------------------------------------------
+  min_soil_moisture_importance: 0.1
 tracking:
   mlflow:
-    tracking_uri: "sqlite:///mlruns.db"
-    experiment_name: "wildfire-model-pipeline"
+    tracking_uri: sqlite:///mlruns.db
+    experiment_name: wildfire-model-pipeline
   vertex_ai:
-    project: "${GOOGLE_CLOUD_PROJECT}"
-    location: "us-central1"
-    experiment_name: "wildfire-model-pipeline"
-
-# ---------------------------------------------------------------------------
-# 6. Notifications
-# ---------------------------------------------------------------------------
+    project: ${GOOGLE_CLOUD_PROJECT}
+    location: us-central1
+    experiment_name: wildfire-model-pipeline
 notifications:
   slack:
-    webhook_env_var: "SLACK_WEBHOOK_URL"     # read from env, not stored here
+    webhook_env_var: SLACK_WEBHOOK_URL
     enabled: true
-
-# ---------------------------------------------------------------------------
-# 7. OBJ-2 — Cell2Fire fire spread simulation
-# ---------------------------------------------------------------------------
 obj2:
   cell2fire:
-    binary_path: "/usr/local/bin/Cell2Fire"
-
-    # Raster inputs — GeoTIFFs clipped to AOI before each run
+    binary_path: /home/ibrahim/C2F-W/Cell2Fire/Cell2Fire
     raster_inputs:
-      dem: "data/static/dem"                 # USGS 3DEP elevation
-      fuel: "data/static/landfire/fbfm40"    # LANDFIRE FBFM40 fuel model
-      canopy_cover: "data/static/landfire/cc" # LANDFIRE canopy cover %
-      canopy_height: "data/static/landfire/ch" # LANDFIRE canopy height
-
+      dem: /mnt/c/Users/mohdi/Downloads/wildfire_detection/model-pipeline/data/static/dem
+      fuel: /mnt/c/Users/mohdi/Downloads/wildfire_detection/model-pipeline/data/static/landfire/fbfm40
+      canopy_cover: /mnt/c/Users/mohdi/Downloads/wildfire_detection/model-pipeline/data/static/landfire/cc
+      canopy_height: data/static/landfire/ch
     default_params:
-      n_simulations: 100                     # Monte Carlo runs per config
-      fire_period_length_hr: 1.0             # hours per timestep
-      output_grid: true                      # write spread grids
-      weather_duration_hr: 24                # how many hours of weather to feed
-      cell_size_m: 30                        # native LANDFIRE resolution
-
-    # Parameter sweep for sensitivity analysis (MLflow-tracked)
+      n_simulations: 100
+      fire_period_length_hr: 1.0
+      output_grid: true
+      weather_duration_hr: 24
+      cell_size_m: 30
     sweep_space:
-      n_simulations: [50, 100, 200, 500]
-      fire_period_length_hr: [0.5, 1.0, 2.0, 4.0]
-      grid_resolution_m: [30, 60, 90]
-
-    # Validation against CAL FIRE perimeters
+      n_simulations:
+      - 50
+      - 100
+      - 200
+      - 500
+      fire_period_length_hr:
+      - 0.5
+      - 1.0
+      - 2.0
+      - 4.0
+      grid_resolution_m:
+      - 30
+      - 60
+      - 90
     validation:
-      perimeter_source: "cal_fire_frap"
-      primary_metric: "dice_coefficient"
-      minimum_dice: 0.50                     # gate threshold
-
+      perimeter_source: cal_fire_frap
+      primary_metric: dice_coefficient
+      minimum_dice: 0.5
     output:
-      format: "geojson"
-      crs: "EPSG:4326"
-
+      format: geojson
+      crs: EPSG:4326
   propagator:
     enabled: true
-    crosswalk_path: "data/crosswalks/fbfm40_to_propagator.json"
-    disclaimer: >-
-      FOR DEMONSTRATION PURPOSES ONLY — Mediterranean fuel model,
-      not calibrated for US vegetation types.
+    crosswalk_path: data/crosswalks/fbfm40_to_propagator.json
+    disclaimer: FOR DEMONSTRATION PURPOSES ONLY — Mediterranean fuel model, not calibrated
+      for US vegetation types.
     default_params:
       time_resolution_hr: 1.0
-      wind_reduction_factor: 0.4             # canopy wind reduction
+      wind_reduction_factor: 0.4
