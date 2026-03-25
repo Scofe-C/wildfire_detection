@@ -19,22 +19,24 @@
 3. [Quick Start](#3-quick-start)
 4. [Project Structure](#4-project-structure)
 5. [Data Sources](#5-data-sources)
-6. [Feature Schema](#6-feature-schema)
-7. [Pipeline Orchestration (Airflow DAGs)](#7-pipeline-orchestration-airflow-dags)
-8. [Data Versioning with DVC](#8-data-versioning-with-dvc)
-9. [Schema Validation & Statistics](#9-schema-validation--statistics)
-10. [Anomaly Detection & Alerts](#10-anomaly-detection--alerts)
-11. [Data Bias Detection & Mitigation](#11-data-bias-detection--mitigation)
-12. [Pipeline Flow Optimization](#12-pipeline-flow-optimization)
-13. [Running Tests](#13-running-tests)
-14. [CI/CD Pipeline](#14-cicd-pipeline)
-15. [Code Style & Standards](#15-code-style--standards)
-16. [GCP Setup](#16-gcp-setup)
-17. [Environment Variables](#17-environment-variables)
-18. [Reproducibility](#18-reproducibility)
-19. [Error Handling & Logging](#19-error-handling--logging)
-20. [Adaptive Watchdog](#20-adaptive-watchdog)
-21. [Troubleshooting](#21-troubleshooting)
+6. [Static Data Setup (One-Time)](#6-static-data-setup-one-time)
+7. [Feature Schema](#7-feature-schema)
+8. [Pipeline Orchestration (Airflow DAGs)](#8-pipeline-orchestration-airflow-dags)
+9. [Data Versioning with DVC](#9-data-versioning-with-dvc)
+10. [Schema Validation & Statistics](#10-schema-validation--statistics)
+11. [Anomaly Detection & Alerts](#11-anomaly-detection--alerts)
+12. [Data Bias Detection & Mitigation](#12-data-bias-detection--mitigation)
+13. [Historical Backfill](#13-historical-backfill)
+14. [Pipeline Flow Optimization](#14-pipeline-flow-optimization)
+15. [Running Tests](#15-running-tests)
+16. [CI/CD Pipeline](#16-cicd-pipeline)
+17. [Code Style & Standards](#17-code-style--standards)
+18. [GCP Setup](#18-gcp-setup)
+19. [Environment Variables](#19-environment-variables)
+20. [Reproducibility](#20-reproducibility)
+21. [Error Handling & Logging](#21-error-handling--logging)
+22. [Adaptive Watchdog](#22-adaptive-watchdog)
+23. [Troubleshooting](#23-troubleshooting)
 
 ---
 
@@ -262,24 +264,150 @@ data-pipeline/
 
 ## 5. Data Sources
 
-| Source | Type | Frequency | Role |
-|---|---|---|---|
-| NASA FIRMS (VIIRS SNPP, NOAA-20, MODIS) | Active fire detections | Near real-time (~3h) | Primary fire label |
-| GOES-R ABI FDC | Geostationary fire pixels | Every 10 min | Watchdog quick-check |
-| Open-Meteo | Hourly weather (8 variables) | Hourly | Weather features |
-| NWS API | Forecast weather | Hourly | Weather fallback |
-| LANDFIRE (2022) | Fuel model, canopy, vegetation | Static | Fuel features |
-| USGS SRTM (30m DEM) | Elevation + terrain | Static | Terrain features |
+| Source | Type | Frequency | Role | Status |
+|---|---|---|---|---|
+| NASA FIRMS (VIIRS SNPP, NOAA-20, MODIS) | Active fire detections | Near real-time (~3h) | Primary fire label | ✅ Live |
+| GOES-R ABI FDC | Geostationary fire pixels | Every 10 min | Watchdog quick-check | ✅ Live |
+| Open-Meteo | Hourly weather (8 variables) | Hourly | Weather features | ✅ Live |
+| NWS API | Forecast weather | Hourly | Weather fallback | ✅ Live |
+| NOAA HRRR | Rapid-refresh weather | Hourly | Emergency-mode weather | ✅ Live |
+| LANDFIRE 2022 | Fuel model, canopy, vegetation | Static (one-time) | Fuel features | ⚠️ Requires manual download |
+| USGS SRTM 30m | Elevation, slope, aspect | Static (one-time) | Terrain features | ⚠️ Requires manual download |
+| MODIS NDVI (MOD13A2) | Vegetation greenness | 16-day composite | NDVI feature | ⚠️ Requires manual download |
 
-All data is indexed to an **H3 hexagonal grid** at configurable resolution. Static layers are cached after the first download and skipped on all subsequent runs.
-
-> **Note:** LANDFIRE, SRTM, and MODIS NDVI data sources are not yet wired into the pipeline.
-> Static feature columns currently output `NaN` with `data_quality_flag=4`.
-> See [`missing_sources_and_todo.md`](missing_sources_and_todo.md) for download URLs and implementation steps.
+All data is indexed to an **H3 hexagonal grid** at configurable resolution (default 64 km, escalates to 22 km on watchdog). Static layers are computed once and cached as parquet — all subsequent runs load the parquet directly.
 
 ---
 
-## 6. Feature Schema
+## 6. Static Data Setup (One-Time)
+
+Static layers (LANDFIRE fuel, SRTM terrain, MODIS NDVI) must be downloaded once and placed in `data/static/` before the pipeline produces real feature values. Without them, static columns output `NaN` and `data_quality_flag=4` but the pipeline still runs.
+
+### 6a. LANDFIRE 2022 — Fuel & Vegetation
+
+**Download page:** https://landfire.gov/data/FullExtentDownloads → LF 2022 → CONUS → Fuel
+
+Download and extract these three ZIPs:
+
+| Layer | ZIP filename | Keyword in extracted .tif |
+|---|---|---|
+| Fuel model (FBFM40) | `LF2022_FBFM40_230_CONUS.zip` | `F40` or `FBFM40` |
+| Canopy cover | `LF2022_CC_230_CONUS.zip` | `_CC_` |
+| Vegetation type (EVT) | `LF2022_EVT_230_CONUS.zip` | `EVT` |
+
+Place extracted `.tif` files in:
+```
+data/static/landfire_raw/
+    LC22_F40_230.tif
+    LC22_CC_230.tif
+    LC22_EVT_230.tif
+```
+
+Then run:
+```bash
+python -m scripts.ingestion.ingest_landfire --resolution-km 64 --output-dir data/static
+```
+
+Output: `data/static/landfire_features_64km.parquet` — columns: `fuel_model_fbfm40`, `canopy_cover_pct`, `vegetation_type`, `dominant_fuel_fraction`
+
+---
+
+### 6b. SRTM 30m — Elevation, Slope, Aspect
+
+**Source:** [OpenTopography](https://portal.opentopography.org/raster?opentopoID=OTSRTM.082015.4326.1) — register for a free API key at https://opentopography.org/developers
+
+The 450,000 km² per-request limit requires splitting CA and TX into tiles. Use these exact URLs (replace `YOUR_KEY`):
+
+**California — 3 tiles:**
+```
+# South (32.53 → 36.0)
+https://portal.opentopography.org/API/globaldem?demtype=SRTMGL1&south=32.53&north=36.0&west=-124.48&east=-114.13&outputFormat=GTiff&API_Key=YOUR_KEY
+
+# Mid (36.0 → 39.0)
+https://portal.opentopography.org/API/globaldem?demtype=SRTMGL1&south=36.0&north=39.0&west=-124.48&east=-114.13&outputFormat=GTiff&API_Key=YOUR_KEY
+
+# North (39.0 → 42.01)
+https://portal.opentopography.org/API/globaldem?demtype=SRTMGL1&south=39.0&north=42.01&west=-124.48&east=-114.13&outputFormat=GTiff&API_Key=YOUR_KEY
+```
+
+**Texas — 4 tiles (2×2):**
+```
+# NW
+https://portal.opentopography.org/API/globaldem?demtype=SRTMGL1&south=31.17&north=36.50&west=-106.65&east=-100.08&outputFormat=GTiff&API_Key=YOUR_KEY
+# NE
+https://portal.opentopography.org/API/globaldem?demtype=SRTMGL1&south=31.17&north=36.50&west=-100.08&east=-93.51&outputFormat=GTiff&API_Key=YOUR_KEY
+# SW
+https://portal.opentopography.org/API/globaldem?demtype=SRTMGL1&south=25.84&north=31.17&west=-106.65&east=-100.08&outputFormat=GTiff&API_Key=YOUR_KEY
+# SE
+https://portal.opentopography.org/API/globaldem?demtype=SRTMGL1&south=25.84&north=31.17&west=-100.08&east=-93.51&outputFormat=GTiff&API_Key=YOUR_KEY
+```
+
+Save with these **exact filenames** in `data/static/srtm_raw/`:
+```
+data/static/srtm_raw/
+    srtm_california_south.tif
+    srtm_california_mid.tif
+    srtm_california_north.tif
+    srtm_texas_nw.tif
+    srtm_texas_ne.tif
+    srtm_texas_sw.tif
+    srtm_texas_se.tif
+```
+
+Then run:
+```bash
+python -m scripts.ingestion.ingest_srtm --resolution-km 64 --output-dir data/static
+```
+
+Output: `data/static/srtm_features_64km.parquet` — columns: `elevation_m`, `slope_degrees`, `aspect_degrees`
+
+The script automatically mosaics all tiles per region, derives slope/aspect via `numpy.gradient`, and computes circular-mean aspect per H3 cell.
+
+---
+
+### 6c. MODIS NDVI (MOD13A2 v061)
+
+**Download portal:** https://appeears.earthdatacloud.nasa.gov/ (free NASA Earthdata account)
+
+1. Create a task → **Area Sample**
+2. Layer: `MOD13A2.061 / _1 km 16 days NDVI`
+3. Date range: last 6 months (e.g. `2024-10-01` → `2025-04-01`)
+4. Draw bounding box covering California + Texas (or use `-124.48, 25.84, -93.51, 42.01`)
+5. Download the resulting GeoTIFF(s)
+
+Place in:
+```
+data/static/ndvi_raw/
+    MOD13A2*.tif    (one or more files)
+```
+
+Then run:
+```bash
+python -m scripts.ingestion.ingest_ndvi --resolution-km 64 --output-dir data/static \
+    --start-date 2024-10-01 --end-date 2025-04-01
+```
+
+Output: `data/static/ndvi_features_64km.parquet` — column: `ndvi` (scaled 0.0–1.0)
+
+---
+
+### 6d. Wire everything into process_static
+
+Once any (or all) source parquets exist, regenerate the static feature cache:
+```bash
+python -m scripts.processing.process_static   # uses load_and_process_static() internally
+# or force rebuild:
+python -c "
+from scripts.processing.process_static import load_and_process_static
+load_and_process_static(64, 'data/static', force_rebuild=True)
+"
+```
+
+Missing sources fall back to `NaN` gracefully — partial static data is better than none.
+
+---
+
+## 7. Feature Schema
 
 All 28 features are defined in `configs/schema_config.yaml` — the single source of truth. Feature names are **never** hardcoded in scripts; they are always read via `schema_loader.FeatureRegistry`.
 
@@ -306,7 +434,7 @@ All 28 features are defined in `configs/schema_config.yaml` — the single sourc
 
 ---
 
-## 7. Pipeline Orchestration (Airflow DAGs)
+## 8. Pipeline Orchestration (Airflow DAGs)
 
 ### `wildfire_data_pipeline`
 
@@ -336,7 +464,7 @@ Polls GCS for new trigger files every 60 seconds. On detection, calls `trigger_d
 
 ---
 
-## 8. Data Versioning with DVC
+## 9. Data Versioning with DVC
 
 DVC tracks all processed data blobs in GCS. Git tracks code, configs, and `.dvc` lock files.
 
@@ -390,7 +518,7 @@ Two outputs use `cache: false` — they are committed directly to Git rather tha
 
 ---
 
-## 9. Schema Validation & Statistics
+## 10. Schema Validation & Statistics
 
 `validate_schema.py` runs Great Expectations validation driven dynamically from `configs/schema_config.yaml`. No expectations are hardcoded in Python.
 
@@ -420,7 +548,7 @@ cat data/processed/baselines/stats_latest.json | python -m json.tool
 
 ---
 
-## 10. Anomaly Detection & Alerts
+## 11. Anomaly Detection & Alerts
 
 `detect_anomalies.py` applies a **seasonal z-score** test using Welford online updates per feature per season.
 
@@ -458,7 +586,7 @@ python scripts/validation/detect_anomalies.py \
 
 ---
 
-## 11. Data Bias Detection & Mitigation
+## 12. Data Bias Detection & Mitigation
 
 `scripts/validation/bias_analysis.py` evaluates whether feature distributions and fire detection rates differ systematically across subgroups — a prerequisite before any model training.
 
@@ -513,7 +641,49 @@ cat data/processed/baselines/bias_report.json | python -m json.tool | grep -A3 '
 
 ---
 
-## 12. Pipeline Flow Optimization
+## 13. Historical Backfill
+
+The backfill script replays the full pipeline over an arbitrary date range to generate training data for ML models.
+
+### Usage
+
+```bash
+# Dry-run: list windows without fetching data
+python -m scripts.backfill.historical_backfill \
+    --start 2024-01-01 --end 2024-01-07 --dry-run
+
+# Full backfill (resumes automatically from last completed window)
+python -m scripts.backfill.historical_backfill \
+    --start 2020-01-01 --end 2025-12-31 \
+    --frequency-hours 6 \
+    --resolution-km 64 \
+    --output-dir data/processed/backfill
+```
+
+### Key design decisions
+
+| Feature | Implementation |
+|---|---|
+| Resume support | Skips windows where all region output files already exist (`--resume` on by default) |
+| Partitioned output | `region={r}/year={yyyy}/month={mm}/features_{timestamp}.parquet` — DVC-friendly |
+| Reuses live pipeline | Calls the same `fetch_*`, `process_*`, `fuse_features` functions as the Airflow DAG |
+| Static data shared | Reads from `data/static/` (same LANDFIRE/SRTM/NDVI caches as live pipeline) |
+
+### Output structure
+
+```
+data/processed/backfill/
+  region=california/
+    year=2024/month=01/features_20240101T0000.parquet
+    year=2024/month=01/features_20240101T0600.parquet
+    ...
+  region=texas/
+    ...
+```
+
+---
+
+## 14. Pipeline Flow Optimization
 
 ### Parallelism
 
@@ -533,7 +703,7 @@ cat data/processed/baselines/bias_report.json | python -m json.tool | grep -A3 '
 
 ---
 
-## 13. Running Tests
+## 15. Running Tests
 
 ### Local (Linux / macOS)
 
@@ -583,7 +753,7 @@ docker run --rm \
 
 ---
 
-## 14. CI/CD Pipeline
+## 16. CI/CD Pipeline
 
 GitHub Actions (`.github/workflows/ci.yaml`) runs on every push and PR to `main` or `develop`:
 
@@ -597,7 +767,7 @@ Merges to `main` are blocked if any step fails.
 
 ---
 
-## 15. Code Style & Standards
+## 17. Code Style & Standards
 
 - **Linting**: `ruff check scripts/ dags/ tests/` — run before every commit
 - **Formatting**: PEP 8 compliant; `ruff format` is the formatter
@@ -614,7 +784,7 @@ ruff check --fix scripts/ dags/ tests/   # auto-fix safe issues
 
 ---
 
-## 16. GCP Setup
+## 18. GCP Setup
 
 ### DVC Remote (one-time per developer)
 
@@ -645,7 +815,7 @@ gcloud storage cp industrial_sources.json \
 
 ---
 
-## 17. Environment Variables
+## 19. Environment Variables
 
 Copy `.env.example` to `.env`. **Never commit `.env` to Git** — it is listed in `.gitignore`.
 
@@ -661,7 +831,7 @@ Copy `.env.example` to `.env`. **Never commit `.env` to Git** — it is listed i
 
 ---
 
-## 18. Reproducibility
+## 20. Reproducibility
 
 Any team member should be able to reproduce the pipeline from scratch:
 
@@ -691,7 +861,7 @@ The `dvc.lock` file commits the exact MD5 hash of every stage dependency and out
 
 ---
 
-## 19. Error Handling & Logging
+## 21. Error Handling & Logging
 
 ### Logging conventions
 
@@ -719,7 +889,7 @@ logger.warning(f"Anomaly: '{col}' has {outlier_count} outliers (z>{z_threshold})
 
 ---
 
-## 20. Adaptive Watchdog
+## 22. Adaptive Watchdog
 
 ### Four-Gate False Alarm Prevention
 
@@ -740,7 +910,7 @@ logger.warning(f"Anomaly: '{col}' has {outlier_count} outliers (z>{z_threshold})
 
 ---
 
-## 21. Troubleshooting
+## 23. Troubleshooting
 
 | Problem | Fix |
 |---|---|

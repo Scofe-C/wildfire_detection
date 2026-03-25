@@ -41,6 +41,9 @@ rasterio
 fiona
 rasterstats
 
+# --- NASA Earthdata (MODIS NDVI download via earthaccess) ---
+earthaccess>=0.9
+
 # --- HTTP / config ---
 requests
 pyyaml

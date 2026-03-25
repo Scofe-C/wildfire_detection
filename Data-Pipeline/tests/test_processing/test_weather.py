@@ -366,6 +366,177 @@ class TestUnitConversions:
 # Test: Edge cases
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Test: Canadian Fire Weather Index (FWI) — Van Wagner (1987)
+# ---------------------------------------------------------------------------
+
+class TestFWI:
+    """Tests for the Canadian FWI computation added to process_weather."""
+
+    # ── Individual component functions ──────────────────────────────────────
+
+    def test_ffmc_returns_value_in_valid_range(self):
+        """FFMC must be in [0, 101] for any realistic inputs."""
+        from scripts.processing.process_weather import _ffmc
+        val = _ffmc(T=25.0, H=40.0, W=20.0, ro=0.0)
+        assert 0.0 <= val <= 101.0
+
+    def test_ffmc_increases_with_lower_humidity(self):
+        """Lower RH → drier fuel → higher FFMC."""
+        from scripts.processing.process_weather import _ffmc
+        ffmc_dry  = _ffmc(T=30.0, H=20.0, W=20.0, ro=0.0)
+        ffmc_moist = _ffmc(T=30.0, H=80.0, W=20.0, ro=0.0)
+        assert ffmc_dry > ffmc_moist
+
+    def test_ffmc_decreases_with_rain(self):
+        """Rain wets the fuel bed → FFMC should be lower than no-rain."""
+        from scripts.processing.process_weather import _ffmc
+        ffmc_no_rain = _ffmc(T=25.0, H=40.0, W=15.0, ro=0.0)
+        ffmc_rain    = _ffmc(T=25.0, H=40.0, W=15.0, ro=10.0)
+        assert ffmc_rain < ffmc_no_rain
+
+    def test_dmc_returns_non_negative(self):
+        """DMC must be ≥ 0."""
+        from scripts.processing.process_weather import _dmc
+        val = _dmc(T=28.0, H=35.0, ro=0.0, month=7)
+        assert val >= 0.0
+
+    def test_dmc_higher_in_summer(self):
+        """July (month=7) has longer day-length → higher DMC than January."""
+        from scripts.processing.process_weather import _dmc
+        dmc_july = _dmc(T=25.0, H=40.0, ro=0.0, month=7)
+        dmc_jan  = _dmc(T=25.0, H=40.0, ro=0.0, month=1)
+        assert dmc_july > dmc_jan
+
+    def test_dc_returns_non_negative(self):
+        """DC must be ≥ 0."""
+        from scripts.processing.process_weather import _dc
+        val = _dc(T=30.0, ro=0.0, month=7)
+        assert val >= 0.0
+
+    def test_isi_increases_with_wind(self):
+        """Higher wind speed → faster spread → higher ISI."""
+        from scripts.processing.process_weather import _isi
+        isi_calm  = _isi(W=5.0,  ffmc=85.0)
+        isi_windy = _isi(W=50.0, ffmc=85.0)
+        assert isi_windy > isi_calm
+
+    def test_bui_non_negative(self):
+        """BUI must be ≥ 0."""
+        from scripts.processing.process_weather import _bui
+        assert _bui(dmc=6.0, dc=15.0) >= 0.0
+        assert _bui(dmc=0.0, dc=15.0) == 0.0
+
+    def test_fwi_non_negative(self):
+        """FWI must be ≥ 0."""
+        from scripts.processing.process_weather import _fwi
+        assert _fwi(isi=5.0,  bui=30.0) >= 0.0
+        assert _fwi(isi=0.0,  bui=0.0)  >= 0.0
+        assert _fwi(isi=20.0, bui=80.0) >= 0.0
+
+    def test_fwi_higher_for_dangerous_conditions(self):
+        """High ISI + high BUI → higher FWI than low ISI + low BUI."""
+        from scripts.processing.process_weather import _fwi
+        fwi_low  = _fwi(isi=1.0,  bui=10.0)
+        fwi_high = _fwi(isi=20.0, bui=80.0)
+        assert fwi_high > fwi_low
+
+    # ── _compute_fwi (DataFrame-level) ──────────────────────────────────────
+
+    def test_compute_fwi_returns_series_same_length(self, tmp_path):
+        """_compute_fwi must return a Series with same index as input."""
+        import pandas as pd
+        from scripts.processing.process_weather import _compute_fwi
+        df = pd.DataFrame({
+            "temperature_2m":        [25.0, 30.0],
+            "relative_humidity_2m":  [40.0, 30.0],
+            "wind_speed_10m":        [20.0, 25.0],
+            "precipitation":         [0.0,  0.0],
+        })
+        result = _compute_fwi(df, month=7)
+        assert len(result) == len(df)
+
+    def test_compute_fwi_values_in_range(self):
+        """All non-NaN FWI values must be in [0, 150]."""
+        import pandas as pd
+        from scripts.processing.process_weather import _compute_fwi
+        df = pd.DataFrame({
+            "temperature_2m":        [10.0, 25.0, 40.0],
+            "relative_humidity_2m":  [80.0, 45.0, 15.0],
+            "wind_speed_10m":        [5.0,  20.0, 50.0],
+            "precipitation":         [5.0,   0.0,  0.0],
+        })
+        result = _compute_fwi(df, month=7)
+        valid = result.dropna()
+        assert (valid >= 0.0).all()
+        assert (valid <= 150.0).all()
+
+    def test_compute_fwi_nan_when_inputs_missing(self):
+        """Rows with NaN inputs must produce NaN FWI (no crash)."""
+        import pandas as pd
+        import numpy as np
+        from scripts.processing.process_weather import _compute_fwi
+        df = pd.DataFrame({
+            "temperature_2m":        [np.nan],
+            "relative_humidity_2m":  [40.0],
+            "wind_speed_10m":        [20.0],
+            "precipitation":         [0.0],
+        })
+        result = _compute_fwi(df, month=7)
+        assert pd.isna(result.iloc[0])
+
+    # ── Integration: FWI in process_weather_data output ─────────────────────
+
+    def test_process_weather_produces_fwi_column(self, sample_hourly_csv):
+        """process_weather_data must include fire_weather_index in output."""
+        from scripts.processing.process_weather import process_weather_data
+        result = process_weather_data(sample_hourly_csv)
+        assert "fire_weather_index" in result.columns
+
+    def test_process_weather_fwi_non_null_for_complete_data(self, sample_hourly_csv):
+        """FWI must be non-NaN when all required weather inputs are present."""
+        from scripts.processing.process_weather import process_weather_data
+        result = process_weather_data(sample_hourly_csv)
+        fwi_val = result.iloc[0]["fire_weather_index"]
+        assert not pd.isna(fwi_val), f"FWI should not be NaN for complete data, got {fwi_val}"
+
+    def test_process_weather_fwi_in_valid_range(self, sample_hourly_csv):
+        """FWI output from process_weather_data must be in [0, 150]."""
+        from scripts.processing.process_weather import process_weather_data
+        result = process_weather_data(sample_hourly_csv)
+        fwi_val = float(result.iloc[0]["fire_weather_index"])
+        assert 0.0 <= fwi_val <= 150.0, f"FWI {fwi_val} outside [0, 150]"
+
+    def test_process_weather_fwi_higher_for_dangerous_conditions(self, tmp_path):
+        """FWI must be higher for hot/dry/windy than cool/wet/calm conditions."""
+        from scripts.processing.process_weather import process_weather_data
+
+        dangerous = (
+            "grid_id,timestamp,temperature_2m,relative_humidity_2m,wind_speed_10m,"
+            "wind_direction_10m,precipitation,soil_moisture_0_to_7cm,vpd,"
+            "fire_weather_index,data_quality_flag\n"
+            "cell_danger,2026-08-15 00:00:00,38.0,15.0,50.0,270.0,0.0,0.03,5.0,None,0\n"
+        )
+        benign = (
+            "grid_id,timestamp,temperature_2m,relative_humidity_2m,wind_speed_10m,"
+            "wind_direction_10m,precipitation,soil_moisture_0_to_7cm,vpd,"
+            "fire_weather_index,data_quality_flag\n"
+            "cell_safe,2026-08-15 00:00:00,10.0,85.0,5.0,90.0,8.0,0.40,0.1,None,0\n"
+        )
+        p1 = tmp_path / "danger.csv"
+        p2 = tmp_path / "benign.csv"
+        p1.write_text(dangerous)
+        p2.write_text(benign)
+
+        r1 = process_weather_data(str(p1))
+        r2 = process_weather_data(str(p2))
+        fwi_danger = float(r1.iloc[0]["fire_weather_index"])
+        fwi_benign = float(r2.iloc[0]["fire_weather_index"])
+        assert fwi_danger > fwi_benign, (
+            f"Dangerous FWI ({fwi_danger:.1f}) should exceed benign FWI ({fwi_benign:.1f})"
+        )
+
+
 class TestEdgeCases:
 
     def test_empty_csv_returns_empty_dataframe(self, tmp_path):

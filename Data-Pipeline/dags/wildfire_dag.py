@@ -193,7 +193,7 @@ def task_ingest_firms(region: str, **context):
 
 def task_ingest_weather(region: str, **context):
     from scripts.ingestion.ingest_weather import fetch_weather_data
-    from scripts.utils.grid_utils import generate_grid_for_bbox
+    from scripts.utils.grid_utils import generate_full_grid
 
     execution_date = context["execution_date"]
     params = context["params"]
@@ -208,8 +208,11 @@ def task_ingest_weather(region: str, **context):
     if resolution_km is None:
         raise ValueError("resolution_km is missing from DAG params.")
 
-    bbox = REGIONS[region]["bbox"]
-    grid = generate_grid_for_bbox(bbox, resolution_km)
+    # Use generate_full_grid filtered to this region so grid_ids exactly match
+    # the master grid used in fuse_features. generate_grid_for_bbox uses a
+    # different bbox/buffer and produces different H3 cell IDs (CA: 32 vs 23).
+    full_grid = generate_full_grid(resolution_km)
+    grid = full_grid[full_grid["region"] == region].copy()
     grid_centroids = grid[["grid_id", "latitude", "longitude"]]
 
     # --- THE FIX: Passing them into the function call ---
@@ -335,16 +338,34 @@ def task_fuse_features(**context):
         except Exception as e:
             logger.warning(f"Focal grid generation failed: {e}")
 
+    # --- Forward-fill: load previous window's fused output (Item 5) ---
+    prev_fused_path = str(PROCESSED_DIR / "fused" / "fused_features_previous.parquet")
+
     fused = fuse_features(
         firms_features=firms_df,
         weather_features=weather_df,
         static_features=static_df,
         execution_date=pd.Timestamp(str(execution_date)),
         resolution_km=resolution_km,
+        previous_fused_path=prev_fused_path,
     )
+
+    # --- Circuit breaker: fail loudly on >80% weather nulls (Item 6) ---
+    from scripts.fusion.fuse_features import check_weather_circuit_breaker
+    from airflow.exceptions import AirflowFailException
+    try:
+        check_weather_circuit_breaker(fused, threshold=0.80)
+    except ValueError as exc:
+        raise AirflowFailException(str(exc)) from exc
 
     output_path = PROCESSED_DIR / "fused" / "fused_features_latest.parquet"
     output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Rotate _latest → _previous before overwriting (Item 5)
+    if output_path.exists():
+        import shutil
+        shutil.copy2(str(output_path), prev_fused_path)
+
     fused = _cast_parquet_compatible(fused)
     fused.to_parquet(output_path, index=False, version="1.0")
     context["ti"].xcom_push(key="fused_features_path", value=str(output_path))

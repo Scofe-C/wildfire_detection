@@ -3,12 +3,22 @@ Static Feature Processing
 =========================
 Generates static terrain and fuel features for the H3 grid.
 
-Currently outputs NaN stubs for all static columns because real LANDFIRE
-and SRTM data sources are not yet wired. See missing_sources_and_todo.md
-for download URLs and integration steps.
+Real data is loaded from pre-computed parquet caches in ``data/static/``.
+Each cache is produced by the corresponding ingestion script:
 
-Once LANDFIRE/SRTM/MODIS ingestion is implemented, replace the NaN stubs
-with actual raster-to-grid aggregation.
+  LANDFIRE (fuel, canopy, vegetation):
+      python -m scripts.ingestion.ingest_landfire --resolution-km <N> --output-dir data/static
+
+  SRTM (elevation, slope, aspect):
+      python -m scripts.ingestion.ingest_srtm --resolution-km <N> --output-dir data/static
+
+  MODIS NDVI:
+      python -m scripts.ingestion.ingest_ndvi --resolution-km <N> --output-dir data/static
+          --start-date 2024-01-01
+
+If a cache file is missing, the corresponding columns fall back to NaN stubs
+and a warning is logged.  The pipeline continues gracefully; the downstream
+``data_quality_flag`` will be set to 4 for those cells.
 """
 
 from __future__ import annotations
@@ -37,6 +47,11 @@ STATIC_COLUMNS = [
     "dominant_fuel_fraction",
 ]
 
+# Columns supplied by each source
+_LANDFIRE_COLS = ["fuel_model_fbfm40", "canopy_cover_pct", "vegetation_type", "dominant_fuel_fraction"]
+_SRTM_COLS     = ["elevation_m", "slope_degrees", "aspect_degrees"]
+_NDVI_COLS     = ["ndvi"]
+
 
 def load_and_process_static(
     resolution_km: int,
@@ -45,50 +60,124 @@ def load_and_process_static(
 ) -> Path:
     """Generate static feature Parquet for the full H3 grid.
 
+    Reads pre-computed per-source parquet caches from output_dir and joins
+    them onto the H3 grid.  Missing caches fall back to NaN stubs.
+
     Args:
         resolution_km: Grid resolution in km (maps to H3 level).
-        output_dir: Directory to write the output Parquet file.
+        output_dir: Directory containing the source caches and where the
+                    fused static parquet is written.
         force_rebuild: If True, regenerate even if cache exists.
 
     Returns:
         Path to the written Parquet file.
     """
-    # 1) paths — define output location first
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / f"static_features_{resolution_km}km.parquet"
 
-    # 2) cache check
     if out_path.exists() and not force_rebuild:
         logger.info("Static cache hit: %s", out_path)
         return out_path
 
-    # 3) build grid
+    # Build base grid
     logger.info("Generating full grid at %d km resolution", resolution_km)
     grid = generate_full_grid(resolution_km)
     df = grid[["grid_id", "latitude", "longitude"]].copy()
     df["grid_id"] = df["grid_id"].astype(str)
 
-    # 4) Static stubs — all NaN until real LANDFIRE/SRTM/MODIS is wired.
-    # These NaN values signal to downstream ML that the data source is
-    # unavailable, rather than producing misleading zeros.
-    logger.warning(
-        "Static features are stubs (NaN). "
-        "Wire LANDFIRE/SRTM/MODIS download for real data. "
-        "See missing_sources_and_todo.md."
-    )
-    df["elevation_m"]           = np.nan
-    df["slope_degrees"]         = np.nan
-    df["aspect_degrees"]        = np.nan
-    df["fuel_model_fbfm40"]     = np.nan
-    df["canopy_cover_pct"]      = np.nan
-    df["vegetation_type"]       = np.nan
-    df["ndvi"]                  = np.nan
-    df["dominant_fuel_fraction"] = np.nan
+    sources_loaded = []
+
+    # ── LANDFIRE ──────────────────────────────────────────────────────────────
+    lf_path = out_dir / f"landfire_features_{resolution_km}km.parquet"
+    if lf_path.exists():
+        try:
+            lf = pd.read_parquet(lf_path)
+            lf["grid_id"] = lf["grid_id"].astype(str)
+            lf = lf[["grid_id"] + _LANDFIRE_COLS].drop_duplicates("grid_id")
+            df = df.merge(lf, on="grid_id", how="left")
+            sources_loaded.append("LANDFIRE")
+            logger.info("Loaded LANDFIRE features from %s", lf_path)
+        except Exception as exc:
+            logger.error("LANDFIRE load failed (%s) — using NaN stubs", exc)
+            for col in _LANDFIRE_COLS:
+                df[col] = np.nan
+    else:
+        logger.warning(
+            "LANDFIRE cache not found (%s). "
+            "Run: python -m scripts.ingestion.ingest_landfire "
+            "--resolution-km %d --output-dir %s",
+            lf_path, resolution_km, output_dir,
+        )
+        for col in _LANDFIRE_COLS:
+            df[col] = np.nan
+
+    # ── SRTM ─────────────────────────────────────────────────────────────────
+    srtm_path = out_dir / f"srtm_features_{resolution_km}km.parquet"
+    if srtm_path.exists():
+        try:
+            srtm = pd.read_parquet(srtm_path)
+            srtm["grid_id"] = srtm["grid_id"].astype(str)
+            srtm = srtm[["grid_id"] + _SRTM_COLS].drop_duplicates("grid_id")
+            df = df.merge(srtm, on="grid_id", how="left")
+            sources_loaded.append("SRTM")
+            logger.info("Loaded SRTM features from %s", srtm_path)
+        except Exception as exc:
+            logger.error("SRTM load failed (%s) — using NaN stubs", exc)
+            for col in _SRTM_COLS:
+                df[col] = np.nan
+    else:
+        logger.warning(
+            "SRTM cache not found (%s). "
+            "Run: python -m scripts.ingestion.ingest_srtm "
+            "--resolution-km %d --output-dir %s",
+            srtm_path, resolution_km, output_dir,
+        )
+        for col in _SRTM_COLS:
+            df[col] = np.nan
+
+    # ── MODIS NDVI ────────────────────────────────────────────────────────────
+    ndvi_path = out_dir / f"ndvi_features_{resolution_km}km.parquet"
+    if ndvi_path.exists():
+        try:
+            ndvi = pd.read_parquet(ndvi_path)
+            ndvi["grid_id"] = ndvi["grid_id"].astype(str)
+            ndvi = ndvi[["grid_id"] + _NDVI_COLS].drop_duplicates("grid_id")
+            df = df.merge(ndvi, on="grid_id", how="left")
+            sources_loaded.append("NDVI")
+            logger.info("Loaded NDVI features from %s", ndvi_path)
+        except Exception as exc:
+            logger.error("NDVI load failed (%s) — using NaN stubs", exc)
+            df["ndvi"] = np.nan
+    else:
+        logger.warning(
+            "NDVI cache not found (%s). "
+            "Run: python -m scripts.ingestion.ingest_ndvi "
+            "--resolution-km %d --output-dir %s",
+            ndvi_path, resolution_km, output_dir,
+        )
+        df["ndvi"] = np.nan
+
+    # Log overall stub status
+    if not sources_loaded:
+        logger.warning(
+            "All static features are NaN stubs — no source caches found in %s. "
+            "See scripts/ingestion/ingest_landfire.py, ingest_srtm.py, ingest_ndvi.py.",
+            output_dir,
+        )
+    else:
+        logger.info("Static features loaded from: %s", ", ".join(sources_loaded))
+        missing = [s for s in ("LANDFIRE", "SRTM", "NDVI") if s not in sources_loaded]
+        if missing:
+            logger.warning("Still using NaN stubs for: %s", ", ".join(missing))
+
+    # Ensure all expected columns exist (fill any still-missing ones)
+    for col in STATIC_COLUMNS:
+        if col not in df.columns:
+            df[col] = np.nan
 
     df = df[STATIC_COLUMNS]
 
-    # 5) write
     df.to_parquet(out_path, index=False)
     logger.info("Wrote static features: %s (%d rows)", out_path, len(df))
     return out_path

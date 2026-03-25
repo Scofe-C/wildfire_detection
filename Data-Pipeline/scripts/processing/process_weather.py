@@ -16,6 +16,7 @@ Derived features computed here (assignment Section 3.4):
 from __future__ import annotations
 
 import logging
+import math
 from pathlib import Path
 from typing import Optional
 
@@ -143,6 +144,13 @@ def process_weather_data(
     # ------------------------------------------------------------------
     # Aggregate to one row per grid cell
     # ------------------------------------------------------------------
+    # Extract month for FWI day-length factors before aggregation
+    fwi_month = 7  # July default if no timestamps present
+    if "timestamp" in df.columns and df["timestamp"].notna().any():
+        median_month = df["timestamp"].dt.month.median()
+        if pd.notna(median_month):
+            fwi_month = int(round(median_month))
+
     agg_spec = {
         "temperature_2m":             "mean",
         "relative_humidity_2m":       "mean",
@@ -151,7 +159,6 @@ def process_weather_data(
         "precipitation":              "sum",
         "soil_moisture_0_to_7cm":     "mean",
         "vpd":                        "mean",
-        "fire_weather_index":         "max",
         "data_quality_flag":          "min",
         # Derived features: take the value computed from the full window
         # (they are already per-cell scalars, so mean == any aggregation)
@@ -161,6 +168,11 @@ def process_weather_data(
     }
 
     out = df.groupby("grid_id", as_index=False).agg(agg_spec)
+
+    # Compute Canadian FWI from aggregated weather variables
+    out["fire_weather_index"] = _compute_fwi(out, fwi_month)
+    logger.info("Computed FWI for %d/%d cells (month=%d)",
+                out["fire_weather_index"].notna().sum(), len(out), fwi_month)
 
     # Cast derived features to correct types
     out["days_since_last_precipitation"] = (
@@ -177,6 +189,145 @@ def process_weather_data(
         f"{out['days_since_last_precipitation'].notna().sum()} with drought history"
     )
     return out
+
+
+# ---------------------------------------------------------------------------
+# Canadian Fire Weather Index (FWI) — Van Wagner (1987)
+# ---------------------------------------------------------------------------
+# Reference: Van Wagner, C.E. (1987). Development and structure of the
+# Canadian Forest Fire Weather Index System. Forestry Technical Report 35.
+# Canadian Forestry Service, Ottawa.
+#
+# Standard startup values used when no previous-day codes are available.
+# This gives a "current-conditions FWI" — accurate for relative fire danger
+# comparison across cells; less accurate as an absolute cumulative drought index.
+# ---------------------------------------------------------------------------
+
+_FWI_FFMC0 = 85.0   # startup FFMC
+_FWI_DMC0  =  6.0   # startup DMC
+_FWI_DC0   = 15.0   # startup DC
+
+# DMC/DC day-length adjustments by month (Jan=index 0)
+_DMC_LE = [6.5, 7.5, 9.0, 12.8, 13.9, 13.9, 12.4, 10.9, 9.4, 8.0, 7.0, 6.0]
+_DC_LF  = [-1.6, -1.6, -1.6, 0.9, 3.8, 5.8, 6.4, 5.0, 2.4, 0.4, -1.6, -1.6]
+
+
+def _ffmc(T: float, H: float, W: float, ro: float) -> float:
+    """Fine Fuel Moisture Code (FFMC)."""
+    mo = 147.2 * (101.0 - _FWI_FFMC0) / (59.5 + _FWI_FFMC0)
+    if ro > 0.5:
+        rf = ro - 0.5
+        if mo <= 150.0:
+            mo = mo + 42.5 * rf * math.exp(-100.0 / (251.0 - mo)) * (1.0 - math.exp(-6.93 / rf))
+        else:
+            mo = (mo + 42.5 * rf * math.exp(-100.0 / (251.0 - mo)) * (1.0 - math.exp(-6.93 / rf))
+                  + 0.0015 * (mo - 150.0) ** 2 * math.sqrt(rf))
+        mo = min(mo, 250.0)
+    Ed = (0.942 * H ** 0.679 + 11.0 * math.exp((H - 100.0) / 10.0)
+          + 0.18 * (21.1 - T) * (1.0 - math.exp(-0.115 * H)))
+    Ew = (0.618 * H ** 0.753 + 10.0 * math.exp((H - 100.0) / 10.0)
+          + 0.18 * (21.1 - T) * (1.0 - math.exp(-0.115 * H)))
+    if mo > Ed:
+        ko = (0.424 * (1.0 - (H / 100.0) ** 1.7)
+              + 0.0694 * math.sqrt(W) * (1.0 - (H / 100.0) ** 8))
+        m = Ed + (mo - Ed) * 10.0 ** -(ko * 0.581 * math.exp(0.0365 * T))
+    elif mo < Ew:
+        kl = (0.424 * (1.0 - ((100.0 - H) / 100.0) ** 1.7)
+              + 0.0694 * math.sqrt(W) * (1.0 - ((100.0 - H) / 100.0) ** 8))
+        m = Ew - (Ew - mo) * 10.0 ** -(kl * 0.581 * math.exp(0.0365 * T))
+    else:
+        m = mo
+    return max(0.0, min(101.0, 59.5 * (250.0 - m) / (147.2 + m)))
+
+
+def _dmc(T: float, H: float, ro: float, month: int) -> float:
+    """Duff Moisture Code (DMC)."""
+    P0 = _FWI_DMC0
+    if ro > 1.5:
+        re = 0.92 * ro - 1.27
+        Mo = 20.0 + math.exp(5.6348 - P0 / 43.43)
+        b = (100.0 / (0.5 + 0.3 * P0) if P0 <= 33.0
+             else 14.0 - 1.3 * math.log(P0) if P0 <= 65.0
+             else 6.2 * math.log(P0) - 17.2)
+        Mr = Mo + 1000.0 * re / (48.77 + b * re)
+        P0 = max(0.0, 244.72 - 43.43 * math.log(Mr - 20.0))
+    K = 1.894 * (T + 1.1) * (100.0 - H) * _DMC_LE[month - 1] * 1e-6
+    return max(0.0, P0 + 100.0 * K)
+
+
+def _dc(T: float, ro: float, month: int) -> float:
+    """Drought Code (DC)."""
+    D0 = _FWI_DC0
+    if ro > 2.8:
+        Qo = 800.0 * math.exp(-D0 / 400.0)
+        Qr = Qo + 3.937 * (0.83 * ro - 1.27)
+        D0 = max(0.0, 400.0 * math.log(800.0 / Qr))
+    V = max(0.0, 0.36 * (T + 2.8) + _DC_LF[month - 1])
+    return D0 + 0.5 * V
+
+
+def _isi(W: float, ffmc: float) -> float:
+    """Initial Spread Index (ISI)."""
+    m = 147.2 * (101.0 - ffmc) / (59.5 + ffmc)
+    return (19.115 * math.exp(-0.1386 * m) * (1.0 + m ** 5.31 / 49_300_000.0)
+            * math.exp(0.05039 * W))
+
+
+def _bui(dmc: float, dc: float) -> float:
+    """Buildup Index (BUI)."""
+    if dmc == 0.0:
+        return 0.0
+    if dmc <= 0.4 * dc:
+        return max(0.0, 0.8 * dmc * dc / (dmc + 0.4 * dc))
+    return max(0.0, dmc - (1.0 - 0.8 * dc / (dmc + 0.4 * dc)) * (0.92 + (0.0114 * dmc) ** 1.7))
+
+
+def _fwi(isi: float, bui: float) -> float:
+    """Fire Weather Index (FWI)."""
+    fd = (0.626 * bui ** 0.809 + 2.0 if bui <= 80.0
+          else 1000.0 / (25.0 + 108.64 * math.exp(-0.023 * bui)))
+    B = 0.1 * isi * fd
+    return max(0.0, math.exp(2.72 * (0.434 * math.log(B)) ** 0.647) if B > 1.0 else B)
+
+
+def _compute_fwi(df_agg: pd.DataFrame, month: int) -> pd.Series:
+    """Compute Canadian FWI for each row of the aggregated weather DataFrame.
+
+    Uses standard startup codes (FFMC=85, DMC=6, DC=15) since no previous-day
+    state is available in single-window mode.  Inputs are clipped to physically
+    valid ranges before computation.
+
+    Args:
+        df_agg: One row per grid cell with temperature_2m, relative_humidity_2m,
+                wind_speed_10m, precipitation columns.
+        month:  Calendar month (1–12) used for day-length adjustments.
+
+    Returns:
+        float32 Series of FWI values in [0, 150], NaN where inputs are missing.
+    """
+    result = pd.Series(np.nan, index=df_agg.index, dtype="float32")
+    required = {"temperature_2m", "relative_humidity_2m", "wind_speed_10m", "precipitation"}
+    if not required.issubset(df_agg.columns):
+        return result
+
+    for idx, row in df_agg.iterrows():
+        T  = row["temperature_2m"]
+        H  = row["relative_humidity_2m"]
+        W  = row["wind_speed_10m"]
+        ro = row["precipitation"]
+        if any(pd.isna(v) for v in (T, H, W, ro)):
+            continue
+        T  = float(np.clip(T,  -50.0, 60.0))
+        H  = float(np.clip(H,    1.0, 99.0))  # avoid 0/100 edge cases in log terms
+        W  = float(max(0.0, W))
+        ro = float(max(0.0, ro))
+        try:
+            ffmc_val = _ffmc(T, H, W, ro)
+            fwi_val  = _fwi(_isi(W, ffmc_val), _bui(_dmc(T, H, ro, month), _dc(T, ro, month)))
+            result.at[idx] = float(np.clip(fwi_val, 0.0, 150.0))
+        except (ValueError, ZeroDivisionError, OverflowError):
+            pass  # leave NaN for this cell if computation fails
+    return result
 
 
 # ---------------------------------------------------------------------------

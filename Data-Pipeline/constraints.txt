@@ -23,6 +23,9 @@ pandas>=2.2.0,<3.0
 great-expectations<1.0
 dvc==3.38.1
 dvc-gs==3.0.1
-google-cloud-storage==2.14.0
+# aiohttp: Airflow HTTP provider 4.x requires <3.11; earthaccess/aiobotocore needs >=3.9
+aiohttp>=3.9.2,<3.11.0
+# google-cloud-storage: gcsfs 2026+ requires >=3.9.0 (upgraded from 2.x pin)
+google-cloud-storage>=3.9.0,<4.0
 google-auth==2.27.0
 ruff==0.2.0

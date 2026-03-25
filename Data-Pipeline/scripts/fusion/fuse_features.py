@@ -6,6 +6,7 @@ into the unified feature table defined by schema_config.yaml.
 """
 
 import logging
+from pathlib import Path
 from typing import Optional
 
 import numpy as np
@@ -13,6 +14,18 @@ import pandas as pd
 
 from scripts.utils.grid_utils import generate_full_grid
 from scripts.utils.schema_loader import get_registry
+
+# Primary ingested weather columns checked by the circuit breaker (Item 6).
+# Only direct API variables are included — derived/computed columns
+# (fire_weather_index, vpd, soil_moisture_0_to_7cm, drought_index_proxy)
+# are excluded because their absence does not indicate the weather source is down.
+_WEATHER_COLS = [
+    "temperature_2m",
+    "relative_humidity_2m",
+    "wind_speed_10m",
+    "wind_direction_10m",
+    "precipitation",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +79,110 @@ def _safe_merge(left: pd.DataFrame, right: Optional[pd.DataFrame], *, how: str =
     return left.merge(right, on="grid_id", how=how)
 
 
+def _apply_forward_fill(
+    fused: pd.DataFrame,
+    previous_fused_path: Optional[str],
+    registry,
+) -> pd.DataFrame:
+    """Carry non-NaN values from the previous window for forward_fill columns.
+
+    Called after the single-window fill strategies so that Open-Meteo
+    outages don't leave weather columns permanently NaN.
+
+    Args:
+        fused:               Current window's fused DataFrame (modified in place).
+        previous_fused_path: Path to the previous window's fused parquet.
+                             If None or the file does not exist, returns fused unchanged.
+        registry:            Schema registry (used to discover forward_fill columns).
+
+    Returns:
+        fused with NaN forward_fill columns patched from the previous window.
+    """
+    if not previous_fused_path:
+        return fused
+
+    prev_path = Path(previous_fused_path)
+    if not prev_path.exists():
+        logger.debug("Forward-fill: previous fused path not found (%s)", prev_path)
+        return fused
+
+    try:
+        prev = pd.read_parquet(prev_path)
+    except Exception as exc:
+        logger.warning("Forward-fill: could not read previous fused parquet: %s", exc)
+        return fused
+
+    prev["grid_id"] = prev["grid_id"].astype(str)
+    prev = prev.set_index("grid_id")
+
+    ff_cols = [
+        col for col, strategy in registry.get_fill_strategies().items()
+        if strategy == "forward_fill"
+        and col in fused.columns
+        and col in prev.columns
+    ]
+    if not ff_cols:
+        return fused
+
+    filled_count = 0
+    for col in ff_cols:
+        null_mask = fused[col].isna()
+        if not null_mask.any():
+            continue
+        fill_values = fused.loc[null_mask, "grid_id"].map(prev[col])
+        fused.loc[null_mask, col] = fill_values
+        newly_filled = fill_values.notna().sum()
+        filled_count += newly_filled
+
+    if filled_count > 0:
+        logger.info(
+            "Forward-fill: patched %d NaN values across %d columns from %s",
+            filled_count, len(ff_cols), prev_path.name,
+        )
+    return fused
+
+
+def check_weather_circuit_breaker(
+    fused: pd.DataFrame,
+    threshold: float = 0.80,
+) -> None:
+    """Raise ValueError if weather null rate exceeds threshold for any region.
+
+    Called after fusion in task_fuse_features.  The DAG catches ValueError
+    and re-raises as AirflowFailException to prevent export of garbage data.
+
+    Args:
+        fused:     Fused DataFrame (one row per grid cell).
+        threshold: Null rate above which the circuit breaker trips (default 0.80).
+
+    Raises:
+        ValueError: With a human-readable message if any region trips the breaker.
+    """
+    weather_cols = [c for c in _WEATHER_COLS if c in fused.columns]
+    if not weather_cols:
+        return
+
+    if "region" not in fused.columns or fused.empty:
+        # Fall back to checking the whole dataset
+        null_rate = fused[weather_cols].isnull().values.mean()
+        if null_rate > threshold:
+            raise ValueError(
+                f"Circuit breaker: weather null rate {null_rate:.1%} > "
+                f"{threshold:.0%}. Weather source may be down — "
+                "aborting fusion export."
+            )
+        return
+
+    for region, grp in fused.groupby("region", observed=True):
+        null_rate = grp[weather_cols].isnull().values.mean()
+        if null_rate > threshold:
+            raise ValueError(
+                f"Circuit breaker: weather null rate {null_rate:.1%} > "
+                f"{threshold:.0%} in region '{region}'. "
+                "Weather source may be down — aborting fusion export."
+            )
+
+
 def fuse_features(
     firms_features: pd.DataFrame,
     weather_features: pd.DataFrame,
@@ -73,6 +190,7 @@ def fuse_features(
     execution_date: pd.Timestamp,
     resolution_km: int = 64,
     config_path: Optional[str] = None,
+    previous_fused_path: Optional[str] = None,
 ) -> pd.DataFrame:
     """Merge FIRMS fire, weather, and static terrain features into a unified table.
 
@@ -87,6 +205,9 @@ def fuse_features(
         execution_date: Timestamp of the current pipeline window.
         resolution_km: Grid resolution in km (default 64).
         config_path: Optional path to schema_config.yaml.
+        previous_fused_path: Optional path to the previous window's fused
+            parquet.  When provided, NaN values in ``forward_fill`` columns
+            are patched with values from the previous window (Item 5).
 
     Returns:
         Fused DataFrame with one row per grid cell.
@@ -105,7 +226,8 @@ def fuse_features(
 
     # 1) master grid
     master_grid = generate_full_grid(resolution_km)
-    master_grid = master_grid[["grid_id", "latitude", "longitude"]].copy()
+    region_col = ["region"] if "region" in master_grid.columns else []
+    master_grid = master_grid[["grid_id"] + region_col + ["latitude", "longitude"]].copy()
     master_grid["grid_id"] = master_grid["grid_id"].astype(str)
     master_grid["timestamp"] = pd.Timestamp(execution_date)
     master_grid["resolution_km"] = resolution_km
@@ -168,17 +290,21 @@ def fuse_features(
     # 4) static merge
     fused = _safe_merge(fused, static_features, how="left")
 
-    # 5) fill strategies
+    # 5) fill strategies (single-window: zero/constant fills only)
     fused = _apply_fill_strategies(fused, registry)
 
-    # 6) quality flag
-    fused["data_quality_flag"] = _compute_quality_flags(fused)
+    # 5b) cross-run forward-fill from previous window (Item 5)
+    fused = _apply_forward_fill(fused, previous_fused_path, registry)
 
-    # 7) enforce registry columns & order
+    # 6) enforce registry columns first so quality flags see all expected cols
+    #    (missing static cols appear as NaN here, enabling flag 4/5 detection)
     expected_columns = registry.get_feature_names()
     for col in expected_columns:
         if col not in fused.columns:
             fused[col] = None
+
+    # 7) quality flag (computed after all registry cols are present as NaN stubs)
+    fused["data_quality_flag"] = _compute_quality_flags(fused)
 
     fused = fused.loc[:, ~fused.columns.duplicated()]
     fused = fused[[c for c in expected_columns if c in fused.columns]]
@@ -364,6 +490,11 @@ _STATIC_STUB_COLS = {
     "dominant_fuel_fraction",
 }
 
+# Columns that are intentionally always-null until Phase 2 is implemented.
+# Excluded from quality flag null-rate calculation so they don't falsely
+# inflate missing-data counts.
+_PHASE2_PLACEHOLDER_COLS = {"fire_weather_index", "ndvi"}
+
 _EXCLUDE_FROM_QUALITY = {
     "grid_id", "latitude", "longitude", "timestamp",
     "resolution_km", "region", "data_quality_flag",
@@ -374,25 +505,41 @@ def _compute_quality_flags(fused: pd.DataFrame) -> pd.Series:
     """Compute data quality flags.
 
     Flag values:
-      0 = good (all dynamic sources present)
-      3 = >30% nulls in non-static feature columns (partial data)
-      4 = static source unavailable (LANDFIRE/SRTM/MODIS stubs)
+      0 = good (all dynamic sources present, static sources loaded)
+      3 = >30% nulls in non-static, non-placeholder dynamic columns
+      4 = static source fully unavailable (all static cols NaN for this row)
+      5 = partial static (some static cols NaN — boundary cell or missing tile)
+
+    Phase 2 placeholder columns (fire_weather_index, ndvi) are excluded from
+    the null-rate calculation since they are intentionally always null until
+    the corresponding ingestion scripts are run.
     """
     flags = pd.Series(0, index=fused.index, dtype="int8")
 
-    # Check dynamic columns (weather + fire) — exclude static stubs
+    # Flag 3: >30% nulls in dynamic (non-static, non-placeholder) columns
     dynamic_cols = [
         c for c in fused.columns
-        if c not in _EXCLUDE_FROM_QUALITY and c not in _STATIC_STUB_COLS
+        if c not in _EXCLUDE_FROM_QUALITY
+        and c not in _STATIC_STUB_COLS
+        and c not in _PHASE2_PLACEHOLDER_COLS
     ]
     if dynamic_cols:
         null_fraction = fused[dynamic_cols].isnull().mean(axis=1)
         flags = flags.where(null_fraction < 0.3, 3)
 
-    # Flag 4: static source unavailable (all static cols are NaN for this row)
+    # Static cols actually present in the DataFrame
     static_present = [c for c in _STATIC_STUB_COLS if c in fused.columns]
-    if static_present:
-        all_static_null = fused[static_present].isnull().all(axis=1)
-        flags = flags.where(~all_static_null, flags.where(flags == 3, 4))
+    # Exclude known Phase 2 always-null from static check
+    static_checkable = [c for c in static_present if c not in _PHASE2_PLACEHOLDER_COLS]
+
+    if static_checkable:
+        null_counts = fused[static_checkable].isnull().sum(axis=1)
+        all_null  = null_counts == len(static_checkable)
+        some_null = (null_counts > 0) & ~all_null
+
+        # Flag 4: all checkable static cols NaN — overrides flag 3
+        flags = flags.where(~all_null, 4)
+        # Flag 5: partial static NaN — overrides flag 3 (more specific diagnosis)
+        flags = flags.where(~some_null, 5)
 
     return flags

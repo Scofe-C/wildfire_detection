@@ -28,7 +28,7 @@ def _choose_default_value(col: str, dtype: str, rules: dict | None):
 
     # Special-case categorical code ranges (schema min/max)
     if col == "fuel_model_fbfm40":
-        return 91  # min in your schema
+        return 101  # valid FBFM40 code; schema min=1, max=204
 
     dtype = str(dtype)
     if dtype in ("float32", "float64"):
@@ -107,3 +107,27 @@ def test_validation_catches_null_non_nullable():
     passed, results = run_validation(df, registry, resolution_km=10, enforce_row_count=False)
     assert passed is False
     assert len(results.get("issues", [])) > 0
+
+
+def test_phase2_placeholder_columns_all_null_pass_validation():
+    """fire_weather_index and ndvi may be all-null; validation must not flag them."""
+    import numpy as np
+
+    registry = FeatureRegistry("configs/schema_config.yaml")
+    cols = _get_enabled_column_names(registry)
+
+    df = _make_minimal_df(registry, cols, n_rows=3)
+
+    # Force phase-2 placeholder cols to NaN
+    for col in ("fire_weather_index", "ndvi"):
+        if col in df.columns:
+            df[col] = np.nan
+
+    passed, results = run_validation(df, registry, resolution_km=10, enforce_row_count=False)
+    placeholder_issues = [
+        i for i in results.get("issues", [])
+        if "fire_weather_index" in i or "ndvi" in i
+    ]
+    assert len(placeholder_issues) == 0, (
+        f"Phase-2 placeholder columns should not trigger validation failures: {placeholder_issues}"
+    )
