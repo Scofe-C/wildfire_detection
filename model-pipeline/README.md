@@ -4,7 +4,7 @@
 
 This directory contains the ML model pipeline infrastructure for the Wildfire Prediction & Disaster Response platform. It handles everything after the data pipeline produces features and before a model reaches production: validation, bias detection, experiment tracking, visualization, alerting, and CI/CD.
 
-The actual model training and inference code (OBJ-1 XGBoost, OBJ-2 Cell2Fire, OBJ-3 Gemini) are placeholders. The infrastructure is fully implemented and tested — once a model is plugged in, validation, bias gating, tracking, and deployment happen automatically.
+**OBJ-1 (XGBoost)** is a placeholder — the infrastructure is fully implemented and tested, and once a model is plugged in, validation, bias gating, tracking, and deployment happen automatically. **OBJ-2 (Cell2Fire)** is fully implemented as a C++ subprocess wrapper with weather CSV formatting, raster clipping, burn probability parsing, and Dice coefficient validation. **OBJ-3 (Gemini Disaster Reporting)** is fully implemented with 3 swappable LLM backends, 4 structured report types, and Jinja2 rendering.
 
 ```
 data-pipeline/                          model-pipeline/ (this directory)
@@ -38,7 +38,7 @@ model-pipeline/
 │   └── model_config.yaml           # thresholds, paths, tracking, alert config
 ├── src/
 │   ├── data/                       # load + validate parquet from data pipeline
-│   ├── models/                     # abstract interface + 3 objective stubs
+│   ├── models/                     # abstract interface + OBJ-1 stub + OBJ-2 (Cell2Fire) + OBJ-3 (Gemini)
 │   ├── validation/                 # metrics, model selection gate, visualizations
 │   ├── bias/                       # Fairlearn FNR gate + FEMA NRI spatial join
 │   ├── tracking/                   # MLflow local + Vertex AI Experiments
@@ -152,8 +152,9 @@ Defines the contract that OBJ-1, OBJ-2, and OBJ-3 must implement.
 | `compute_artifact_hash(model_path)` | path | SHA-256 hex string | Reproducibility tracking |
 
 **What to do next:**
-- Teammates: subclass `BaseModel` in `obj1_xgboost/` and `obj2_spread/`, implement all 4 methods.
-- Owner: subclass in `obj3_gemini/` for Gemini disaster reporting.
+- Teammates: subclass `BaseModel` in `obj1_xgboost/`, implement all 4 methods.
+- ~~Owner: subclass in `obj3_gemini/` for Gemini disaster reporting.~~ ✅ **Done** — see section 4.9.
+- ~~Teammates: subclass `BaseModel` in `obj2_spread/`.~~ ✅ **Done** — see section 4.8.
 
 ---
 
@@ -186,26 +187,250 @@ Defines the contract that OBJ-1, OBJ-2, and OBJ-3 must implement.
 
 ---
 
-### 4.8 `src/models/obj2_spread/placeholder.py` — OBJ-2 Stub
+### 4.8 `src/models/obj2_spread/cell2fire_spread.py` — OBJ-2 Cell2Fire Fire Spread
 
-**Status:** Not implemented. Two classes: `Cell2FireSpread` (primary) and `PropagatorSpread` (secondary, demo only).
+**Status:** Fully implemented. Physics-based C++ simulator wrapped as a `BaseModel`. Runs Monte Carlo fire spread simulations from DEM + fuel + weather inputs, outputs burn probability grids.
 
-**What teammates need to do:**
-1. `Cell2FireSpread`: wrap the C++ binary via subprocess, feed DEM + fuel map + wind.
-2. `PropagatorSpread`: wrap the Python API, include `DISCLAIMER` in every output.
-3. Both must return GeoJSON-structured DataFrame from `predict()`.
+**Helper functions:**
+
+| Function | Purpose |
+|---|---|
+| `format_weather_csv(weather_df, output_path)` | Maps pipeline weather columns (e.g. `wind_speed_10m`, `temperature_2m`) → Cell2Fire CSV format (`ws`, `wd`, `tmp`, `rh`) |
+| `clip_raster_to_aoi(raster_path, bounds, output_path, target_resolution)` | Clips DEM/fuel GeoTIFFs to a bounding box with optional resampling |
+| `parse_burn_probability(output_dir, n_simulations)` | Reads Cell2Fire `ForestGrid*.csv` output grids → 2D burn probability array |
+| `burn_grid_to_geodataframe(burn_prob, transform, crs, threshold)` | Converts burn probability grid → `GeoDataFrame` of burned polygons |
+| `compute_dice_coefficient(predicted_mask, actual_mask)` | Dice = 2·\|P∩A\| / (\|P\|+\|A\|), range [0, 1]. Primary validation metric |
+
+**`Cell2FireSpread` (implements `BaseModel`):**
+
+| Method | What it does |
+|---|---|
+| `load_model(path)` | Loads simulation config JSON (ignition points, AOI bounds, raster paths) + base params from `model_config.yaml`. Warns if C++ binary not on PATH |
+| `predict(X)` | Prepares weather CSV + clips rasters → runs C++ binary via subprocess → parses burn grids → maps burn probability back to H3 cells in `X` |
+| `validate(X, y)` | Dice coefficient vs actual burn labels (CAL FIRE perimeters intersected with H3 grid) + AUC-PR/F1/FNR for pipeline compatibility |
+| `explain(X)` | Parameter sensitivity sweep over `sweep_space` in `model_config.yaml`; returns most-influential parameter by burn-area range |
+
+**Inputs required:**
+- DEM: GeoTIFF float32 (elevation, metres) — USGS 3DEP
+- Fuel: GeoTIFF int16 (LANDFIRE FBFM40 codes)
+- Weather: pipeline-format DataFrame (columns auto-mapped)
+- Ignition: `ignition_points` list of `(row, col)` tuples in simulation config JSON
+
+**Validation gate:** Dice coefficient >= `obj2.cell2fire.validation.minimum_dice` (default 0.50)
+
+**Setup:**
+1. Install Cell2Fire C++ binary (`Cell2Fire` on PATH, or set `obj2.cell2fire.binary_path` in `model_config.yaml`)
+2. Place DEM and fuel GeoTIFFs at paths configured under `obj2.cell2fire.raster_inputs`
+3. Create a simulation config JSON:
+```json
+{
+    "ignition_points": [[120, 85], [121, 86]],
+    "aoi_bounds": [-121.5, 38.5, -120.5, 39.5],
+    "params": {"n_simulations": 200}
+}
+```
+4. Call `model.load_model("path/to/simulation_config.json")`
 
 ---
 
-### 4.9 `src/models/obj3_gemini/placeholder.py` — OBJ-3 Stub
+### 4.9 `src/models/obj3_gemini/` — OBJ-3 Gemini Disaster Reporting Engine
 
-**Status:** Not implemented. Owner will build.
+**Status:** Fully implemented. Multi-phase architecture with 3 swappable LLM backends, 4 report types, structured output via Pydantic, and Jinja2 rendering.
 
-**What to implement:**
-1. `load_model()`: initialize Vertex AI Gemini client with response schema.
-2. `predict()`: build context window injection, call Gemini, enforce `human_review_required` flag.
-3. `validate()`: check schema conformance, grounding source count.
-4. `explain()`: return grounding sources and confidence scores.
+```
+src/models/obj3_gemini/
+├── __init__.py                    # re-exports GeminiDisasterReporter, GeneratedReport, etc.
+├── reporter.py                    # main orchestrator (subclasses BaseModel)
+├── state_machine.py               # mode resolution: QUIET / ACTIVE / EMERGENCY
+├── context_builder.py             # multi-source context assembly → ContextBundle
+├── corpus_loader.py               # RAG corpus loading + Vertex AI context cache
+├── renderer.py                    # Jinja2 → Markdown / HTML / PDF rendering
+├── adapters/
+│   ├── base_adapter.py            # abstract LLMAdapter interface
+│   ├── ollama_adapter.py          # Phase 1 — local Ollama server
+│   ├── gemini_dev_adapter.py      # Phase 2 — Gemini Developer API (free-tier)
+│   └── vertex_adapter.py          # Phase 3 — Vertex AI + context caching
+└── schemas/
+    ├── base_schema.py             # BaseReport + nested types (RiskCell, Recommendation, …)
+    ├── daily_schema.py            # DailyReport   (QUIET mode)
+    ├── high_risk_schema.py        # HighRiskReport (ACTIVE mode)
+    ├── incident_schema.py         # IncidentReport (EMERGENCY — active fire)
+    └── final_schema.py            # FinalReport    (EMERGENCY — post-incident close-out)
+```
+
+---
+
+#### 4.9.1 `state_machine.py` — Mode Resolution
+
+Pure-logic module: no I/O, no LLM calls.
+
+| Function / Class | Input | Output | Purpose |
+|---|---|---|---|
+| `resolve_mode(pipeline_result)` | dict with `risk_level` + `firms_hotspot_count` | `(OperationalMode, EmergencySubState \| None)` | Maps risk level / hotspot count to QUIET, ACTIVE, or EMERGENCY mode |
+| `mode_to_report_type(mode, sub_state)` | mode + optional sub-state | `str` — one of `"daily"`, `"high_risk"`, `"incident"`, `"final"` | Maps mode to the report type string |
+| `AdminToggle` | config dict | `.is_on` / `.enable()` / `.disable()` | Controls whether the human input channel is active. Persists to YAML (Phase 1) or Firestore (Phase 3 stub) |
+
+**Mode → report mapping:**
+| Risk Level | FIRMS Hotspots | Mode | Report Type |
+|---|---|---|---|
+| LOW | 0 | QUIET | `daily` |
+| MODERATE / HIGH | 0 | ACTIVE | `high_risk` |
+| CRITICAL _or_ any | > 0 | EMERGENCY | `incident` (or `final` if sub-state is FINAL) |
+
+---
+
+#### 4.9.2 `context_builder.py` — Context Assembly
+
+Assembles all input sources into a single `ContextBundle` before any LLM call. No LLM calls happen here.
+
+| Function | Purpose |
+|---|---|
+| `build_system_prompt(report_type, schema)` | Constructs role definition + JSON schema + hallucination rules + disclaimer injection |
+| `build_ml_block(pipeline_result, max_chars)` | Serialises XGBoost top cells, Cell2Fire GeoJSON, Propagator summary, bias gate |
+| `build_data_block(pipeline_result, max_chars)` | Serialises environmental telemetry (OWM/SMAP), FIRMS hotspots, FEMA NRI tracts |
+| `build_human_block(human_inputs, toggle)` | Formats operator/management text notes + uploaded files. Returns `""` if toggle is OFF |
+| `build_instruction(report_type, incident_id, dt)` | Final directive: "Generate a {type} report …" |
+| `assemble(...)` | Orchestrates all builders → `ContextBundle` |
+
+**Key data classes:**
+
+| Class | Description |
+|---|---|
+| `ContextBundle` | Complete payload sent to the adapter: `system_prompt`, `corpus_ref`, `corpus_text`, `ml_block`, `data_block`, `human_block`, `instruction`, `report_type`, `incident_id` |
+| `HumanInput` | Operator/management input with text notes, uploaded files, and source (operator / management) |
+| `UploadedFile` | Filename, raw bytes, MIME type |
+
+---
+
+#### 4.9.3 `corpus_loader.py` — RAG Corpus Loading
+
+Loads reference documents (`.pdf`, `.txt`) from the versioned `corpus/{version}/` directory.
+
+| Function | Purpose |
+|---|---|
+| `load_corpus_texts(corpus_dir, version)` | Reads all PDF/TXT files from `corpus/{version}/` → `list[CorpusDocument]` |
+| `get_corpus_as_text(corpus_docs, max_chars)` | Concatenates docs as plain text (Phase 1/2 fallback). PDFs included as filename reference only |
+| `estimate_corpus_tokens(corpus_docs)` | Rough token estimate: total bytes ÷ 4 |
+| `get_or_create_cache(client, model, …)` | Phase 3: creates or reuses a Vertex AI context cache (`wildfire-rag-corpus-v{version}`) |
+
+**Raises `CorpusLoadError`** if the directory is missing or contains no documents.
+**Raises `CacheCreationError`** if Vertex AI cache creation fails or corpus is < 2048 tokens.
+
+---
+
+#### 4.9.4 `adapters/` — LLM Backend Implementations
+
+All adapters implement the `LLMAdapter` interface:
+
+| Method | Signature | Purpose |
+|---|---|---|
+| `generate(context_bundle, schema)` | `ContextBundle, dict → str` | Send context to LLM, return raw JSON string |
+| `is_available()` | `→ bool` | Health check: backend reachable and model available |
+
+**Phase 1 — `OllamaAdapter`** (local development):
+- Calls a local Ollama server via `ollama.chat()`.
+- Schema enforcement via the `format` parameter.
+- Default model: `qwen2.5:14b`. Configurable via `ollama.model` in config.
+- Retries on JSON parse failure (`max_retries` configurable).
+- Requires: `pip install ollama` + running Ollama server.
+
+**Phase 2 — `GeminiDevAdapter`** (free-tier cloud):
+- Calls Gemini Developer API with `GEMINI_API_KEY` env var.
+- Uses `response_mime_type="application/json"` + `response_schema` for structured output.
+- Default model: `gemini-2.5-flash`. Free-tier limits: 10 RPM / 500 RPD.
+- Requires: `pip install google-generativeai` + API key from https://aistudio.google.com/apikey.
+
+**Phase 3 — `VertexAdapter`** (production GCP):
+- Calls Vertex AI via `google-genai` SDK with `vertexai=True`.
+- Supports context caching: `load_corpus_cache()` uploads corpus once, subsequent calls reference the cache name.
+- Uses `cached_content` parameter in generation config to avoid re-transmitting corpus.
+- Default model: `gemini-2.5-flash`. Location: `us-central1`.
+- Requires: `pip install google-genai` + `GOOGLE_CLOUD_PROJECT` env var + `gcloud auth`.
+
+**Backend selection:** set `llm_backend` in `reporting_config.yaml` to `"ollama"`, `"gemini_dev"`, or `"vertex_ai"`.
+
+---
+
+#### 4.9.5 `schemas/` — Pydantic Report Schemas
+
+All schemas inherit from `BaseReport`. All require:
+- `disclaimer` == `"AI-generated. Not for operational use without human review."` (enforced by `field_validator`)
+- `report_confidence` ∈ [0.0, 1.0]
+- `human_review_required` flag
+
+**Nested supporting types:** `RiskCell`, `Recommendation`, `VulnerableGroup`, `ResourceRequirement`, `ProjectedLoss`, `TimelineEvent`, `ResourceDeployed`.
+
+| Schema | Mode | Key fields |
+|---|---|---|
+| `DailyReport` | QUIET | `summary`, `monitored_area_count`, `weather_summary`, `notable_changes` |
+| `HighRiskReport` | ACTIVE | `risk_summary`, `top_risk_cells` (1–5 `RiskCell`), `contributing_factors`, `preventive_recommendations` (≥ 2), `escalation_trigger` |
+| `IncidentReport` | EMERGENCY | `incident_name`, `incident_status` (ACTIVE/CONTAINED/CONTROLLED/OUT), `affected_communities`, `spread_summary`, `resource_requirements`, `projected_losses`, `vulnerable_populations`, `immediate_actions` (≥ 3) |
+| `FinalReport` | EMERGENCY (FINAL) | `incident_name`, `linked_incident_id`, `incident_timeline` (≥ 3 events), `resources_deployed`, `losses_summary`, `lessons_learned` (≥ 2), `recommendations_for_future` (≥ 2). `human_review_required` is always `True` |
+
+---
+
+#### 4.9.6 `renderer.py` — Jinja2 Rendering
+
+Deterministic rendering — zero LLM involvement, all values pre-computed in the Pydantic model.
+
+| Function | Purpose |
+|---|---|
+| `render_markdown(report, template_dir)` | Renders daily / high_risk reports via Jinja2 `.md.j2` templates |
+| `render_html(report, template_dir)` | Renders incident / final reports via Jinja2 `.html.j2` templates (autoescaped) |
+| `markdown_to_html(md_str)` | Converts Markdown → HTML via `python-markdown` |
+| `render_pdf(html_str, css_string)` | Converts HTML → PDF via WeasyPrint (optional dependency, admin-only) |
+
+Template files are expected at `templates/{report_type}.{md\|html}.j2`.
+
+---
+
+#### 4.9.7 `reporter.py` — Main Orchestrator
+
+`GeminiDisasterReporter` subclasses `BaseModel` and overrides methods to work with `ContextBundle` / `ReportResult` instead of raw DataFrames.
+
+**Overridden `BaseModel` methods:**
+
+| Method | Input | Output | Purpose |
+|---|---|---|---|
+| `load_model(model_path)` | path to `reporting_config.yaml` | None | Loads config, creates adapter, runs health check, loads corpus (with Vertex AI caching if applicable), initialises admin toggle |
+| `predict(context_bundle)` | `ContextBundle` | `ReportResult` | Sends context to LLM, parses response via Pydantic. Retries once on parse failure |
+| `validate(report_result)` | `ReportResult` | `ValidationResult` | Checks: (1) schema valid, (2) sections complete, (3) confidence ≥ threshold, (4) `human_review_required` flag correct. Final reports always require review |
+| `explain(report_result)` | `ReportResult` | `dict` | Returns confidence, data sources, review flag, latency — no LLM call |
+
+**High-level convenience method:**
+
+`generate_report(pipeline_result, human_inputs, mode, sub_state)` runs the full pipeline:
+
+| Step | Description |
+|---|---|
+| 1–2 | Resolve operational mode (auto or override) |
+| 3–4 | Assemble context via `context_builder.assemble()` |
+| 5–6 | Call `predict()` → LLM generation + Pydantic parsing |
+| 7 | `validate()` — 4-criterion check |
+| 8 | Render to Markdown or HTML (based on report type) |
+| 9 | Save JSON + rendered file to `reports/disaster_reports/` |
+| 10 | Sync to GCS bucket (if configured) |
+| 11 | Return `GeneratedReport` with all artefacts |
+
+**Usage:**
+```python
+from src.models.obj3_gemini import GeminiDisasterReporter
+
+reporter = GeminiDisasterReporter()
+reporter.load_model("configs/reporting_config.yaml")
+
+result = reporter.generate_report(
+    pipeline_result={
+        "risk_level": "HIGH",
+        "firms_hotspot_count": 0,
+        "xgboost_top_cells": [...],
+        "telemetry": {"temperature": 38.2, "humidity": 12},
+    },
+    human_inputs=[],
+)
+print(result.validation.passed)     # True if all 4 checks pass
+print(result.markdown_path)         # Path to rendered report
+```
 
 ---
 
@@ -477,7 +702,7 @@ Located at `.github/workflows/model_ci.yml` (repo root level).
 | 8. Vertex AI sync | Non-blocking | No |
 | 9. Deploy | Cloud Run service update | Yes |
 
-Stages 5-9 are placeholder `echo` commands until OBJ-1 is implemented.
+Stages 5-9 are placeholder `echo` commands until OBJ-1 is implemented. OBJ-2 and OBJ-3 are ready to be wired in once OBJ-1 provides the primary metrics.
 
 ---
 
@@ -492,49 +717,4 @@ These stages depend on `models/ignition` and `data/static/fema_nri` — they won
 
 ---
 
-## 7. What To Do Next
 
-### Immediate (before any model code)
-
-1. **Download FEMA NRI shapefile** from https://hazards.fema.gov/nri/data-resources. Extract into `data/static/fema_nri/`.
-
-2. **Set up Slack webhook** (optional). Create a Slack app, get the webhook URL, set `SLACK_WEBHOOK_URL` env var.
-
-3. **Run tests** to confirm the environment:
-   ```bash
-   cd model-pipeline
-   PYTHONPATH=. pytest tests/ -v --cov=src
-   ```
-
-### For Teammates — OBJ-1 (XGBoost)
-
-1. Replace `src/models/obj1_xgboost/placeholder.py` with real `XGBoostFireRisk`.
-2. `load_model()` → load XGBoost `.json` or `.ubj` weights.
-3. `predict(X)` → return DataFrame with `prediction` and `probability` columns.
-4. `validate(X, y)` → call `src.validation.metrics.compute_all_metrics()`.
-5. `explain(X)` → call `shap.TreeExplainer`.
-6. Save trained model to `models/ignition/{version}/`.
-7. Run the orchestrator to verify end-to-end.
-
-### For Teammates — OBJ-2 (Cell2Fire / PROPAGATOR)
-
-1. Replace `src/models/obj2_spread/placeholder.py`.
-2. `Cell2FireSpread`: wrap C++ binary via subprocess, handle non-zero exit codes.
-3. `PropagatorSpread`: include `DISCLAIMER` string in every output row.
-
-### For Owner — OBJ-3 (Gemini Disaster Reporting)
-
-1. Replace `src/models/obj3_gemini/placeholder.py`.
-2. Initialize Vertex AI Gemini client with `responseSchema` enforcement.
-3. Build context window injection order (Cell2Fire → XGBoost → telemetry → FIRMS → NRI → PROPAGATOR).
-4. Track `grounding_search_count` for cost monitoring.
-5. Set `human_review_required = True` when grounding < 3 sources or confidence < 0.7.
-
-### Before Demo
-
-1. All three OBJs implemented and passing the orchestrator.
-2. Validation gate passing (AUC-PR > 0.75).
-3. Bias gate passing (FNR disparity < 5%).
-4. Three visualization PNGs in `reports/visualizations/`.
-5. MLflow viewable: `mlflow ui --backend-store-uri sqlite:///mlruns.db`.
-6. CI/CD stages 1-6 green on GitHub Actions.

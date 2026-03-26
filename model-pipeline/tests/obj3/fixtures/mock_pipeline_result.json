@@ -1,0 +1,28 @@
+{
+  "run_id": "test-run-001",
+  "is_deployable": true,
+  "metrics": {
+    "auc_pr": 0.82,
+    "f1": 0.74,
+    "fnr": 0.12
+  },
+  "risk_level": "LOW",
+  "xgboost_top_cells": [
+    {"h3_index": "8928308280fffff", "probability": 0.23, "lat": 37.4, "lon": -119.5},
+    {"h3_index": "8928308281fffff", "probability": 0.18, "lat": 37.5, "lon": -119.6}
+  ],
+  "cell2fire_geojson": null,
+  "propagator_summary": null,
+  "firms_hotspot_count": 0,
+  "telemetry": {
+    "temperature_max": 28.5,
+    "wind_speed_mph": 12.0,
+    "relative_humidity": 58.0,
+    "soil_moisture": 0.22
+  },
+  "fema_nri_tracts": [],
+  "bias_report": {
+    "gate_result": "PASS",
+    "observed_disparity": 0.02
+  }
+}

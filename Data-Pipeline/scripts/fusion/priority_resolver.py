@@ -18,12 +18,16 @@ Behavior:
     Priority 2 (satellite) and pass through unchanged.
 """
 
+from __future__ import annotations
+
 import logging
 from pathlib import Path
 from typing import Optional
 
 import numpy as np
 import pandas as pd
+
+from scripts.utils.grid_utils import haversine_km
 
 logger = logging.getLogger(__name__)
 
@@ -67,15 +71,6 @@ def _load_priority_config(config_path: Optional[str] = None) -> dict:
             logger.warning(f"Failed to load priority config: {e}")
 
     return DEFAULT_PRIORITY_CONFIG
-
-
-def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    """Approximate haversine distance between two points in km."""
-    R = 6371.0
-    dlat = np.radians(lat2 - lat1)
-    dlon = np.radians(lon2 - lon1)
-    a = np.sin(dlat / 2) ** 2 + np.cos(np.radians(lat1)) * np.cos(np.radians(lat2)) * np.sin(dlon / 2) ** 2
-    return R * 2 * np.arctan2(np.sqrt(a), np.sqrt(1 - a))
 
 
 def _build_spatial_index(fused_df: pd.DataFrame):

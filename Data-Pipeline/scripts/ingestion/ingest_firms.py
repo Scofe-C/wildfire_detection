@@ -18,6 +18,7 @@ from typing import Optional, Union
 import pandas as pd
 import requests
 
+from scripts.utils.datetime_utils import coerce_to_utc
 from scripts.utils.rate_limiter import RateLimiter, create_firms_limiter
 from scripts.utils.schema_loader import get_registry
 
@@ -41,25 +42,6 @@ EXPECTED_FIRMS_COLUMNS = [
 ]
 
 
-def _coerce_datetime(dt: Union[datetime, object]) -> datetime:
-    """
-    Airflow sometimes passes a lazy/proxy pendulum object.
-    Convert to a real python datetime, timezone-aware (UTC).
-    """
-    try:
-        ts = pd.Timestamp(dt)
-        if ts.tzinfo is None:
-            ts = ts.tz_localize("UTC")
-        return ts.to_pydatetime()
-    except Exception:
-        # Last resort: assume it's already a datetime-like
-        if isinstance(dt, datetime):
-            if dt.tzinfo is None:
-                return dt.replace(tzinfo=timezone.utc)
-            return dt
-        return datetime.now(timezone.utc)
-
-
 def fetch_firms_data(
     execution_date: datetime,
     resolution_km: int = 22,
@@ -77,7 +59,7 @@ def fetch_firms_data(
     Returns:
         Path to raw FIRMS CSV for the requested region(s).
     """
-    execution_date = _coerce_datetime(execution_date)
+    execution_date = coerce_to_utc(execution_date)
 
     registry = get_registry(config_path)
     firms_config = registry.get_source_config("firms")

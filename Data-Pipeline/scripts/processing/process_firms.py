@@ -97,7 +97,7 @@ def _clean_raw_firms(df: pd.DataFrame) -> pd.DataFrame:
     original_len = len(df)
 
     # Drop rows with missing coordinates
-    df = df.dropna(subset=["latitude", "longitude"])
+    df = df.dropna(subset=["latitude", "longitude"]).copy()
 
     # Normalize MODIS confidence to numeric
     if "confidence" in df.columns:

@@ -4,10 +4,11 @@ import logging
 from pathlib import Path
 
 import matplotlib
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
-from sklearn.metrics import ConfusionMatrixDisplay, precision_recall_curve, auc
+from sklearn.metrics import ConfusionMatrixDisplay, auc, precision_recall_curve
 
 logger = logging.getLogger(__name__)
 
@@ -97,7 +98,7 @@ def plot_model_comparison(
             vals = [metrics[name].get(m, 0) for m in metric_names]
             offset = (i - len(model_names) / 2 + 0.5) * width
             bars = ax.bar(x + offset, vals, width, label=name, alpha=0.85)
-            for bar, v in zip(bars, vals):
+            for bar, v in zip(bars, vals, strict=False):
                 ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.01,
                         f"{v:.3f}", ha="center", va="bottom", fontsize=9)
 

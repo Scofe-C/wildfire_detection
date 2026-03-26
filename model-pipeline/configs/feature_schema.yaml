@@ -1,0 +1,39 @@
+version: "1.0.0"
+
+index_columns:
+  - name: h3_index
+    dtype: string
+    required: true
+  - name: timestamp
+    dtype: datetime64[ns]
+    required: true
+
+target:
+  name: fire_detected
+  dtype: int8
+  required: true
+
+features:
+  # FIRMS (in data pipeline)
+  - { name: frp_max,              dtype: float32, source: firms,    bounds: [0.0, 5000.0], required: true }
+  - { name: fire_count,           dtype: int32,   source: firms,    bounds: [0, 1000],     required: true }
+  # OpenWeatherMap (in data pipeline)
+  - { name: temperature_max,      dtype: float32, source: weather,  bounds: [200.0, 350.0], required: true }
+  - { name: wind_speed_max,       dtype: float32, source: weather,  bounds: [0.0, 100.0],   required: true }
+  - { name: wind_direction_sin,   dtype: float32, source: weather,  bounds: [-1.0, 1.0],    required: true }
+  - { name: wind_direction_cos,   dtype: float32, source: weather,  bounds: [-1.0, 1.0],    required: true }
+  - { name: humidity_min,         dtype: float32, source: weather,  bounds: [0.0, 100.0],   required: true }
+  # SMAP (not yet in data pipeline)
+  - { name: soil_moisture_0_5cm,  dtype: float32, source: smap,     bounds: [0.0, 1.0],     required: false }
+  - { name: soil_moisture_0_100cm,dtype: float32, source: smap,     bounds: [0.0, 1.0],     required: false }
+  # USGS 3DEP (not yet)
+  - { name: elevation,            dtype: float32, source: 3dep,     bounds: [-100.0, 5000.0], required: false }
+  - { name: slope,                dtype: float32, source: 3dep,     bounds: [0.0, 90.0],      required: false }
+  # LANDFIRE (not yet)
+  - { name: fuel_class,           dtype: int16,   source: landfire, bounds: [0, 256],   required: false }
+  # MODIS (not yet)
+  - { name: ndvi,                 dtype: float32, source: modis,    bounds: [-1.0, 1.0], required: false }
+  # SEDAC (not yet)
+  - { name: population_density_log, dtype: float32, source: sedac,  bounds: [0.0, 15.0], required: false }
+
+normalization_stats_path: "data/static/normalization_stats.json"

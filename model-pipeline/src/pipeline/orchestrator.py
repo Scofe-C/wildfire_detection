@@ -6,7 +6,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-import numpy as np
 import yaml
 
 logger = logging.getLogger(__name__)
@@ -69,11 +68,13 @@ def run_pipeline(
     baseline_metrics: dict[str, float] | None = None,
 ) -> PipelineResult:
     from src.data.loader import load_and_split
-    from src.tracking.mlflow_logger import MLflowLogger, compute_input_statistics
-    from src.validation.metrics import compute_all_metrics, measure_inference_latency
-    from src.validation.model_selector import validate_model, save_validation_report, ValidationResult
-    from src.validation.visualizations import generate_all_visualizations
     from src.notifications.alerter import SlackAlerter
+    from src.tracking.mlflow_logger import MLflowLogger, compute_input_statistics
+    from src.validation.metrics import measure_inference_latency
+    from src.validation.model_selector import (
+        validate_model,
+    )
+    from src.validation.visualizations import generate_all_visualizations
 
     if config is None:
         config = load_pipeline_config()
@@ -136,8 +137,12 @@ def run_pipeline(
         # Bias Gate (CI/CD Stage 6 — BLOCKING)
         logger.info("[%s] Running bias gate", run_id)
         try:
-            from src.bias.nri_loader import load_nri, compute_vulnerability_quartiles, spatial_join_predictions
             from src.bias.detector import run_bias_gate_from_dataframe
+            from src.bias.nri_loader import (
+                compute_vulnerability_quartiles,
+                load_nri,
+                spatial_join_predictions,
+            )
             from src.bias.report import generate_bias_report, save_bias_report
 
             nri = load_nri(cache_dir=config.fema_nri_cache)

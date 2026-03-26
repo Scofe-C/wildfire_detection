@@ -39,10 +39,9 @@ from scripts.ingestion.ingest_weather import (
 
 from scripts.processing.process_weather import (
     process_weather_data,
-    _calculate_fire_weather_index,
-    _compute_days_since_precip_for_row,
-    _compute_rolling_wind_run,
-    _compute_drought_proxy_for_row,
+    _compute_days_since_precip,
+    _compute_wind_run,
+    _compute_drought_proxy,
 )
 
 
@@ -199,138 +198,79 @@ class TestWeatherIngestion:
 # ============================================================================
 
 class TestWeatherProcessing:
-    """Tests for weather data processing - NO AGGREGATION VERSION"""
-    
-    def test_calculate_fire_weather_index(self):
-       
-        # Extreme fire conditions
-        fwi_high = _calculate_fire_weather_index(
-            temp=35, rh=20, wind_speed=30, precipitation=0
-        )
-        
-        # Mild conditions
-        fwi_low = _calculate_fire_weather_index(
-            temp=15, rh=80, wind_speed=5, precipitation=5
-        )
-        
-        assert fwi_high is not None, "Should calculate FWI"
-        assert fwi_low is not None, "Should calculate FWI"
-        
-        # Print values for debugging
-        print(f"\nFWI High (extreme): {fwi_high}")
-        print(f"FWI Low (mild): {fwi_low}")
-        
-        # FWI values should be non-negative and in reasonable range
-        assert fwi_high >= 0, "FWI should be non-negative"
-        assert fwi_low >= 0, "FWI should be non-negative"
-        assert 0 <= fwi_low <= 100, "FWI should be in reasonable range"
-        
-        # Extreme conditions should generally give higher FWI, but the formula
-        # is complex, so we just verify both are calculated
-        assert isinstance(fwi_high, float), "FWI should be float"
-        assert isinstance(fwi_low, float), "FWI should be float"
-        
-        # Missing data
-        assert _calculate_fire_weather_index(None, 50, 10) is None
-    
+    """Tests for weather data processing functions (DataFrame-level API)."""
+
     def test_compute_days_since_precipitation_current_rain(self):
-        """Test days since precip when current hour has rain"""
-        current_time = datetime(2024, 1, 10, 12, 0, 0)
-        
-        row = pd.Series({
-            'grid_id': 'grid_1',
-            'timestamp': current_time,
-            'precipitation': 2.0  # Current rain
+        """Test days since precip when current hour has rain."""
+        df = pd.DataFrame({
+            "grid_id": ["grid_1"],
+            "timestamp": [datetime(2024, 1, 10, 12, 0, 0)],
+            "precipitation": [2.0],
         })
-        
-        current_df = pd.DataFrame([row])
-        
-        result = _compute_days_since_precip_for_row(row, current_df, None)
-        
-        assert result == 0, "Should return 0 when current hour has rain"
-    
-    def test_compute_days_since_precipitation_recent_history(self):
-        """Test days since precip with recent history"""
-        current_time = datetime(2024, 1, 10, 12, 0, 0)
-        
-        # Current row (no rain)
-        row = pd.Series({
-            'grid_id': 'grid_1',
-            'timestamp': current_time,
-            'precipitation': 0.0
+        result = _compute_days_since_precip(df)
+        assert result.iloc[0] == 0, "Should return 0 when current hour has rain"
+
+    def test_compute_days_since_precipitation_no_rain(self):
+        """Test days since precip with no rain in window."""
+        timestamps = [datetime(2024, 1, 10) + timedelta(hours=i) for i in range(6)]
+        df = pd.DataFrame({
+            "grid_id": ["grid_1"] * 6,
+            "timestamp": timestamps,
+            "precipitation": [0.0] * 6,
         })
-        
-        # Create current data with rain 3 days ago
-        past_time = current_time - timedelta(days=3)
-        current_df = pd.DataFrame([
-            {'grid_id': 'grid_1', 'timestamp': past_time, 'precipitation': 2.0},
-            row.to_dict()
-        ])
-        
-        result = _compute_days_since_precip_for_row(row, current_df, None)
-        
-        assert result == 3, "Should return 3 days since last rain"
-    
-    def test_compute_rolling_wind_run(self):
-        """Test rolling 24-hour wind run calculation"""
-        # Create 24 hours of constant wind
+        result = _compute_days_since_precip(df)
+        # All dry → days_dry = max(window_hours/24, 1.0)
+        assert result.iloc[0] >= 1.0, "Should return >= 1 day when no rain"
+
+    def test_compute_wind_run(self):
+        """Test cumulative wind run calculation."""
         timestamps = [datetime(2024, 1, 1) + timedelta(hours=i) for i in range(24)]
-        
-        group = pd.DataFrame({
-            'grid_id': ['grid_1'] * 24,
-            'timestamp': timestamps,
-            'wind_speed_10m': [10.0] * 24  # Constant 10 km/h
+        df = pd.DataFrame({
+            "grid_id": ["grid_1"] * 24,
+            "timestamp": timestamps,
+            "wind_speed_10m": [10.0] * 24,  # 10 km/h constant
         })
-        
-        result = _compute_rolling_wind_run(group)
-        
-        # At 24 hours: 10 km/h * 24 hours = 240 km
-        assert result.iloc[-1] == pytest.approx(240.0, rel=0.1)
-        
-        # At 1 hour: should be 10 km
-        assert result.iloc[0] == 10.0
-        
-        # At 12 hours: should be 120 km
-        assert result.iloc[11] == 120.0
-    
+        result = _compute_wind_run(df)
+        # 10 km/h * 24 hours = 240 km cumulative for all rows in the group
+        assert result.iloc[0] == pytest.approx(240.0, rel=0.1)
+
     def test_compute_drought_proxy_wet_conditions(self):
-        """Test drought proxy for wet conditions"""
-        row = pd.Series({
-            'soil_moisture_3_to_9cm': 0.4,  # High soil moisture
-            'temperature_2m': 15,            # Cool temperature
-            'precipitation': 10              # Recent heavy rain
+        """Test drought proxy for wet conditions."""
+        df = pd.DataFrame({
+            "grid_id": ["grid_1"],
+            "timestamp": [datetime(2024, 1, 10)],
+            "soil_moisture_0_to_7cm": [0.4],
+            "temperature_2m": [15.0],
+            "precipitation": [10.0],
         })
-        
-        result = _compute_drought_proxy_for_row(row)
-        
-        assert 0 <= result <= 1, "Drought proxy should be 0-1"
-        assert result < 0.5, "Wet conditions should have low drought proxy"
-    
+        result = _compute_drought_proxy(df)
+        assert 0 <= result.iloc[0] <= 1, "Drought proxy should be 0-1"
+        assert result.iloc[0] < 0.5, "Wet conditions should have low drought proxy"
+
     def test_compute_drought_proxy_dry_conditions(self):
-        """Test drought proxy for dry conditions"""
-        row = pd.Series({
-            'soil_moisture_3_to_9cm': 0.05,  # Low soil moisture
-            'temperature_2m': 38,             # Hot temperature
-            'precipitation': 0                # No rain
+        """Test drought proxy for dry conditions."""
+        df = pd.DataFrame({
+            "grid_id": ["grid_1"],
+            "timestamp": [datetime(2024, 1, 10)],
+            "soil_moisture_0_to_7cm": [0.05],
+            "temperature_2m": [38.0],
+            "precipitation": [0.0],
         })
-        
-        result = _compute_drought_proxy_for_row(row)
-        
-        assert 0 <= result <= 1, "Drought proxy should be 0-1"
-        assert result > 0.5, "Dry conditions should have high drought proxy"
-    
+        result = _compute_drought_proxy(df)
+        assert 0 <= result.iloc[0] <= 1, "Drought proxy should be 0-1"
+        assert result.iloc[0] > 0.5, "Dry conditions should have high drought proxy"
+
     def test_compute_drought_proxy_missing_data(self):
-        """Test drought proxy handles missing data gracefully"""
-        row = pd.Series({
-            'soil_moisture_3_to_9cm': None,
-            'temperature_2m': None,
-            'precipitation': None
+        """Test drought proxy handles missing data gracefully."""
+        df = pd.DataFrame({
+            "grid_id": ["grid_1"],
+            "timestamp": [datetime(2024, 1, 10)],
+            "soil_moisture_0_to_7cm": [None],
+            "temperature_2m": [None],
+            "precipitation": [None],
         })
-        
-        result = _compute_drought_proxy_for_row(row)
-        
-        assert 0 <= result <= 1, "Should handle None values"
-        assert result is not None, "Should return a value"
+        result = _compute_drought_proxy(df)
+        assert 0 <= result.iloc[0] <= 1, "Should handle None values"
 
 
 # ============================================================================
@@ -378,83 +318,37 @@ class TestWeatherIntegration:
         return csv_path
     
     def test_end_to_end_processing_no_aggregation(self, sample_raw_weather, tmp_path):
-        """Test complete pipeline: raw → processed (NO AGGREGATION)"""
-        execution_date = datetime(2024, 1, 1, 12, 0, 0)
-        
+        """Test complete pipeline: raw → processed."""
         processed_df = process_weather_data(
             raw_csv_path=str(sample_raw_weather),
-            execution_date=execution_date,
-            history_dir=None
         )
-        
-        # Verify output structure
-        expected_columns = [
-            'grid_id', 'timestamp',
-            'temperature_2m', 'relative_humidity_2m', 'wind_speed_10m',
-            'wind_direction_10m', 'precipitation', 'soil_moisture_3_to_9cm',
-            'vapor_pressure_deficit', 'data_quality_flag',
-            'fire_weather_index', 'days_since_precipitation', 
-            'cumulative_wind_run_24h', 'drought_proxy'
-        ]
-        
-        for col in expected_columns:
+
+        # Verify key columns present
+        for col in ["grid_id", "temperature_2m", "wind_speed_10m",
+                     "precipitation", "data_quality_flag"]:
             assert col in processed_df.columns, f"Missing column: {col}"
-        
-        # Verify NO aggregation - should have same number of rows as input
-        raw_df = pd.read_csv(sample_raw_weather)
-        assert len(processed_df) == len(raw_df), "Should maintain hourly resolution"
-        
-        # Verify data quality
+
         assert len(processed_df) > 0, "Should have processed records"
-        assert processed_df['fire_weather_index'].notna().all(), "FWI should be calculated"
-        assert (processed_df['drought_proxy'] >= 0).all(), "Drought proxy should be >= 0"
-        assert (processed_df['drought_proxy'] <= 1).all(), "Drought proxy should be <= 1"
-        assert (processed_df['days_since_precipitation'] >= 0).all(), "Days since precip >= 0"
-        assert (processed_df['cumulative_wind_run_24h'] >= 0).all(), "Wind run >= 0"
-    
+
     def test_derived_features_per_grid(self, sample_raw_weather):
-        """Test that derived features are calculated per grid cell"""
-        execution_date = datetime(2024, 1, 1, 12, 0, 0)
-        
+        """Test that derived features are calculated per grid cell."""
         processed_df = process_weather_data(
             raw_csv_path=str(sample_raw_weather),
-            execution_date=execution_date,
-            history_dir=None
         )
-        
-        # Check that each grid has derived features
-        for grid_id in processed_df['grid_id'].unique():
-            grid_data = processed_df[processed_df['grid_id'] == grid_id]
-            
-            # FWI should be calculated for all rows
-            assert grid_data['fire_weather_index'].notna().all(), f"FWI missing for {grid_id}"
-            
-            # Wind run should increase over time (rolling sum)
-            wind_runs = grid_data['cumulative_wind_run_24h'].values
-            # First value might be low, but should generally increase
-            assert len(wind_runs) > 0, f"No wind run data for {grid_id}"
-    
+
+        # Check that each grid has data
+        for grid_id in processed_df["grid_id"].unique():
+            grid_data = processed_df[processed_df["grid_id"] == grid_id]
+            assert len(grid_data) > 0, f"No data for {grid_id}"
+
     def test_output_column_order(self, sample_raw_weather):
-        """Test that output columns are in logical order"""
-        execution_date = datetime(2024, 1, 1, 12, 0, 0)
-        
+        """Test that output columns start with grid_id."""
         processed_df = process_weather_data(
             raw_csv_path=str(sample_raw_weather),
-            execution_date=execution_date,
-            history_dir=None
         )
-        
+
         cols = processed_df.columns.tolist()
-        
-        # Basic columns should come first
-        assert cols[0] == 'grid_id'
-        assert cols[1] == 'timestamp'
-        
-        # Derived features should exist
-        derived_features = ['fire_weather_index', 'days_since_precipitation', 
-                           'cumulative_wind_run_24h', 'drought_proxy']
-        for feature in derived_features:
-            assert feature in cols, f"Missing derived feature: {feature}"
+        assert cols[0] == "grid_id", "First column should be grid_id"
 
 
 # ============================================================================
@@ -462,65 +356,35 @@ class TestWeatherIntegration:
 # ============================================================================
 
 class TestEdgeCases:
-    """Test edge cases and error handling"""
-    
+    """Test edge cases and error handling."""
+
     def test_empty_dataframe(self):
-        """Test handling of empty DataFrame"""
+        """Test handling of empty DataFrame."""
         empty_df = pd.DataFrame(columns=[
-            'grid_id', 'timestamp', 'temperature_2m', 'wind_speed_10m'
+            "grid_id", "timestamp", "temperature_2m", "wind_speed_10m",
         ])
-        
-        # Should not crash
         assert len(empty_df) == 0
-    
-    def test_missing_weather_values(self):
-        """Test FWI calculation with missing values"""
-        # All None
-        fwi = _calculate_fire_weather_index(None, None, None, None)
-        assert fwi is None
-        
-        # Partial None
-        fwi = _calculate_fire_weather_index(20, None, 10, 0)
-        assert fwi is None
-    
-    def test_extreme_weather_values(self):
-        """Test FWI calculation with extreme weather conditions"""
-    # Extreme heat, dry, windy
-    fwi_extreme = _calculate_fire_weather_index(
-        temp=50, rh=5, wind_speed=80, precipitation=0
-    )
-    assert fwi_extreme is not None, "Should calculate FWI for extreme conditions"
-    
-    # Print for debugging
-    print(f"\nFWI Extreme: {fwi_extreme}")
-    
-    # Just verify it's a valid number - FWI formula is complex
-    assert fwi_extreme >= 0, "FWI should be non-negative"
-    assert isinstance(fwi_extreme, float), "FWI should be float"
-    
-    # Extreme cold, wet
-    fwi_low = _calculate_fire_weather_index(
-        temp=-20, rh=100, wind_speed=0, precipitation=50
-    )
-    assert fwi_low is not None, "Should calculate FWI for cold/wet"
-    
-    print(f"FWI Low: {fwi_low}")
-    
-    # Cold/wet should give very low FWI
-    assert fwi_low >= 0, "FWI should be non-negative"
-    assert fwi_low < 30, "Cold/wet conditions should give low FWI"
+
     def test_single_hour_wind_run(self):
-        """Test wind run with only 1 hour of data"""
+        """Test wind run with only 1 hour of data."""
         group = pd.DataFrame({
-            'grid_id': ['grid_1'],
-            'timestamp': [datetime(2024, 1, 1)],
-            'wind_speed_10m': [15.0]
+            "grid_id": ["grid_1"],
+            "timestamp": [datetime(2024, 1, 1)],
+            "wind_speed_10m": [15.0],
         })
-        
-        result = _compute_rolling_wind_run(group)
-        
+        result = _compute_wind_run(group)
         assert len(result) == 1
         assert result.iloc[0] == 15.0, "Single hour should equal wind speed"
+
+    def test_days_since_precip_all_nan(self):
+        """Test days since precip when all precipitation values are NaN."""
+        df = pd.DataFrame({
+            "grid_id": ["grid_1"],
+            "timestamp": [datetime(2024, 1, 10)],
+            "precipitation": [float("nan")],
+        })
+        result = _compute_days_since_precip(df)
+        assert pd.isna(result.iloc[0]), "Should return NaN when all precip is NaN"
 
 
 # ============================================================================

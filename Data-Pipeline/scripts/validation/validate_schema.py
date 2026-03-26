@@ -4,7 +4,6 @@ from typing import Any, Dict, List, Tuple
 
 import great_expectations as ge
 import pandas as pd
-import great_expectations as gx
 from scripts.utils.grid_utils import generate_full_grid
 
 
@@ -70,13 +69,14 @@ def run_validation(
             continue
 
         if ("min" in rules) or ("max" in rules):
-            # Skip between-check for non-numeric columns (avoids str vs int TypeError)
+            # Skip between-check for non-numeric or all-null placeholder columns
             if col in df.columns and pd.api.types.is_numeric_dtype(df[col]):
-                validator.expect_column_values_to_be_between(
-                    col,
-                    min_value=rules.get("min"),
-                    max_value=rules.get("max"),
-                )
+                if df[col].notna().any():  # skip if all-null (Phase 2 placeholder)
+                    validator.expect_column_values_to_be_between(
+                        col,
+                        min_value=rules.get("min"),
+                        max_value=rules.get("max"),
+                    )
 
         if "allowed_values" in rules:
             validator.expect_column_values_to_be_in_set(
@@ -89,9 +89,15 @@ def run_validation(
         if col in feature_names:
             validator.expect_column_values_to_not_be_null(col, mostly=1.0)
 
+    # Columns that are intentionally always-null in the current phase;
+    # skip null-rate validation for them to avoid false failures.
+    _SKIP_NULL_CHECK = {"fire_weather_index", "ndvi"}
+
     mostly = max(0.0, min(1.0, 1.0 - max_null_rate))
     for col in feature_names:
         if col in non_nullable:
+            continue
+        if col in _SKIP_NULL_CHECK:
             continue
         if col in df.columns:
             validator.expect_column_values_to_not_be_null(col, mostly=mostly)

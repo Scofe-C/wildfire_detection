@@ -35,6 +35,7 @@ from typing import Optional
 import pandas as pd
 import requests
 
+from scripts.utils.datetime_utils import coerce_to_utc
 from scripts.utils.rate_limiter import RateLimiter, create_weather_limiter
 from scripts.utils.schema_loader import get_registry
 
@@ -81,22 +82,7 @@ _SCHEMA_COLS = [
 # Datetime helpers
 # ---------------------------------------------------------------------------
 
-def _to_utc_aware(dt) -> datetime:
-    """Coerce any datetime-like (including Airflow Proxy / Pendulum) to a
-    real UTC-aware :class:`datetime.datetime`.
-
-    Strategy: convert to string first — the safest universal path — then
-    let pandas parse it and attach UTC.
-    """
-    if dt is None:
-        raise ValueError("Datetime cannot be None")
-
-    # Unwrap Airflow lazy-proxy objects (present in Airflow ≥2.3 task context)
-    if hasattr(dt, "__wrapped__"):
-        dt = dt.__wrapped__
-
-    ts = pd.to_datetime(str(dt), utc=True)
-    return ts.to_pydatetime()
+# _to_utc_aware removed — use coerce_to_utc from scripts.utils.datetime_utils
 
 
 # ---------------------------------------------------------------------------
@@ -108,7 +94,7 @@ def _write_empty_weather_csv(
 ) -> Path:
     """Write an empty CSV with the canonical schema and return its path."""
     output_dir.mkdir(parents=True, exist_ok=True)
-    execution_date = _to_utc_aware(execution_date)
+    execution_date = coerce_to_utc(execution_date)
 
     date_str = execution_date.strftime("%Y%m%d_%H%M%S")
     out = output_dir / f"weather_empty_{date_str}.csv"
@@ -287,7 +273,7 @@ def _fetch_full_grid_open_meteo(
 
     grid_centroids = _normalise_centroids(grid_centroids, om_config)
     end_dt = execution_date
-    start_dt = _to_utc_aware(end_dt - timedelta(hours=lookback_hours))
+    start_dt = coerce_to_utc(end_dt - timedelta(hours=lookback_hours))
 
     logger.info(
         "Cron fetch: %d cells  %s → %s",
@@ -343,7 +329,7 @@ def _fetch_focal_open_meteo(
         )
 
     end_dt = execution_date
-    start_dt = _to_utc_aware(end_dt - timedelta(hours=lookback_hours))
+    start_dt = coerce_to_utc(end_dt - timedelta(hours=lookback_hours))
 
     logger.info(
         "Watchdog focal Open-Meteo fetch: %d focal cells  %s → %s",
@@ -424,7 +410,7 @@ def _merge_hrrr_with_focal_background(
 
     if not background_centroids.empty:
         end_dt = execution_date
-        start_dt = _to_utc_aware(end_dt - timedelta(hours=lookback_hours))
+        start_dt = coerce_to_utc(end_dt - timedelta(hours=lookback_hours))
         bg_rows, _ = _batch_fetch_open_meteo(
             grid_centroids=background_centroids,
             start_dt=start_dt,
@@ -617,8 +603,8 @@ def _fetch_open_meteo_batch(
     lats: list[str] = batch["latitude"].astype(str).tolist()
     lons: list[str] = batch["longitude"].astype(str).tolist()
 
-    start_date = _to_utc_aware(start_date)
-    end_date = _to_utc_aware(end_date)
+    start_date = coerce_to_utc(start_date)
+    end_date = coerce_to_utc(end_date)
 
     cutoff = datetime.now(timezone.utc) - timedelta(days=5)
     url = historical_url if end_date < cutoff else base_url
@@ -1036,7 +1022,7 @@ def _resolve_output(
         )
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    return out_dir, _to_utc_aware(execution_date)
+    return out_dir, coerce_to_utc(execution_date)
 
 
 def _create_coordinate_batches(

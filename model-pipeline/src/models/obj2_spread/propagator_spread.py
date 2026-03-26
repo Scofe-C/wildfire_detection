@@ -152,10 +152,7 @@ class PropagatorSpread(BaseModel):
             self._prop_config.get("crosswalk_path")
         )
 
-        if model_path.is_dir():
-            config_file = model_path / "propagator_config.json"
-        else:
-            config_file = model_path
+        config_file = model_path / "propagator_config.json" if model_path.is_dir() else model_path
 
         if config_file.exists():
             with open(config_file) as f:

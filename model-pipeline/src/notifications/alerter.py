@@ -4,7 +4,7 @@ import json
 import logging
 import os
 import urllib.request
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -54,7 +54,7 @@ class SlackAlerter:
     def _build(
         self, alert_type: str, title: str, fields: dict[str, str], run_id: str | None = None,
     ) -> dict[str, Any]:
-        ts = datetime.now(timezone.utc).isoformat()
+        ts = datetime.now(UTC).isoformat()
         att_fields = [{"title": k, "value": str(v), "short": True} for k, v in fields.items()]
         if run_id:
             att_fields.insert(0, {"title": "Run ID", "value": run_id, "short": True})

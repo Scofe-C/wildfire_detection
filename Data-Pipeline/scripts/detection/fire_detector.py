@@ -17,42 +17,19 @@ Design principles:
   - Industrial sources are loaded from GCS at call time (updateable without deploy)
 """
 
+from __future__ import annotations
+
 import logging
-import math
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
+from scripts.utils.grid_utils import (
+    geo_to_h3_compat as _latlng_to_cell,
+    grid_disk_compat as _grid_disk,
+    haversine_km as _haversine_km,
+)
+
 logger = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# H3 compat helpers (inline copies to keep this module Cloud Function safe)
-# Avoids importing grid_utils which pulls in heavy geospatial deps)
-# ---------------------------------------------------------------------------
-
-def _latlng_to_cell(lat: float, lon: float, res: int) -> str:
-    """h3-version-safe lat/lon → cell conversion."""
-    import h3
-    if hasattr(h3, "geo_to_h3"):
-        return h3.geo_to_h3(lat, lon, res)
-    return h3.latlng_to_cell(lat, lon, res)
-
-
-def _grid_disk(cell_id: str, k: int) -> set:
-    """h3-version-safe k-ring / grid_disk."""
-    import h3
-    if hasattr(h3, "grid_disk"):
-        return set(h3.grid_disk(cell_id, k))
-    return set(h3.k_ring(cell_id, k))
-
-
-def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    """Great-circle distance in km."""
-    R = 6371.0
-    dlat = math.radians(lat2 - lat1)
-    dlon = math.radians(lon2 - lon1)
-    a = math.sin(dlat / 2) ** 2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2) ** 2
-    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 
 # ---------------------------------------------------------------------------

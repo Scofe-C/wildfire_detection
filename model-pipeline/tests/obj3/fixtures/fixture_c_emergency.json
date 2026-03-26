@@ -1,0 +1,23 @@
+{
+  "run_id": "test-fixture-c",
+  "is_deployable": true,
+  "risk_level": "HIGH",
+  "firms_hotspot_count": 12,
+  "metrics": { "auc_pr": 0.85, "f1": 0.76, "fnr": 0.10 },
+  "xgboost_top_cells": [
+    { "h3_index": "8928308280fffff", "probability": 0.92, "lat": 34.1, "lon": -118.3 },
+    { "h3_index": "8928308281fffff", "probability": 0.88, "lat": 34.2, "lon": -118.4 }
+  ],
+  "cell2fire_geojson": "{\"type\": \"FeatureCollection\", \"features\": []}",
+  "propagator_summary": "Fire spreading NE at 2.3 mph, 150 acres estimated.",
+  "telemetry": {
+    "temperature_max": 41.0,
+    "wind_speed_mph": 35.0,
+    "relative_humidity": 8.0,
+    "soil_moisture": 0.04
+  },
+  "fema_nri_tracts": [
+    { "tract_id": "06037701000", "nri_score": 78.2 }
+  ],
+  "bias_report": { "gate_result": "PASS", "observed_disparity": 0.03 }
+}

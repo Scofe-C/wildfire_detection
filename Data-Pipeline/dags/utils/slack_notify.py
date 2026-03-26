@@ -157,6 +157,32 @@ def sla_on_success_callback(context: Dict[str, Any]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Anomaly alert (moved from wildfire_dag.py for consolidation)
+# ---------------------------------------------------------------------------
+
+def notify_anomaly_alert(anomalies: list) -> None:
+    """Send Slack alert when statistical anomalies are detected in the pipeline.
+
+    Args:
+        anomalies: List of dicts, each with keys 'feature', 'outlier_count',
+                   'z_threshold', and 'season'.
+    """
+    webhook = os.environ.get("SLACK_WEBHOOK_URL", "").strip()
+    if not webhook or not anomalies:
+        return
+
+    msg = (
+        ":warning: *Wildfire Pipeline Anomaly Alert*\n"
+        + "\n".join(
+            f"• `{a['feature']}`: {a['outlier_count']} outliers "
+            f"(z>{a['z_threshold']}, {a['season']})"
+            for a in anomalies
+        )
+    )
+    _post_slack(webhook, msg)
+
+
+# ---------------------------------------------------------------------------
 # Internal helper
 # ---------------------------------------------------------------------------
 

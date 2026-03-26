@@ -1,5 +1,4 @@
 import numpy as np
-import pytest
 
 from src.bias.detector import false_negative_rate, run_bias_gate
 
@@ -43,13 +42,13 @@ class TestBiasGate:
     def test_fair_pass(self, tmp_path):
         y_t, y_p, g = _make_predictions(biased=False)
         report, passed = run_bias_gate(y_t, y_p, g, _write_config(tmp_path))
-        assert passed is True
+        assert passed
         assert report["gate_result"] == "PASS"
 
     def test_biased_fail(self, tmp_path):
         y_t, y_p, g = _make_predictions(biased=True)
         report, passed = run_bias_gate(y_t, y_p, g, _write_config(tmp_path))
-        assert passed is False
+        assert not passed
         assert report["gate_result"] == "FAIL"
 
     def test_report_has_per_group(self, tmp_path):

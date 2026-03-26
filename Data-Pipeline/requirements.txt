@@ -41,6 +41,9 @@ rasterio
 fiona
 rasterstats
 
+# --- NASA Earthdata (MODIS NDVI download via earthaccess) ---
+earthaccess>=0.9
+
 # --- HTTP / config ---
 requests
 pyyaml
@@ -67,7 +70,7 @@ scikit-learn
 shap>=0.45,<0.50
 
 # --- LLM Report Generation ---
-google-genai
+google-genai              # Gemini LLM for pipeline report generation (Phase 2)
 fastapi
 uvicorn[standard]
 
@@ -78,4 +81,4 @@ pytest-mock
 
 # --- Code quality ---
 ruff
-# hypothesis       # property-based testing
+hypothesis        # property-based testing (used in test_fusion_properties.py)

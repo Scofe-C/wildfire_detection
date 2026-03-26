@@ -2,8 +2,10 @@ import numpy as np
 import pytest
 
 from src.validation.metrics import (
-    compute_all_metrics, compute_auc_pr, compute_confusion_matrix,
-    compute_f1, compute_fnr,
+    compute_all_metrics,
+    compute_auc_pr,
+    compute_confusion_matrix,
+    compute_fnr,
 )
 
 

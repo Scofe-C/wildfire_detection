@@ -46,15 +46,22 @@ from airflow.operators.bash import BashOperator
 from airflow.utils.dates import days_ago
 from airflow.utils.task_group import TaskGroup
 
+from dags.utils.slack_notify import (
+    notify_slack,
+    sla_on_failure_callback,
+    sla_on_success_callback,
+    notify_anomaly_alert,
+)
+
 # ---------------------------------------------------------------------------
 # DAG-level configuration
 # ---------------------------------------------------------------------------
 DAG_ID = "wildfire_data_pipeline"
 SCHEDULE_INTERVAL = "0 */6 * * *"  # Fallback cron; watchdog_sensor_dag overrides
 
-# Resolution tiers (Improvement 1a + watchdog escalation):
-#   64 km (H3 res 2) — coarse default scan, ~200 cells CA+TX
-#   22 km (H3 res 5) — fire-confirmed detailed scan, ~800-1000 cells CA
+# Resolution tiers (watchdog escalation):
+#   quiet mode:  64 km (H3 res 2) — coarse default scan, ~200 cells CA+TX
+#   fire mode:   22 km (H3 res 5) — fire-confirmed detailed scan, ~800-1000 cells CA
 DEFAULT_RESOLUTION_KM = 64  # Watchdog escalates to 22 on confirmed fire
 
 # Region definitions — mirrors schema_config.yaml geographic_scope
@@ -76,6 +83,36 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 logger = logging.getLogger(__name__)
 
+
+# ---------------------------------------------------------------------------
+# Parquet compatibility helper
+# ---------------------------------------------------------------------------
+
+def _cast_parquet_compatible(df: "pd.DataFrame") -> "pd.DataFrame":
+    """Cast columns to types that older parquet-mr / Groovy RowMaterializer can read.
+
+    pyarrow writes int8 and int64 logical types that pre-1.12 parquet-mr
+    does not recognise, causing ExceptionInInitializerError on the Java side.
+    Casting to float64 / int32 and writing with version="1.0" keeps the data
+    intact while using only encodings the Groovy loader understands.
+    """
+    import pandas as pd
+
+    df = df.copy()
+    safe_casts = {
+        "fuel_model_fbfm40":            "float64",  # was int64 from static
+        "vegetation_type":              "float64",  # was int64 from static
+        "active_fire_count":            "int32",
+        "max_confidence":               "int32",
+        "fire_detected_binary":         "int32",
+        "data_quality_flag":            "int32",    # was int8 — parquet-mr rejects INT8
+        "days_since_last_precipitation":"float64",  # was int16 from weather
+    }
+    for col, dtype in safe_casts.items():
+        if col in df.columns:
+            df[col] = df[col].astype(dtype, errors="ignore")
+    return df
+
 # ---------------------------------------------------------------------------
 # Default DAG arguments
 # ---------------------------------------------------------------------------
@@ -89,6 +126,8 @@ default_args = {
     "retry_exponential_backoff": True,
     "max_retry_delay": timedelta(minutes=30),
     "execution_timeout": timedelta(hours=1),
+    "on_failure_callback": sla_on_failure_callback,
+    "on_success_callback": sla_on_success_callback,
 }
 
 # ---------------------------------------------------------------------------
@@ -154,7 +193,7 @@ def task_ingest_firms(region: str, **context):
 
 def task_ingest_weather(region: str, **context):
     from scripts.ingestion.ingest_weather import fetch_weather_data
-    from scripts.utils.grid_utils import generate_grid_for_bbox
+    from scripts.utils.grid_utils import generate_full_grid
 
     execution_date = context["execution_date"]
     params = context["params"]
@@ -169,8 +208,11 @@ def task_ingest_weather(region: str, **context):
     if resolution_km is None:
         raise ValueError("resolution_km is missing from DAG params.")
 
-    bbox = REGIONS[region]["bbox"]
-    grid = generate_grid_for_bbox(bbox, resolution_km)
+    # Use generate_full_grid filtered to this region so grid_ids exactly match
+    # the master grid used in fuse_features. generate_grid_for_bbox uses a
+    # different bbox/buffer and produces different H3 cell IDs (CA: 32 vs 23).
+    full_grid = generate_full_grid(resolution_km)
+    grid = full_grid[full_grid["region"] == region].copy()
     grid_centroids = grid[["grid_id", "latitude", "longitude"]]
 
     # --- THE FIX: Passing them into the function call ---
@@ -268,7 +310,9 @@ def task_fuse_features(**context):
             df["region"] = region
             firms_dfs.append(df)
         if weather_path:
-            weather_dfs.append(pd.read_parquet(weather_path))
+            df = pd.read_parquet(weather_path)
+            df["region"] = region
+            weather_dfs.append(df)
 
     firms_df   = pd.concat(firms_dfs,   ignore_index=True) if firms_dfs   else pd.DataFrame()
     weather_df = pd.concat(weather_dfs, ignore_index=True) if weather_dfs else pd.DataFrame()
@@ -294,17 +338,36 @@ def task_fuse_features(**context):
         except Exception as e:
             logger.warning(f"Focal grid generation failed: {e}")
 
+    # --- Forward-fill: load previous window's fused output (Item 5) ---
+    prev_fused_path = str(PROCESSED_DIR / "fused" / "fused_features_previous.parquet")
+
     fused = fuse_features(
         firms_features=firms_df,
         weather_features=weather_df,
         static_features=static_df,
         execution_date=pd.Timestamp(str(execution_date)),
         resolution_km=resolution_km,
+        previous_fused_path=prev_fused_path,
     )
+
+    # --- Circuit breaker: fail loudly on >80% weather nulls (Item 6) ---
+    from scripts.fusion.fuse_features import check_weather_circuit_breaker
+    from airflow.exceptions import AirflowFailException
+    try:
+        check_weather_circuit_breaker(fused, threshold=0.80)
+    except ValueError as exc:
+        raise AirflowFailException(str(exc)) from exc
 
     output_path = PROCESSED_DIR / "fused" / "fused_features_latest.parquet"
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    fused.to_parquet(output_path, index=False)
+
+    # Rotate _latest → _previous before overwriting (Item 5)
+    if output_path.exists():
+        import shutil
+        shutil.copy2(str(output_path), prev_fused_path)
+
+    fused = _cast_parquet_compatible(fused)
+    fused.to_parquet(output_path, index=False, version="1.0")
     context["ti"].xcom_push(key="fused_features_path", value=str(output_path))
 
     # --- ML-ready variant with temporal lag (Plan §Problem 2) ---
@@ -352,7 +415,8 @@ def task_fuse_features(**context):
         logger.warning(f"Priority resolution skipped: {e}")
 
     ml_output_path = PROCESSED_DIR / "fused" / "fused_features_ml_latest.parquet"
-    ml_fused.to_parquet(ml_output_path, index=False)
+    ml_fused = _cast_parquet_compatible(ml_fused)
+    ml_fused.to_parquet(ml_output_path, index=False, version="1.0")
     context["ti"].xcom_push(key="fused_ml_features_path", value=str(ml_output_path))
 
     region_counts = fused["region"].value_counts().to_dict() if "region" in fused.columns else {}
@@ -414,30 +478,14 @@ def task_detect_anomalies(**context):
             f"Anomalies in {len(anomalies_found)} features: "
             + ", ".join(a["feature"] for a in anomalies_found)
         )
-        _send_anomaly_alert(anomalies_found)
+        notify_anomaly_alert(anomalies_found)
     else:
         logger.info("No anomalies detected")
 
     context["ti"].xcom_push(key="anomalies", value=anomalies_found)
 
 
-def _send_anomaly_alert(anomalies: list[dict]):
-    webhook_url = os.environ.get("SLACK_WEBHOOK_URL")
-    if not webhook_url:
-        return
-    try:
-        import requests
-        msg = (
-            ":warning: *Wildfire Pipeline Anomaly Alert*\n"
-            + "\n".join(
-                f"• `{a['feature']}`: {a['outlier_count']} outliers "
-                f"(z>{a['z_threshold']}, {a['season']})"
-                for a in anomalies
-            )
-        )
-        requests.post(webhook_url, json={"text": msg}, timeout=10)
-    except Exception as e:
-        logger.warning(f"Slack alert failed: {e}")
+# _send_anomaly_alert removed — use notify_anomaly_alert from dags.utils.slack_notify
 
 
 def task_export_to_parquet(**context):
@@ -471,7 +519,8 @@ def task_export_to_parquet(**context):
             )
             output_dir.mkdir(parents=True, exist_ok=True)
             output_path = output_dir / f"features_{date_str}.parquet"
-            region_df.to_parquet(output_path, index=False)
+            region_df = _cast_parquet_compatible(region_df)
+            region_df.to_parquet(output_path, index=False, version="1.0")
             exported_paths.append(str(output_path))
             logger.info(f"Exported {region}: {len(region_df)} rows → {output_path}")
     else:
@@ -480,7 +529,8 @@ def task_export_to_parquet(**context):
         output_dir = PROCESSED_DIR / f"{resolution_km}km" / f"date={date_str}"
         output_dir.mkdir(parents=True, exist_ok=True)
         output_path = output_dir / "features.parquet"
-        fused_df.to_parquet(output_path, index=False)
+        fused_df = _cast_parquet_compatible(fused_df)
+        fused_df.to_parquet(output_path, index=False, version="1.0")
         exported_paths.append(str(output_path))
 
     export_root = str(PROCESSED_DIR / f"{resolution_km}km")
@@ -528,6 +578,7 @@ def task_export_spatial(**context):
 with DAG(
     dag_id=DAG_ID,
     default_args=default_args,
+    on_failure_callback=notify_slack,
     description="Wildfire data pipeline with regional sharding (CA + TX parallel TaskGroups)",
     schedule_interval=SCHEDULE_INTERVAL,
     start_date=days_ago(1),
@@ -662,26 +713,49 @@ with DAG(
 
             echo "=== DVC version step ==="
 
-            # DVC needs a git repo context
-            if [ ! -d .git ] || [ -z "$(ls -A .git)" ]; then
+            # Git setup
+            if [ ! -d .git ]; then
                 git init
-                git config user.email "airflow@wildfire.local"
-                git config user.name "Airflow"
             fi
+            git config user.email "airflow@wildfire.local"
+            git config user.name  "Airflow"
 
+            # DVC remote check
             if ! dvc remote list | grep -q .; then
-                echo "ERROR: No DVC remote configured."
+                echo "ERROR: No DVC remote configured. Run: dvc remote add -d myremote gs://<bucket>/dvc"
                 exit 1
             fi
 
+            # GCS credentials check
+            if [ -z "${GOOGLE_APPLICATION_CREDENTIALS:-}" ] && [ -z "${GOOGLE_CLOUD_PROJECT:-}" ]; then
+                echo "WARNING: No GCS credentials found — push to remote may fail."
+            fi
+
+            # DVC add — stage the data files
             echo "Tracking data/processed/fused ..."
             dvc add data/processed/fused -f
 
             echo "Tracking data/processed/{{ params.resolution_km }}km ..."
             dvc add data/processed/{{ params.resolution_km }}km -f
 
+            # Git commit the updated .dvc files
+            # Without this step DVC has no version history — every run
+            # overwrites the same .dvc file with no record of prior versions.
+            git add data/processed/fused.dvc \
+                    "data/processed/{{ params.resolution_km }}km.dvc" \
+                    .gitignore 2>/dev/null || true
+
+            if git diff --cached --quiet; then
+                echo "No changes to .dvc files — nothing to commit."
+            else
+                git commit -m "chore(dvc): update {{ params.resolution_km }}km + fused [{{ execution_date }}]"
+                echo "Git commit created."
+            fi
+
+            # DVC push to GCS
             echo "Pushing to GCS remote ..."
-            dvc push data/processed/fused.dvc data/processed/{{ params.resolution_km }}km.dvc
+            dvc push data/processed/fused.dvc "data/processed/{{ params.resolution_km }}km.dvc"
+            echo "DVC push complete."
 
             echo "=== DVC version step complete ==="
         """,

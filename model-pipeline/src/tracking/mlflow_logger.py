@@ -24,7 +24,7 @@ class MLflowLogger:
         config = _load_tracking_config()
         self._mlflow.set_tracking_uri(tracking_uri or config["tracking_uri"])
         self._mlflow.set_experiment(experiment_name or config["experiment_name"])
-        self._run = None
+        self._run: Any = None  # mlflow.ActiveRun — untyped, annotated as Any
 
     def start_run(self, run_name: str | None = None, tags: dict[str, str] | None = None) -> str:
         self._run = self._mlflow.start_run(run_name=run_name, tags=tags)

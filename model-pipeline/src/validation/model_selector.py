@@ -82,6 +82,7 @@ def save_validation_report(result: ValidationResult, output_dir: str | Path) -> 
 
 def main() -> None:
     import argparse
+
     import pandas as pd
 
     parser = argparse.ArgumentParser()

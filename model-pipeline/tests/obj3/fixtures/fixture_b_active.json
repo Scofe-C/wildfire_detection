@@ -1,0 +1,22 @@
+{
+  "run_id": "test-fixture-b",
+  "is_deployable": true,
+  "risk_level": "HIGH",
+  "firms_hotspot_count": 0,
+  "metrics": { "auc_pr": 0.78, "f1": 0.70, "fnr": 0.15 },
+  "xgboost_top_cells": [
+    { "h3_index": "8928308280fffff", "probability": 0.81, "lat": 34.1, "lon": -118.3 }
+  ],
+  "cell2fire_geojson": null,
+  "propagator_summary": null,
+  "telemetry": {
+    "temperature_max": 38.0,
+    "wind_speed_mph": 25.0,
+    "relative_humidity": 15.0,
+    "soil_moisture": 0.08
+  },
+  "fema_nri_tracts": [
+    { "tract_id": "06037701000", "nri_score": 42.5 }
+  ],
+  "bias_report": { "gate_result": "PASS", "observed_disparity": 0.04 }
+}

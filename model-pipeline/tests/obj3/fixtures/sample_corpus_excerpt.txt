@@ -1,0 +1,11 @@
+--- NIMS Doctrine Excerpt ---
+The National Incident Management System (NIMS) provides a systematic,
+proactive approach to guide all levels of government, nongovernmental
+organizations, and the private sector to work together to prevent,
+protect against, mitigate, respond to, and recover from the effects
+of incidents.
+
+--- ICS Forms Reference ---
+ICS-209: Incident Status Summary. Used for reporting incident status.
+ICS-204: Assignment List. Used for division/group assignment.
+ICS-201: Incident Briefing. First document completed at the start of an incident.

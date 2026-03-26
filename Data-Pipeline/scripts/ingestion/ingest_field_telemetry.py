@@ -177,5 +177,10 @@ def batch_field_telemetry_to_dataframe(
             logger.warning(f"Skipping invalid telemetry payload #{i}: {e}")
 
     if dfs:
-        return pd.concat(dfs, ignore_index=True)
+        dfs = [d for d in dfs if not d.empty]
+        if dfs:
+            import warnings
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", FutureWarning)
+                return pd.concat(dfs, ignore_index=True)
     return pd.DataFrame()

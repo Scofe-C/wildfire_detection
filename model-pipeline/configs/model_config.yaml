@@ -1,37 +1,72 @@
+version: "1.0.0"
+
 paths:
-  backfill_dir: ../data-pipeline/data/processed/backfill
-  models_dir: models/ignition
-  validation_dir: reports/validation
-  bias_dir: reports/bias_gate
-  visualizations_dir: reports/visualizations
-  fema_nri_cache: data/static/fema_nri
+  backfill_dir: "../data-pipeline/data/processed/backfill"
+  models_dir: "models/ignition"
+  reports_dir: "reports"
+  validation_dir: "reports/validation"
+  bias_dir: "reports/bias_gate"
+  visualizations_dir: "reports/visualizations"
+  fema_nri_cache: "data/static/fema_nri"
+
+gcs:
+  bucket: "wildfire-model-pipeline"
+  models_prefix: "wildfire-models"
+  reports_prefix: "wildfire-reports"
+  bias_reports_prefix: "wildfire-bias-reports"
+
 validation:
   auc_pr_threshold: 0.75
+  f1_threshold: 0.5
   decision_threshold: 0.5
+  max_inference_latency_ms: 5000
+
 bias_gate:
+  metric: "false_negative_rate"
+  sensitive_feature: "nri_vulnerability_quartile"
   max_disparity: 0.05
-shap:
-  min_soil_moisture_importance: 0.1
+  vulnerability_slices: ["Low", "Medium", "High", "Very High"]
+  mitigation_strategy:
+    primary: "class_weight"
+    secondary: "spatial_smote"
+    tertiary: "correlation_remover"
+
 tracking:
   mlflow:
-    tracking_uri: sqlite:///mlruns.db
-    experiment_name: wildfire-model-pipeline
+    tracking_uri: "sqlite:///mlruns.db"
+    experiment_name: "wildfire-model-pipeline"
+    artifact_location: "mlruns/artifacts"
   vertex_ai:
-    project: ${GOOGLE_CLOUD_PROJECT}
-    location: us-central1
-    experiment_name: wildfire-model-pipeline
+    project_id: "${GCP_PROJECT_ID}"
+    location: "us-central1"
+    experiment_name: "wildfire-model-pipeline"
+
+shap:
+  enabled: true
+  min_soil_moisture_importance: 0.10
+  n_background_samples: 100
+
 notifications:
-  slack:
-    webhook_env_var: SLACK_WEBHOOK_URL
-    enabled: true
+  enabled: true
+  slack_webhook_secret: "wildfire-slack-webhook"
+  alert_on:
+    - "bias_gate_failure"
+    - "validation_failure"
+    - "pipeline_error"
+    - "rollback"
+    - "shap_drift"
+
+# ---------------------------------------------------------------------------
+# OBJ-2 - Cell2Fire fire spread simulation
+# ---------------------------------------------------------------------------
 obj2:
   cell2fire:
     binary_path: /home/ibrahim/C2F-W/Cell2Fire/Cell2Fire
     raster_inputs:
-      dem: /mnt/c/Users/mohdi/Downloads/wildfire_detection/model-pipeline/data/static/dem
-      fuel: /mnt/c/Users/mohdi/Downloads/wildfire_detection/model-pipeline/data/static/landfire/fbfm40
-      canopy_cover: /mnt/c/Users/mohdi/Downloads/wildfire_detection/model-pipeline/data/static/landfire/cc
-      canopy_height: data/static/landfire/ch
+      dem: "data/static/dem"                   # USGS 3DEP elevation
+      fuel: "data/static/landfire/fbfm40"      # LANDFIRE FBFM40 fuel model
+      canopy_cover: "data/static/landfire/cc"  # LANDFIRE canopy cover %
+      canopy_height: "data/static/landfire/ch" # LANDFIRE canopy height
     default_params:
       n_simulations: 100
       fire_period_length_hr: 1.0
@@ -40,22 +75,23 @@ obj2:
       cell_size_m: 30
     sweep_space:
       n_simulations:
-      - 50
-      - 100
-      - 200
-      - 500
+        - 50
+        - 100
+        - 200
+        - 500
       fire_period_length_hr:
-      - 0.5
-      - 1.0
-      - 2.0
-      - 4.0
+        - 0.5
+        - 1.0
+        - 2.0
+        - 4.0
       grid_resolution_m:
-      - 30
-      - 60
-      - 90
+        - 30
+        - 60
+        - 90
     validation:
       perimeter_source: cal_fire_frap
-      primary_metric: dice_coefficient
+      primary_metric: buffered_iou
+      minimum_buffered_iou: 0.35
       minimum_dice: 0.5
     output:
       format: geojson
@@ -63,8 +99,7 @@ obj2:
   propagator:
     enabled: true
     crosswalk_path: data/crosswalks/fbfm40_to_propagator.json
-    disclaimer: FOR DEMONSTRATION PURPOSES ONLY — Mediterranean fuel model, not calibrated
-      for US vegetation types.
+    disclaimer: "FOR DEMONSTRATION PURPOSES ONLY - Mediterranean fuel model, not calibrated for US vegetation types."
     default_params:
       time_resolution_hr: 1.0
-      wind_reduction_factor: 0.4
+      wind_reduction_factor: 0.4  # canopy wind reduction

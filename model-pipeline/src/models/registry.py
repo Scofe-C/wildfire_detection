@@ -4,7 +4,7 @@ import json
 import logging
 import shutil
 import subprocess
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -48,7 +48,7 @@ class ModelRegistry:
             raise RegistryError(f"Artifact not found: {src}")
 
         if metadata is not None:
-            metadata["saved_at"] = datetime.now(timezone.utc).isoformat()
+            metadata["saved_at"] = datetime.now(UTC).isoformat()
             metadata["version"] = version
             with open(version_dir / "metadata.json", "w") as f:
                 json.dump(metadata, f, indent=2, default=str)
@@ -67,7 +67,7 @@ class ModelRegistry:
                 capture_output=True, text=True, check=True,
             )
         except FileNotFoundError:
-            raise RegistryError("gsutil not found — install Google Cloud SDK")
+            raise RegistryError("gsutil not found — install Google Cloud SDK") from None
         except subprocess.CalledProcessError as e:
             raise RegistryError(f"GCS push failed: {e.stderr}") from e
         logger.info("Pushed to GCS: %s", gcs_uri)

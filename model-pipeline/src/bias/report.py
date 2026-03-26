@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -18,7 +18,7 @@ def generate_bias_report(
 ) -> dict[str, Any]:
     report: dict[str, Any] = {
         "report_version": "1.0.0",
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "run_id": run_id,
         "model_version": model_version,
         "gate_result": bias_result["gate_result"],
