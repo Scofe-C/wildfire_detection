@@ -6,10 +6,12 @@ from src.models.obj3_gemini.reporter import (
     ReportResult,
     ValidationResult,
 )
+from src.models.obj3_gemini.state_machine import IncidentTracker
 
 __all__ = [
     "GeminiDisasterReporter",
     "GeneratedReport",
+    "IncidentTracker",
     "ReportResult",
     "ValidationResult",
 ]

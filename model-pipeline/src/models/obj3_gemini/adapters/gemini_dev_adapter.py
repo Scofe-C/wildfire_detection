@@ -74,22 +74,45 @@ class GeminiDevAdapter(LLMAdapter):
         if context_bundle.corpus_text:
             system_instruction += "\n\n--- REFERENCE CORPUS ---\n" + context_bundle.corpus_text
 
-        # Build content string from bundle sections
-        user_parts: list[str] = [context_bundle.ml_block, context_bundle.data_block]
+        # Build content parts — text blocks first, then uploaded files (vision)
+        user_text_parts: list[str] = [context_bundle.ml_block, context_bundle.data_block]
         if context_bundle.human_block:
-            user_parts.append("--- OPERATOR INPUT ---\n" + context_bundle.human_block)
-        user_parts.append(context_bundle.instruction)
-        user_content = "\n\n".join(user_parts)
+            user_text_parts.append("--- OPERATOR INPUT ---\n" + context_bundle.human_block)
+
+        # Inject uploaded files: images as vision Parts, text files inline
+        content_parts: list[Any] = []
+        if context_bundle.uploaded_files:
+            for pf in context_bundle.uploaded_files:
+                if pf.is_image and pf.image_bytes:
+                    # Vision: pass raw bytes as inline_data Part
+                    content_parts.append(
+                        types.Part.from_bytes(
+                            data=pf.image_bytes,
+                            mime_type=pf.mime_type,
+                        )
+                    )
+                    user_text_parts.append(f"[Image above: {pf.filename}]")
+                else:
+                    # Text/PDF: inject content inline
+                    header = f"=== Uploaded File: {pf.filename} ==="
+                    user_text_parts.append(header + "\n" + pf.text_content)
+
+        user_text_parts.append(context_bundle.instruction)
+        # Prepend the combined text as the first content part
+        content_parts.insert(0, "\n\n".join(user_text_parts))
 
         try:
             response = self._client.models.generate_content(
                 model=self._model_name,
-                contents=user_content,
+                contents=content_parts,
                 config=types.GenerateContentConfig(
                     system_instruction=system_instruction,
                     response_mime_type="application/json",
                     response_json_schema=schema,
                     temperature=0.0,
+                    automatic_function_calling=types.AutomaticFunctionCallingConfig(
+                        disable=True,
+                    ),
                 ),
             )
             raw = response.text

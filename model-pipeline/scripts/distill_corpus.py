@@ -1,9 +1,9 @@
 """
 distill_corpus.py — Corpus Distillation for OBJ-3 RAG Context
 
-Reads extracted JSON chunks from corpus/processed/ and uses the Gemini Dev
-API to compress each chunk's ``content`` field into a shorter
-``distilled_content`` field, written back in-place.
+Reads extracted JSON chunks from corpus/processed/ and uses an LLM backend
+(Ollama local or Gemini Dev API) to compress each chunk's ``content`` field
+into a shorter ``distilled_content`` field, written back in-place.
 
 The distilled content is what gets injected into the LLM context window,
 reducing token usage while preserving the most decision-relevant information.
@@ -14,8 +14,11 @@ Locked parameters (from Session 1):
   - Output: ``distilled_content`` field added in-place to each JSON file
 
 Usage:
-    # Distill all chunks
+    # Distill all chunks using local Ollama (default)
     python scripts/distill_corpus.py
+
+    # Distill using Gemini Dev API
+    python scripts/distill_corpus.py --backend gemini
 
     # Distill a single file
     python scripts/distill_corpus.py --file corpus/processed/shared/irpg_risk_management.json
@@ -27,7 +30,7 @@ Usage:
     python scripts/distill_corpus.py --force
 
 Dependencies:
-    google-genai, python-dotenv
+    ollama (default) or google-genai + python-dotenv (--backend gemini)
 """
 
 from __future__ import annotations
@@ -39,10 +42,6 @@ import os
 import sys
 import time
 from pathlib import Path
-
-from dotenv import load_dotenv
-
-load_dotenv()
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -60,9 +59,19 @@ logger = logging.getLogger("distill_corpus")
 # ---------------------------------------------------------------------------
 
 TARGET_CHARS = 8_000
+MIN_OUTPUT_CHARS = 4_000  # Reject outputs shorter than this and retry
 GEMINI_MODEL = "gemini-2.5-flash"
-# Free tier: 10 RPM, so pace at ~7s between calls to stay safe
-RATE_LIMIT_DELAY = 7.0
+OLLAMA_MODEL = "qwen3:8b"
+OLLAMA_BASE_URL = "http://localhost:11434"
+# Gemini free tier: 10 RPM, so pace at ~7s between calls to stay safe.
+# Ollama is local — 1s delay is enough to avoid overwhelming the GPU.
+RATE_LIMIT_DELAY_GEMINI = 7.0
+RATE_LIMIT_DELAY_OLLAMA = 1.0
+
+# Max input chars per LLM call — Qwen3:8b has ~32K token context (~100K chars).
+# Leave room for prompt + output by capping input at 60K chars per segment.
+OLLAMA_MAX_INPUT_CHARS = 60_000
+GEMINI_MAX_INPUT_CHARS = 800_000  # Gemini 2.5 Flash has 1M token context
 
 DISTILL_PROMPT = """\
 You are a technical editor for a wildfire emergency management system.
@@ -70,32 +79,70 @@ Your task is to distill the following reference document into a shorter
 version that preserves ALL decision-relevant information for automated
 disaster report generation.
 
-RULES:
-1. Target length: {target_chars} characters (hard limit: {hard_limit} characters).
-2. Preserve ALL: numerical thresholds, definitions, field names, ICS form
-   references, risk categories, resource types, and procedural steps.
-3. Remove: redundant examples, verbose introductions, repeated context,
-   formatting artifacts, and non-actionable background.
-4. Keep the original structure (headings, lists) where it aids comprehension.
-5. Do NOT add commentary, opinions, or information not in the source.
-6. Output ONLY the distilled text — no preamble, no markdown fences.
+CRITICAL LENGTH REQUIREMENTS:
+- Your output MUST be between {min_chars} and {hard_limit} characters.
+- Target: ~{target_chars} characters.
+- If the source is dense with data, KEEP MORE rather than less.
+- An output under {min_chars} characters is TOO SHORT and will be rejected.
+
+WHAT TO PRESERVE (mandatory — do NOT omit any of these):
+- ALL numerical thresholds, scores, formulas, and ranges
+- ALL definitions and field names
+- ALL ICS form references and resource type codes
+- ALL risk categories, severity levels, and classification criteria
+- ALL procedural steps and decision criteria
+- ALL table data (preserve as structured lists)
+
+WHAT TO REMOVE:
+- Redundant examples that repeat the same pattern
+- Verbose introductions and background context
+- Repeated headers and formatting artifacts
+- Non-actionable disclaimers and boilerplate
+
+FORMATTING:
+- Keep headings and lists for structure
+- Output ONLY the distilled text
+- No preamble like "Here is the distilled version"
+- No markdown code fences wrapping the output
 
 SOURCE DOCUMENT ({source_name}, {char_count} chars):
 ---
 {content}
 ---
 
-Distill this to ~{target_chars} characters while preserving all
-decision-relevant information.
+Distill this to ~{target_chars} characters. Output MUST be at least {min_chars} characters.
+"""
+
+MERGE_PROMPT = """\
+You are a technical editor. Below are {segment_count} distilled segments
+from the same reference document "{source_name}". Merge them into a single
+coherent distilled document.
+
+RULES:
+- Target length: ~{target_chars} characters (minimum {min_chars}).
+- Remove duplicates across segments but preserve ALL unique information.
+- Keep the structure (headings, lists).
+- Output ONLY the merged text — no preamble, no code fences.
+
+SEGMENTS:
+---
+{segments}
+---
+
+Merge into a single document of ~{target_chars} characters.
 """
 
 
 # ---------------------------------------------------------------------------
-# Gemini client
+# LLM clients
 # ---------------------------------------------------------------------------
 
 def get_gemini_client():
     """Lazy-initialise and return a google.genai.Client."""
+    from dotenv import load_dotenv
+
+    load_dotenv()
+
     try:
         from google import genai
     except ImportError:
@@ -116,30 +163,209 @@ def get_gemini_client():
     return genai.Client(api_key=api_key)
 
 
-def distill_chunk(client, content: str, source_name: str) -> str:
-    """Send content to Gemini and return the distilled text."""
-    from google.genai import types
+def get_ollama_client():
+    """Lazy-initialise and return an ollama.Client."""
+    try:
+        import ollama as ollama_lib
+    except ImportError:
+        logger.error(
+            "ollama package not installed. "
+            "Install with: pip install ollama"
+        )
+        sys.exit(1)
 
-    prompt = DISTILL_PROMPT.format(
-        target_chars=TARGET_CHARS,
-        hard_limit=TARGET_CHARS + 2000,  # Allow some overflow
+    client = ollama_lib.Client(host=OLLAMA_BASE_URL)
+    # Verify the model is available
+    try:
+        model_list = client.list()
+        available = [m.model for m in model_list.models]
+        if not any(OLLAMA_MODEL in name for name in available):
+            logger.error(
+                "Model %s not found in Ollama. Available: %s. "
+                "Pull with: ollama pull %s",
+                OLLAMA_MODEL, available, OLLAMA_MODEL,
+            )
+            sys.exit(1)
+    except Exception as exc:
+        logger.error("Cannot connect to Ollama at %s: %s", OLLAMA_BASE_URL, exc)
+        sys.exit(1)
+
+    return client
+
+
+def _build_distill_prompt(content: str, source_name: str, target: int = TARGET_CHARS) -> str:
+    """Build the distillation prompt for any backend."""
+    min_chars = max(target // 2, MIN_OUTPUT_CHARS)
+    return DISTILL_PROMPT.format(
+        target_chars=target,
+        min_chars=min_chars,
+        hard_limit=target + 2000,
         source_name=source_name,
         char_count=len(content),
         content=content,
     )
+
+
+def _build_merge_prompt(segments: list[str], source_name: str) -> str:
+    """Build the merge prompt for combining distilled segments."""
+    joined = "\n\n---SEGMENT BREAK---\n\n".join(segments)
+    min_chars = max(TARGET_CHARS // 2, MIN_OUTPUT_CHARS)
+    return MERGE_PROMPT.format(
+        segment_count=len(segments),
+        source_name=source_name,
+        target_chars=TARGET_CHARS,
+        min_chars=min_chars,
+        segments=joined,
+    )
+
+
+def _split_into_segments(content: str, max_chars: int) -> list[str]:
+    """Split content into segments that fit within the LLM context window.
+
+    Splits on paragraph boundaries (double newline) to avoid cutting mid-sentence.
+    """
+    if len(content) <= max_chars:
+        return [content]
+
+    paragraphs = content.split("\n\n")
+    segments: list[str] = []
+    current: list[str] = []
+    current_len = 0
+
+    for para in paragraphs:
+        para_len = len(para) + 2  # +2 for the \n\n separator
+        if current_len + para_len > max_chars and current:
+            segments.append("\n\n".join(current))
+            current = [para]
+            current_len = para_len
+        else:
+            current.append(para)
+            current_len += para_len
+
+    if current:
+        segments.append("\n\n".join(current))
+
+    return segments
+
+
+def _call_ollama(client, system: str, user: str) -> str:
+    """Single Ollama chat call."""
+    response = client.chat(
+        model=OLLAMA_MODEL,
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        options={"temperature": 0.0, "num_ctx": 32768},
+    )
+    result = response.message.content.strip()
+    if not result:
+        raise RuntimeError("Ollama returned empty response")
+    # Strip thinking tags if present (Qwen3 sometimes outputs <think>...</think>)
+    import re
+    result = re.sub(r"<think>.*?</think>", "", result, flags=re.DOTALL).strip()
+    return result
+
+
+def _call_gemini(client, prompt: str) -> str:
+    """Single Gemini generate call."""
+    from google.genai import types
 
     response = client.models.generate_content(
         model=GEMINI_MODEL,
         contents=prompt,
         config=types.GenerateContentConfig(
             temperature=0.0,
+            automatic_function_calling=types.AutomaticFunctionCallingConfig(
+                disable=True,
+            ),
         ),
     )
-
     result = response.text.strip()
     if not result:
         raise RuntimeError("Gemini returned empty response")
     return result
+
+
+def distill_chunk_gemini(client, content: str, source_name: str) -> str:
+    """Send content to Gemini and return the distilled text.
+
+    Gemini has a large context window, so chunking is rarely needed.
+    """
+    segments = _split_into_segments(content, GEMINI_MAX_INPUT_CHARS)
+
+    if len(segments) == 1:
+        prompt = _build_distill_prompt(content, source_name)
+        return _call_gemini(client, prompt)
+
+    # Multi-segment: distill each, then merge
+    distilled_parts = []
+    per_segment_target = max(TARGET_CHARS, TARGET_CHARS * 2 // len(segments))
+    for i, seg in enumerate(segments):
+        logger.info("    Gemini segment %d/%d (%d chars)...", i + 1, len(segments), len(seg))
+        prompt = _build_distill_prompt(seg, f"{source_name} [part {i+1}/{len(segments)}]", per_segment_target)
+        distilled_parts.append(_call_gemini(client, prompt))
+
+    merge_prompt = _build_merge_prompt(distilled_parts, source_name)
+    return _call_gemini(client, merge_prompt)
+
+
+def distill_chunk_ollama(client, content: str, source_name: str) -> str:
+    """Send content to local Ollama and return the distilled text.
+
+    For documents exceeding OLLAMA_MAX_INPUT_CHARS, splits into segments,
+    distills each one, then merges into a final distilled document.
+    """
+    system_msg = (
+        "You are a technical editor for wildfire emergency management. "
+        "Output ONLY the distilled text — no preamble, no thinking, "
+        "no markdown fences, no commentary. Be thorough and detailed."
+    )
+
+    segments = _split_into_segments(content, OLLAMA_MAX_INPUT_CHARS)
+
+    if len(segments) == 1:
+        prompt = _build_distill_prompt(content, source_name)
+        result = _call_ollama(client, system_msg, prompt)
+        # Retry once if output is too short
+        if len(result) < MIN_OUTPUT_CHARS:
+            logger.warning(
+                "    Output too short (%d chars < %d min), retrying with emphasis...",
+                len(result), MIN_OUTPUT_CHARS,
+            )
+            prompt += (
+                f"\n\nWARNING: Your previous attempt was only {len(result)} characters. "
+                f"That is far too short. You MUST output at least {MIN_OUTPUT_CHARS} characters. "
+                "Include ALL data tables, thresholds, and definitions."
+            )
+            result = _call_ollama(client, system_msg, prompt)
+        return result
+
+    # Multi-segment: distill each segment, then merge
+    logger.info("    Large document — splitting into %d segments", len(segments))
+    distilled_parts: list[str] = []
+    # Each segment gets a proportional target so the merge stays near TARGET_CHARS
+    per_segment_target = max(TARGET_CHARS, (TARGET_CHARS * 2) // len(segments))
+
+    for i, seg in enumerate(segments):
+        logger.info(
+            "    Segment %d/%d (%d chars → ~%d target)...",
+            i + 1, len(segments), len(seg), per_segment_target,
+        )
+        prompt = _build_distill_prompt(
+            seg,
+            f"{source_name} [part {i+1}/{len(segments)}]",
+            per_segment_target,
+        )
+        part = _call_ollama(client, system_msg, prompt)
+        distilled_parts.append(part)
+        time.sleep(RATE_LIMIT_DELAY_OLLAMA)
+
+    # Merge step
+    logger.info("    Merging %d distilled segments...", len(distilled_parts))
+    merge_prompt = _build_merge_prompt(distilled_parts, source_name)
+    merged = _call_ollama(client, system_msg, merge_prompt)
+    return merged
 
 
 # ---------------------------------------------------------------------------
@@ -155,6 +381,7 @@ def process_chunk(
     client,
     chunk_path: Path,
     *,
+    backend: str = "ollama",
     dry_run: bool = False,
     force: bool = False,
 ) -> dict:
@@ -201,15 +428,31 @@ def process_chunk(
             "target": TARGET_CHARS,
         }
 
-    # Call Gemini
+    # Call LLM backend
     logger.info(
-        "Distilling %s (%d chars → ~%d target)...",
-        chunk_path.name, original_chars, TARGET_CHARS,
+        "Distilling %s (%d chars → ~%d target) via %s...",
+        chunk_path.name, original_chars, TARGET_CHARS, backend,
     )
 
-    distilled = distill_chunk(client, content, source_name)
+    max_input = OLLAMA_MAX_INPUT_CHARS if backend == "ollama" else GEMINI_MAX_INPUT_CHARS
+    if original_chars > max_input:
+        n_segments = (original_chars // max_input) + 1
+        logger.info(
+            "  Document exceeds %dK context — will split into ~%d segments",
+            max_input // 1000, n_segments,
+        )
+
+    distill_fn = distill_chunk_ollama if backend == "ollama" else distill_chunk_gemini
+    distilled = distill_fn(client, content, source_name)
     distilled_chars = len(distilled)
     ratio = distilled_chars / original_chars
+
+    # Quality gate: warn if suspiciously short
+    if distilled_chars < MIN_OUTPUT_CHARS:
+        logger.warning(
+            "  ⚠ Output is only %d chars (target: %d, min: %d) — may have lost info",
+            distilled_chars, TARGET_CHARS, MIN_OUTPUT_CHARS,
+        )
 
     # Write back in-place
     data["distilled_content"] = distilled
@@ -234,7 +477,16 @@ def process_chunk(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Distill corpus chunks using Gemini Dev API",
+        description="Distill corpus chunks using Ollama (default) or Gemini Dev API",
+    )
+    parser.add_argument(
+        "--backend",
+        choices=["ollama", "gemini", "hybrid"],
+        default="hybrid",
+        help=(
+            "LLM backend: 'hybrid' (default) uses Gemini for large docs > 60K chars, "
+            "Ollama for the rest. 'ollama' or 'gemini' forces one backend for all."
+        ),
     )
     parser.add_argument(
         "--file",
@@ -276,32 +528,67 @@ def main() -> None:
         logger.warning("No JSON files found.")
         sys.exit(0)
 
-    logger.info("Found %d chunk(s) to process", len(chunks))
+    logger.info("Found %d chunk(s) to process (backend=%s)", len(chunks), args.backend)
 
     if args.dry_run:
         logger.info("DRY RUN — no files will be modified")
-        client = None
+        ollama_client = None
+        gemini_client = None
     else:
-        client = get_gemini_client()
+        ollama_client = None
+        gemini_client = None
+        if args.backend in ("ollama", "hybrid"):
+            ollama_client = get_ollama_client()
+        if args.backend in ("gemini", "hybrid"):
+            gemini_client = get_gemini_client()
 
     # Process
     results = []
     distilled_count = 0
+    gemini_calls = 0
+    ollama_calls = 0
+
     for i, chunk_path in enumerate(chunks):
+        # In hybrid mode, pick backend based on content size
+        effective_backend = args.backend
+        if args.backend == "hybrid" and not args.dry_run:
+            with open(chunk_path, encoding="utf-8") as f:
+                peek = json.load(f)
+            content_len = len(peek.get("content", ""))
+            if content_len > OLLAMA_MAX_INPUT_CHARS:
+                effective_backend = "gemini"
+                logger.info(
+                    "  [hybrid] %s (%dK chars) → Gemini (too large for Ollama)",
+                    chunk_path.name, content_len // 1000,
+                )
+            else:
+                effective_backend = "ollama"
+
+        client = gemini_client if effective_backend == "gemini" else ollama_client
+
         result = process_chunk(
-            client, chunk_path, dry_run=args.dry_run, force=args.force,
+            client, chunk_path,
+            backend=effective_backend, dry_run=args.dry_run, force=args.force,
         )
         results.append(result)
 
         if result["status"] == "DISTILLED":
             distilled_count += 1
-            # Rate limit — only after actual API calls
+            if effective_backend == "gemini":
+                gemini_calls += 1
+            else:
+                ollama_calls += 1
+            # Rate limit — longer pause for Gemini free tier
+            rate_delay = (
+                RATE_LIMIT_DELAY_GEMINI if effective_backend == "gemini"
+                else RATE_LIMIT_DELAY_OLLAMA
+            )
             if i < len(chunks) - 1:
                 logger.info(
                     "  Rate limit pause (%.0fs) — %d/%d done",
-                    RATE_LIMIT_DELAY, i + 1, len(chunks),
+                    rate_delay, i + 1, len(chunks),
                 )
-                time.sleep(RATE_LIMIT_DELAY)
+                time.sleep(rate_delay)
 
     # Summary
     print("\n" + "=" * 70)
@@ -333,6 +620,9 @@ def main() -> None:
 
     print(f"\n  Chunks processed: {len(results)}")
     print(f"  API calls made:  {distilled_count}")
+    if args.backend == "hybrid":
+        print(f"    Gemini calls:  {gemini_calls} (free tier: 500/day)")
+        print(f"    Ollama calls:  {ollama_calls} (local, unlimited)")
     if total_original > 0 and not args.dry_run:
         print(f"  Total original:  {total_original:,} chars")
         print(f"  Total distilled: {total_distilled:,} chars")

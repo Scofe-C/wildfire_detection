@@ -3,11 +3,11 @@
 
 # Active LLM backend: "ollama" | "gemini_dev" | "vertex_ai"
 # Override priority: CLI --backend > env var LLM_BACKEND > this value
-llm_backend: "gemini_dev"
+llm_backend: "ollama"
 
 # --- Ollama (Phase 1: local model) ---
 ollama:
-  model: "qwen2.5:7b"
+  model: "qwen3:8b"
   base_url: "http://localhost:11434"
   temperature: 0.0
   max_retries: 2
@@ -29,7 +29,8 @@ corpus:
   version: "processed"
   local_dir: "corpus/"
   gcs_prefix: "corpus/"
-  max_corpus_chars: 500000
+  max_corpus_chars: 500000         # Cloud backends (Gemini, Vertex AI)
+  ollama_max_corpus_chars: 20000   # Local models — stay within effective context window
 
 # --- Reporting ---
 reporting:
@@ -37,8 +38,10 @@ reporting:
   min_grounding_sources: 3
   output_dir: "reports/disaster_reports"
   gcs_bucket: ""
-  max_ml_block_chars: 20000
-  max_data_block_chars: 20000
+  max_ml_block_chars: 20000       # Cloud backends
+  max_data_block_chars: 20000     # Cloud backends
+  ollama_max_ml_block_chars: 6000    # Local models — keep total context < 32K tokens
+  ollama_max_data_block_chars: 6000  # Local models
 
 # --- Admin Toggle (human input channel) ---
 admin_toggle:

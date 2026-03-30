@@ -55,6 +55,9 @@ class ContextBundle:
     instruction: str                # final generation directive
     report_type: str
     incident_id: str
+    # Processed uploaded files — adapter decides how to inject (text vs vision)
+    # Import is local to avoid circular deps at module level
+    uploaded_files: "list[Any]" = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -141,20 +144,50 @@ def build_data_block(
 ) -> str:
     """Serialise data pipeline snapshot into a structured text block.
 
-    Sections: OWM/SMAP telemetry, FIRMS hotspots, FEMA NRI tracts.
+    Sections: source staleness, OWM/SMAP telemetry, FIRMS hotspots
+    (with spatial detail), FEMA NRI tracts.
     """
     parts: list[str] = []
+
+    # Source staleness warnings (from orchestrator resilience)
+    source_status = pipeline_result.get("source_status") or {}
+    if source_status:
+        parts.append("## Data Source Status")
+        for source_name, status in source_status.items():
+            if isinstance(status, dict):
+                state = status.get("status", "UNKNOWN")
+                detail = status.get("detail", "")
+                if state in ("STALE", "UNAVAILABLE"):
+                    parts.append(f"- [{state}] {source_name}: {detail}")
+                else:
+                    parts.append(f"- [OK] {source_name}")
+            elif status in ("STALE", "UNAVAILABLE"):
+                parts.append(f"- [{status}] {source_name}")
+            else:
+                parts.append(f"- [OK] {source_name}")
 
     # Telemetry
     telem = pipeline_result.get("telemetry")
     if telem:
-        parts.append("## Environmental Telemetry")
+        parts.append("\n## Environmental Telemetry")
         for k, v in telem.items():
             parts.append(f"- {k}: {v}")
 
-    # FIRMS
-    firms = pipeline_result.get("firms_hotspot_count", 0)
-    parts.append(f"\n## FIRMS Hotspots (last 6 hours): {firms}")
+    # FIRMS — count + spatial detail
+    firms_count = pipeline_result.get("firms_hotspot_count", 0)
+    parts.append(f"\n## FIRMS Hotspots (last 6 hours): {firms_count}")
+
+    firms_hotspots = pipeline_result.get("firms_hotspots") or []
+    if firms_hotspots:
+        # Sort by FRP descending, take top 20
+        sorted_hs = sorted(firms_hotspots, key=lambda h: float(h.get("frp", 0)), reverse=True)
+        for h in sorted_hs[:20]:
+            parts.append(
+                f"- lat={h.get('lat', '?')}, lon={h.get('lon', '?')}, "
+                f"FRP={h.get('frp', 'N/A')} MW, "
+                f"confidence={h.get('confidence', 'N/A')}, "
+                f"time={h.get('acq_datetime', h.get('acq_date', 'N/A'))}"
+            )
 
     # FEMA NRI
     nri = pipeline_result.get("fema_nri_tracts") or []
@@ -229,20 +262,36 @@ def assemble(
     corpus_text: str | None,
     toggle: AdminToggle,
     config: dict[str, Any],
+    incident_id: str | None = None,
+    uploaded_files: list[Any] | None = None,
 ) -> ContextBundle:
-    """Orchestrate all builder functions and return a complete ContextBundle."""
+    """Orchestrate all builder functions and return a complete ContextBundle.
+
+    Parameters
+    ----------
+    incident_id:
+        If provided (e.g. from IncidentTracker), reuse this ID for continuity
+        across sequential reports about the same fire. If None, falls back to
+        ``pipeline_result["run_id"]`` or generates a new UUID.
+    """
     from src.models.obj3_gemini.schemas import SCHEMA_MAP
 
     report_type = mode_to_report_type(mode, sub_state)
     schema_cls = SCHEMA_MAP[report_type]
     schema_dict = schema_cls.model_json_schema()
 
-    incident_id = pipeline_result.get("run_id") or str(uuid.uuid4())
+    if incident_id is None:
+        incident_id = pipeline_result.get("run_id") or str(uuid.uuid4())
     dt_str = datetime.now(tz=UTC).isoformat()
 
     reporting_cfg = config.get("reporting", {})
-    max_ml = reporting_cfg.get("max_ml_block_chars", 20_000)
-    max_data = reporting_cfg.get("max_data_block_chars", 20_000)
+    backend = config.get("llm_backend", "")
+    if backend == "ollama":
+        max_ml = reporting_cfg.get("ollama_max_ml_block_chars", 6_000)
+        max_data = reporting_cfg.get("ollama_max_data_block_chars", 6_000)
+    else:
+        max_ml = reporting_cfg.get("max_ml_block_chars", 20_000)
+        max_data = reporting_cfg.get("max_data_block_chars", 20_000)
 
     return ContextBundle(
         system_prompt=build_system_prompt(report_type, schema_dict),
@@ -254,4 +303,5 @@ def assemble(
         instruction=build_instruction(report_type, incident_id, dt_str),
         report_type=report_type,
         incident_id=incident_id,
+        uploaded_files=uploaded_files or [],
     )

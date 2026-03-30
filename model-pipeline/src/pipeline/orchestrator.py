@@ -1,14 +1,65 @@
 from __future__ import annotations
 
 import logging
+import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import yaml
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Resilient data fetching — wraps external API calls with retry + degradation
+# ---------------------------------------------------------------------------
+
+def fetch_with_resilience(
+    source_name: str,
+    fetch_fn: Callable[[], Any],
+    *,
+    max_retries: int = 2,
+    backoff_base: float = 2.0,
+    fallback: Any = None,
+) -> tuple[Any, dict[str, Any]]:
+    """Call *fetch_fn* with retry and graceful degradation.
+
+    Returns
+    -------
+    tuple of (data, status_dict)
+        ``data`` is the fetched result or ``fallback`` on failure.
+        ``status_dict`` has keys ``status`` ("OK", "STALE", "UNAVAILABLE")
+        and ``detail`` (human-readable).
+    """
+    last_exc: Exception | None = None
+    for attempt in range(1, max_retries + 2):
+        try:
+            result = fetch_fn()
+            return result, {"status": "OK", "detail": ""}
+        except Exception as exc:
+            last_exc = exc
+            if attempt <= max_retries:
+                delay = backoff_base ** (attempt - 1)
+                logger.warning(
+                    "[%s] Attempt %d/%d failed: %s — retrying in %.1fs",
+                    source_name, attempt, max_retries + 1, exc, delay,
+                )
+                time.sleep(delay)
+
+    # All attempts exhausted
+    detail = f"Failed after {max_retries + 1} attempts: {last_exc}"
+    if fallback is not None:
+        logger.warning(
+            "[%s] %s — using fallback/cached data", source_name, detail,
+        )
+        return fallback, {"status": "STALE", "detail": detail}
+    else:
+        logger.warning(
+            "[%s] %s — no fallback available", source_name, detail,
+        )
+        return None, {"status": "UNAVAILABLE", "detail": detail}
 
 
 @dataclass
@@ -36,6 +87,10 @@ class PipelineResult:
     visualization_paths: dict[str, str] = field(default_factory=dict)
     artifact_pushed: bool = False
     error: str | None = None
+    # Per-source freshness status — consumed by OBJ-3 context builder.
+    # Keys: source names (e.g. "FIRMS", "OWM", "SMAP")
+    # Values: {"status": "OK"|"STALE"|"UNAVAILABLE", "detail": "..."}
+    source_status: dict[str, dict[str, str]] = field(default_factory=dict)
 
     @property
     def is_deployable(self) -> bool:

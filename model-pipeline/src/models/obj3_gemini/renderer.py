@@ -17,12 +17,13 @@ logger = logging.getLogger(__name__)
 # Default template directory relative to model-pipeline root
 _DEFAULT_TEMPLATE_DIR = Path(__file__).resolve().parents[3] / "templates"
 
-# Template file lookup
+# Template file lookup — each report type maps to its native format only.
+# daily/high_risk → Markdown; incident/final → HTML.
 _TEMPLATE_MAP: dict[str, dict[str, str]] = {
-    "daily":     {"md": "daily.md.j2",         "html": "daily.md.j2"},
-    "high_risk": {"md": "high_risk.md.j2",     "html": "high_risk.md.j2"},
-    "incident":  {"md": "incident.html.j2",    "html": "incident.html.j2"},
-    "final":     {"md": "final.html.j2",        "html": "final.html.j2"},
+    "daily":     {"md": "daily.md.j2"},
+    "high_risk": {"md": "high_risk.md.j2"},
+    "incident":  {"html": "incident.html.j2"},
+    "final":     {"html": "final.html.j2"},
 }
 
 

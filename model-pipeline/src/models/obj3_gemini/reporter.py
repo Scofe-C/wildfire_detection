@@ -33,6 +33,7 @@ from src.models.obj3_gemini.schemas.base_schema import REQUIRED_DISCLAIMER, Base
 from src.models.obj3_gemini.state_machine import (
     AdminToggle,
     EmergencySubState,
+    IncidentTracker,
     OperationalMode,
     mode_to_report_type,
     resolve_mode,
@@ -106,6 +107,7 @@ class GeminiDisasterReporter(BaseModel):
         self._config: dict[str, Any] = {}
         self._adapter: LLMAdapter | None = None
         self._toggle: AdminToggle | None = None
+        self._incident_tracker: IncidentTracker | None = None
         self._corpus_text: str | None = None
         self._corpus_ref: str | None = None
         self._template_dir: Path | None = None
@@ -148,7 +150,12 @@ class GeminiDisasterReporter(BaseModel):
             corpus_dir = base_dir / self._config.get("corpus", {}).get("local_dir", "corpus/")
             version = self._config.get("corpus", {}).get("version", "v1")
             corpus_docs = load_corpus_texts(corpus_dir, version)
-            max_chars = self._config.get("corpus", {}).get("max_corpus_chars", 500_000)
+            corpus_cfg = self._config.get("corpus", {})
+            # Local models have limited effective context — use a much smaller cap
+            if backend == "ollama":
+                max_chars = corpus_cfg.get("ollama_max_corpus_chars", 20_000)
+            else:
+                max_chars = corpus_cfg.get("max_corpus_chars", 500_000)
             self._corpus_text = get_corpus_as_text(corpus_docs, max_chars)
 
             # Phase 3: load corpus into Vertex AI context cache
@@ -179,6 +186,12 @@ class GeminiDisasterReporter(BaseModel):
         toggle_cfg = dict(self._config.get("admin_toggle", {}))
         toggle_cfg["_config_path"] = config_path
         self._toggle = AdminToggle(toggle_cfg)
+
+        # Incident tracker — persists EMERGENCY sub-state transitions
+        incident_state_file = self._output_dir / ".incident_state.yaml"
+        self._incident_tracker = IncidentTracker(
+            state_file=incident_state_file, config=self._config,
+        )
 
         self._is_loaded = True
         logger.info("GeminiDisasterReporter loaded (backend=%s)", backend)
@@ -220,12 +233,14 @@ class GeminiDisasterReporter(BaseModel):
 
         # Parse JSON → Pydantic
         try:
+            raw_json = _preprocess_report_json(raw_json, context_bundle)
             parsed = schema_cls.model_validate_json(raw_json)
         except Exception as exc:
             logger.warning("JSON parse failed, retrying: %s", exc)
             # Retry once
             try:
                 raw_json = self._adapter.generate(context_bundle, schema_dict)
+                raw_json = _preprocess_report_json(raw_json, context_bundle)
                 parsed = schema_cls.model_validate_json(raw_json)
             except Exception as retry_exc:
                 return ReportResult(
@@ -305,6 +320,7 @@ class GeminiDisasterReporter(BaseModel):
         self,
         pipeline_result: dict[str, Any],
         human_inputs: list[HumanInput] | None = None,
+        uploaded_files: list[Any] | None = None,
         mode: OperationalMode | None = None,
         sub_state: EmergencySubState | None = None,
     ) -> GeneratedReport:
@@ -330,6 +346,11 @@ class GeminiDisasterReporter(BaseModel):
         if mode is None:
             mode, sub_state, disagreement_flag = resolve_mode(pipeline_result)
 
+        # 2.5: For EMERGENCY mode, use IncidentTracker for sub-state + incident_id
+        tracked_incident_id: str | None = None
+        if mode == OperationalMode.EMERGENCY and self._incident_tracker is not None:
+            tracked_incident_id, sub_state = self._incident_tracker.update(pipeline_result)
+
         report_type = mode_to_report_type(mode, sub_state)
         logger.info("Mode: %s/%s → report_type: %s", mode.value, sub_state, report_type)
 
@@ -343,6 +364,8 @@ class GeminiDisasterReporter(BaseModel):
             corpus_text=self._corpus_text,
             toggle=self._toggle,
             config=self._config,
+            incident_id=tracked_incident_id,
+            uploaded_files=uploaded_files or [],
         )
 
         # 5–6: Generate + parse
@@ -412,6 +435,16 @@ class GeminiDisasterReporter(BaseModel):
                 generated_at=now.isoformat(),
             )
 
+        # 9.7: Update incident tracker (report count + archive on FINAL)
+        if (
+            tracked_incident_id
+            and self._incident_tracker is not None
+            and result.parsed_report is not None
+        ):
+            self._incident_tracker.increment_report_count(tracked_incident_id)
+            if report_type == "final":
+                self._incident_tracker.archive_incident(tracked_incident_id)
+
         # 10: GCS sync
         gcs_bucket = self._config.get("reporting", {}).get("gcs_bucket", "")
         gcs_paths: list[str] = []
@@ -457,7 +490,11 @@ class GeminiDisasterReporter(BaseModel):
 
     @staticmethod
     def _check_sections(report: BaseReport) -> bool:
-        """Check that all required fields in the report are non-empty."""
+        """Check that all required fields are non-empty and list minimums are met.
+
+        Enforces Pydantic ``min_length`` constraints that are defined in the
+        schema (e.g. ``immediate_actions >= 3``, ``preventive_recommendations >= 2``).
+        """
         data = report.model_dump()
         for field_name, field_info in type(report).model_fields.items():
             if field_info.is_required():
@@ -466,9 +503,11 @@ class GeminiDisasterReporter(BaseModel):
                     return False
                 if isinstance(val, str) and not val.strip():
                     return False
-                if isinstance(val, list) and len(val) == 0:
-                    # Some fields allow empty list (e.g. notable_changes)
-                    pass
+                if isinstance(val, list):
+                    # Enforce min_length from Pydantic Field metadata
+                    min_len = _get_field_min_length(field_info)
+                    if min_len is not None and len(val) < min_len:
+                        return False
         return True
 
     def _append_review_manifest(self, **entry_kwargs: Any) -> None:
@@ -504,6 +543,122 @@ class GeminiDisasterReporter(BaseModel):
 # ---------------------------------------------------------------------------
 # Module-level helpers
 # ---------------------------------------------------------------------------
+
+def _get_field_min_length(field_info: Any) -> int | None:
+    """Extract ``min_length`` from a Pydantic FieldInfo, if set."""
+    # Pydantic v2: min_length is stored in field_info.metadata as
+    # annotated_types.MinLen, or directly on the FieldInfo object.
+    min_len = getattr(field_info, "min_length", None)
+    if min_len is not None:
+        return int(min_len)
+    # Check metadata list (Pydantic v2 annotated style)
+    for meta in getattr(field_info, "metadata", []):
+        if hasattr(meta, "min_length"):
+            return int(meta.min_length)
+    return None
+
+
+def _preprocess_report_json(raw_json: str, context_bundle: ContextBundle) -> str:
+    """Normalise and stamp deterministic fields before Pydantic validation.
+
+    Local models (Qwen3:8b) commonly:
+      - Skip metadata fields when context is large
+      - Lowercase Literal enum values  (``"active"`` instead of ``"ACTIVE"``)
+      - Paraphrase the disclaimer instead of copying it verbatim
+
+    All three are fixed here — deterministically — so validation succeeds
+    without requiring a retry.
+
+    Fields stamped unconditionally (values are known before the LLM is called):
+      ``disclaimer``, ``report_type``, ``incident_id``, ``generated_at``,
+      ``operating_mode``, ``human_input_included``, ``data_sources_used``
+
+    Fields normalised (uppercase):
+      ``incident_status``, ``risk_level``, ``operating_mode``,
+      ``review_status`` and ``priority`` in nested recommendation lists.
+    """
+    import json as _json  # noqa: PLC0415
+    from datetime import UTC, datetime as _dt  # noqa: PLC0415
+
+    _UPPERCASE_FIELDS = {
+        "incident_status", "risk_level", "operating_mode", "review_status",
+    }
+    _RECOMMENDATION_LIST_FIELDS = (
+        "recommendations", "preventive_recommendations", "resource_requirements",
+    )
+
+    try:
+        data = _json.loads(raw_json)
+        if not isinstance(data, dict):
+            return raw_json
+    except Exception:
+        return raw_json
+
+    # --- Stamp: disclaimer (fixed constant, never trust LLM) ---
+    data["disclaimer"] = REQUIRED_DISCLAIMER
+
+    # --- Stamp: metadata known at call time (always override — never trust LLM) ---
+    data["report_type"] = context_bundle.report_type
+    data["incident_id"] = context_bundle.incident_id
+    # Always use real current time — model often hallucinates past dates
+    data["generated_at"] = _dt.now(tz=UTC).isoformat()
+    # Derive operating_mode from report_type — deterministic, no guessing
+    _rt = context_bundle.report_type
+    data["operating_mode"] = (
+        "EMERGENCY" if _rt in ("incident", "final")
+        else "ACTIVE" if _rt == "high_risk"
+        else "QUIET"
+    )
+    data["human_input_included"] = bool(context_bundle.human_block.strip())
+    data.setdefault("human_review_required", True)   # fail-safe; stamped again later
+
+    # Sanitize data_sources_used — remove garbled/non-printable characters
+    raw_sources = data.get("data_sources_used")
+    if isinstance(raw_sources, list):
+        cleaned_sources = []
+        for s in raw_sources:
+            if isinstance(s, str):
+                # Keep only printable ASCII + common symbols; collapse whitespace
+                sanitized = "".join(c for c in s if c.isprintable()).strip()
+                if sanitized:
+                    cleaned_sources.append(sanitized)
+        data["data_sources_used"] = cleaned_sources or ["XGBoost", "FIRMS", "OWM", "FEMA NRI"]
+    else:
+        data["data_sources_used"] = ["XGBoost", "FIRMS", "OWM", "FEMA NRI"]
+
+    # --- Normalise: uppercase all known enum fields ---
+    for field in _UPPERCASE_FIELDS:
+        if field in data and isinstance(data[field], str):
+            data[field] = data[field].upper()
+
+    # --- Normalise: uppercase priority in nested lists ---
+    for list_field in _RECOMMENDATION_LIST_FIELDS:
+        items = data.get(list_field) or []
+        if isinstance(items, list):
+            for item in items:
+                if isinstance(item, dict) and isinstance(item.get("priority"), str):
+                    item["priority"] = item["priority"].upper()
+
+    # --- Normalise: scores that must be 0.0–1.0 but model outputs 0–100 ---
+    # vulnerability_score in vulnerable_populations
+    for pop in data.get("vulnerable_populations") or []:
+        if isinstance(pop, dict):
+            vs = pop.get("vulnerability_score")
+            if isinstance(vs, (int, float)) and vs > 1.0:
+                pop["vulnerability_score"] = round(vs / 100.0, 4)
+    # risk_score in top_risk_cells
+    for cell in data.get("top_risk_cells") or []:
+        if isinstance(cell, dict):
+            rs = cell.get("risk_score")
+            if isinstance(rs, (int, float)) and rs > 1.0:
+                cell["risk_score"] = round(rs / 100.0, 4)
+    # report_confidence itself
+    rc = data.get("report_confidence")
+    if isinstance(rc, (int, float)) and rc > 1.0:
+        data["report_confidence"] = round(rc / 100.0, 4)
+
+    return _json.dumps(data)
+
 
 def _compute_human_review_required(
     report: BaseReport,
