@@ -130,6 +130,7 @@ def fetch_weather_data(
     trigger_source: str = "cron",
     fire_cells: Optional[list] = None,
     h3_ring_max: int = 5,
+    region: str = "unknown",
 ) -> Path:
     """Fetch weather data for all grid cell centroids.
 
@@ -247,6 +248,7 @@ def fetch_weather_data(
         om_config=om_config,
         limiter=limiter,
         config_path=config_path,
+        region=region,
     )
 
 
@@ -262,6 +264,7 @@ def _fetch_full_grid_open_meteo(
     om_config: dict,
     limiter: RateLimiter,
     config_path: Optional[str],
+    region: str = "unknown",
 ) -> Path:
     """Fetch Open-Meteo for every cell in the region (cron trigger)."""
     out_dir, execution_date = _resolve_output(output_dir, execution_date)
@@ -299,7 +302,7 @@ def _fetch_full_grid_open_meteo(
             len(failed_cells),
         )
 
-    return _write_combined(all_rows, out_dir, execution_date, label="weather_raw")
+    return _write_combined(all_rows, out_dir, execution_date, label=f"weather_raw_{region}")
 
 
 # ---------------------------------------------------------------------------

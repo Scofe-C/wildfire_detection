@@ -1,4 +1,5 @@
 [core]
     remote = gcsremote
+    no_scm = true
 ['remote "gcsremote"']
     url = gs://wildfire-mlops-123/dvc

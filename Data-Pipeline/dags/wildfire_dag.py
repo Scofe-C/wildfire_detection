@@ -211,6 +211,7 @@ def task_ingest_weather(region: str, **context):
         execution_date=execution_date,
         lookback_hours=lookback_hours,
         output_dir=str(RAW_DIR / "weather"),
+        region=region,
     )
 
     context["ti"].xcom_push(key=f"weather_raw_path_{region}", value=str(output_path))
@@ -540,15 +541,35 @@ def task_export_to_parquet(**context):
     context["ti"].xcom_push(key="export_path",  value=export_root)
     context["ti"].xcom_push(key="export_paths", value=exported_paths)
 
-    # Upload exported Parquet files to GCS so inference API can read them
+    # --- OBJ-2: Export plain fused features (no lag columns) partitioned for fire spread ---
+    fused_plain_path = context["ti"].xcom_pull(key="fused_features_path")
+    fused_exported_paths = []
+    if fused_plain_path:
+        fused_plain_df = pd.read_parquet(fused_plain_path)
+        if "region" in fused_plain_df.columns and fused_plain_df["region"].notna().any():
+            for region in fused_plain_df["region"].dropna().unique():
+                region_df = fused_plain_df[fused_plain_df["region"] == region].copy()
+                region_df["date"] = date_str
+                output_dir = (
+                    PROCESSED_DIR / "fused" / f"{resolution_km}km"
+                    / f"region={region}" / f"year={year}" / f"month={month}"
+                )
+                output_dir.mkdir(parents=True, exist_ok=True)
+                output_path = output_dir / f"fused_{date_str}.parquet"
+                region_df = _cast_parquet_compatible(region_df)
+                region_df.to_parquet(output_path, index=False, version="1.0")
+                fused_exported_paths.append(str(output_path))
+                logger.info(f"[OBJ-2] Fused export {region}: {len(region_df)} rows → {output_path}")
+    context["ti"].xcom_push(key="fused_export_paths", value=fused_exported_paths)
+
+    # Upload all exported Parquet files to GCS (OBJ-1 ML-ready + OBJ-2 fused)
     bucket_name = os.environ.get("GCS_BUCKET_NAME")
     if bucket_name:
         try:
             from google.cloud import storage
             client = storage.Client()
             bucket = client.bucket(bucket_name)
-            for local_path in exported_paths:
-                # Mirror local path structure under data/ prefix in GCS
+            for local_path in exported_paths + fused_exported_paths:
                 rel_path = Path(local_path).relative_to(PROJECT_ROOT)
                 blob = bucket.blob(str(rel_path))
                 blob.upload_from_filename(local_path)
@@ -708,23 +729,31 @@ with DAG(
         provide_context=True,
     )
 
-    # Real DVC BashOperator — restored from base (lisun had a logger stub).
-    # bash -c is explicit: works on WSL2, macOS Docker, Windows 10 Docker Desktop.
     version = BashOperator(
         task_id="version_with_dvc",
         bash_command="""
             set -euo pipefail
             echo "=== DVC version step ==="
+            mkdir -p dvc
 
-            # Update the .dvc pointer file with the hash of the current data.
-            # The .dvc file is written to the mounted ./data/ volume so it
-            # appears on the host machine. Run these locally to snapshot the version:
-            #   git add data/processed/{{ params.resolution_km }}km.dvc
-            #   git commit -m 'data: run {{ execution_date }}'
-            #   dvc push
+            # Track ML-ready partitioned data (OBJ-1 input)
             dvc add "data/processed/{{ params.resolution_km }}km" -f
-            echo "DVC pointer updated: data/processed/{{ params.resolution_km }}km.dvc"
+            cp "data/processed/{{ params.resolution_km }}km.dvc" \
+               "dvc/processed_{{ params.resolution_km }}km.dvc"
+            echo "DVC pointer updated: dvc/processed_{{ params.resolution_km }}km.dvc"
+
+            # Track plain fused features (OBJ-2 input)
+            if [ -d "data/processed/fused/{{ params.resolution_km }}km" ]; then
+                dvc add "data/processed/fused/{{ params.resolution_km }}km" -f
+                cp "data/processed/fused/{{ params.resolution_km }}km.dvc" \
+                   "dvc/fused_{{ params.resolution_km }}km.dvc"
+                echo "DVC pointer updated: dvc/fused_{{ params.resolution_km }}km.dvc"
+            else
+                echo "Fused {{ params.resolution_km }}km dir not yet populated — skipping"
+            fi
+
             echo "=== DVC version step complete ==="
+            echo "Run on host: git add dvc/ && git commit -m 'data: run {{ execution_date }}' && dvc push"
         """,
         cwd="/opt/airflow",
         dag=dag,

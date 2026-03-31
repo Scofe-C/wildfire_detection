@@ -47,6 +47,8 @@ x-airflow-common-volumes: &airflow-common-volumes
   - ./.dvc:/opt/airflow/.dvc
   - ./dvc.yaml:/opt/airflow/dvc.yaml
   - ./dvc.lock:/opt/airflow/dvc.lock
+  # DVC pointer files land here (dvc/ is git-tracked; data/ is gitignored)
+  - ./dvc:/opt/airflow/dvc
 
 services:
   postgres:
