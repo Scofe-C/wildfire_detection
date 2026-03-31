@@ -41,9 +41,6 @@ rasterio
 fiona
 rasterstats
 
-# --- NASA Earthdata (MODIS NDVI download via earthaccess) ---
-earthaccess>=0.9
-
 # --- HTTP / config ---
 requests
 pyyaml
@@ -51,9 +48,6 @@ python-json-logger
 
 # --- Database ---
 psycopg2-binary
-
-# --- Data quality ---
-great-expectations<1.0
 
 # --- MLOps / Versioning ---
 dvc
@@ -71,8 +65,6 @@ shap>=0.45,<0.50
 
 # --- LLM Report Generation ---
 google-genai              # Gemini LLM for pipeline report generation (Phase 2)
-fastapi
-uvicorn[standard]
 
 # --- Testing ---
 pytest

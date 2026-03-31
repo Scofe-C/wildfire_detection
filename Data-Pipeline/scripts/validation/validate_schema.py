@@ -2,21 +2,9 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Tuple
 
-import great_expectations as ge
 import pandas as pd
 from scripts.utils.grid_utils import generate_full_grid
 
-
-_TYPE_MAP = {
-    "float32": "float",
-    "float64": "float",
-    "int8": "int",
-    "int16": "int",
-    "int32": "int",
-    "int64": "int",
-    "string": "str",
-    "bool": "bool",
-}
 
 _EXPECTED_GRID_COUNT_CACHE: Dict[int, int] = {}
 
@@ -36,104 +24,92 @@ def run_validation(
     resolution_km: int,
     enforce_row_count: bool = True,
 ) -> Tuple[bool, Dict[str, Any]]:
-    """
-    Great Expectations validation gate.
-    Returns (passed, results_dict) where results_dict contains issues list.
-    """
-    # Old (removed):
-    validator = ge.from_pandas(df)
+    """Pandas-based schema validation. Returns (passed, results_dict)."""
 
     feature_names: List[str] = registry.get_feature_names()
-    dtype_map: Dict[str, str] = registry.get_dtype_map()
     rules_map: Dict[str, Dict[str, Any]] = registry.get_validation_rules()
     non_nullable: List[str] = registry.get_non_nullable_columns()
 
     max_null_rate: float = float(getattr(registry, "max_null_rate", 0.15))
     tol_pct: float = float(getattr(registry, "row_count_tolerance_pct", 5)) / 100.0
 
-    # 1) column existence
+    issues: List[str] = []
+
+    # 1) Column existence
     for col in feature_names:
-        validator.expect_column_to_exist(col)
+        if col not in df.columns:
+            issues.append(f"missing_column: {col}")
 
-    # 2) types
-    for col, dtype in dtype_map.items():
-        if col not in feature_names:
-            continue
-        ge_type = _TYPE_MAP.get(str(dtype))
-        if ge_type:
-            validator.expect_column_values_to_be_of_type(col, ge_type)
-
-    # 3) rules (min/max, allowed values)
-    for col, rules in rules_map.items():
-        if col not in feature_names:
-            continue
-
-        if ("min" in rules) or ("max" in rules):
-            # Skip between-check for non-numeric or all-null placeholder columns
-            if col in df.columns and pd.api.types.is_numeric_dtype(df[col]):
-                if df[col].notna().any():  # skip if all-null (Phase 2 placeholder)
-                    validator.expect_column_values_to_be_between(
-                        col,
-                        min_value=rules.get("min"),
-                        max_value=rules.get("max"),
-                    )
-
-        if "allowed_values" in rules:
-            validator.expect_column_values_to_be_in_set(
-                col,
-                list(rules["allowed_values"]),
-            )
-
-    # 4) null constraints
+    # 2) Null constraints on required columns
     for col in non_nullable:
-        if col in feature_names:
-            validator.expect_column_values_to_not_be_null(col, mostly=1.0)
+        if col not in df.columns:
+            continue
+        null_count = int(df[col].isna().sum())
+        if null_count > 0:
+            issues.append(f"non_nullable_has_nulls: column={col} null_count={null_count}")
 
-    # Columns that are intentionally always-null in the current phase;
-    # skip null-rate validation for them to avoid false failures.
+    # 3) Null rate on optional columns
     _SKIP_NULL_CHECK = {"fire_weather_index", "ndvi"}
-
-    mostly = max(0.0, min(1.0, 1.0 - max_null_rate))
     for col in feature_names:
-        if col in non_nullable:
+        if col in non_nullable or col in _SKIP_NULL_CHECK:
             continue
-        if col in _SKIP_NULL_CHECK:
+        if col not in df.columns:
             continue
-        if col in df.columns:
-            validator.expect_column_values_to_not_be_null(col, mostly=mostly)
-
-    # 5) grid_id uniqueness (avoid GE error when all-null)
-    if "grid_id" in df.columns:
-        if df["grid_id"].notna().any():
-            validator.expect_column_proportion_of_unique_values_to_be_between(
-                "grid_id",
-                min_value=0.99,
-                max_value=1.0,
+        null_rate = float(df[col].isna().mean())
+        if null_rate > max_null_rate:
+            issues.append(
+                f"high_null_rate: column={col} null_rate={null_rate:.2%} threshold={max_null_rate:.2%}"
             )
 
-    # 6) row count bounds (production gate; disable in unit tests)
+    # 4) Range rules (min/max)
+    for col, rules in rules_map.items():
+        if col not in feature_names or col not in df.columns:
+            continue
+        if not pd.api.types.is_numeric_dtype(df[col]):
+            continue
+        series = df[col].dropna()
+        if series.empty:
+            continue
+        if "min" in rules and float(series.min()) < float(rules["min"]):
+            issues.append(
+                f"below_min: column={col} min_found={series.min()} min_allowed={rules['min']}"
+            )
+        if "max" in rules and float(series.max()) > float(rules["max"]):
+            issues.append(
+                f"above_max: column={col} max_found={series.max()} max_allowed={rules['max']}"
+            )
+        if "allowed_values" in rules:
+            invalid = set(df[col].dropna().unique()) - set(rules["allowed_values"])
+            if invalid:
+                issues.append(f"invalid_values: column={col} values={invalid}")
+
+    # 5) grid_id uniqueness
+    if "grid_id" in df.columns and df["grid_id"].notna().any():
+        total = len(df)
+        unique = df["grid_id"].nunique()
+        if total > 0 and (unique / total) < 0.99:
+            issues.append(
+                f"low_grid_id_uniqueness: unique={unique} total={total} ratio={unique/total:.2%}"
+            )
+
+    # 6) Row count bounds
     if enforce_row_count:
         expected = _get_expected_row_count(resolution_km)
         lo = int(expected * (1.0 - tol_pct))
         hi = int(expected * (1.0 + tol_pct))
-        validator.expect_table_row_count_to_be_between(lo, hi)
+        actual = len(df)
+        if not (lo <= actual <= hi):
+            issues.append(
+                f"row_count_out_of_bounds: actual={actual} expected={expected} "
+                f"allowed=[{lo}, {hi}]"
+            )
 
-    result = validator.validate(result_format="SUMMARY")
-    passed = bool(result.get("success", False))
-
-    issues: List[str] = []
-    for r in result.get("results", []):
-        if not r.get("success", True):
-            exp = r.get("expectation_config", {}).get("expectation_type", "unknown_expectation")
-            kw = r.get("expectation_config", {}).get("kwargs", {})
-            col = kw.get("column", "")
-            issues.append(f"{exp} failed column={col} kwargs={kw}")
-
-    return passed, {"passed": passed, "issues": issues, "ge_summary": result}
+    passed = len(issues) == 0
+    return passed, {"passed": passed, "issues": issues}
 
 
 # ---------------------------------------------------------------------------
-# CLI entry point — used by dvc repro and for ad-hoc manual runs
+# CLI entry point
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
@@ -147,32 +123,14 @@ if __name__ == "__main__":
     log = logging.getLogger(__name__)
 
     parser = argparse.ArgumentParser(
-        description="Run Great Expectations schema validation on the fused feature dataset."
+        description="Run pandas schema validation on the fused feature dataset."
     )
-    parser.add_argument(
-        "--input",
-        default="data/processed/fused",
-        help="Path to Parquet file or directory of fused features.",
-    )
-    parser.add_argument(
-        "--resolution-km",
-        type=int,
-        default=64,
-        help="Grid resolution in km — used for row count validation (default: 64).",
-    )
-    parser.add_argument(
-        "--output-dir",
-        default="data/processed/baselines",
-        help="Directory to write statistics summary JSON (default: data/processed/baselines).",
-    )
-    parser.add_argument(
-        "--no-row-count",
-        action="store_true",
-        help="Disable row count enforcement (useful for partial/test datasets).",
-    )
+    parser.add_argument("--input", default="data/processed/fused")
+    parser.add_argument("--resolution-km", type=int, default=64)
+    parser.add_argument("--output-dir", default="data/processed/baselines")
+    parser.add_argument("--no-row-count", action="store_true")
     args = parser.parse_args()
 
-    import pandas as pd
     from scripts.utils.schema_loader import get_registry
 
     registry = get_registry()
@@ -198,8 +156,6 @@ if __name__ == "__main__":
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-
-    # Write statistics summary alongside the GE results
     stats_path = output_dir / "stats_latest.json"
     summary = {
         "run_at": __import__("datetime").datetime.utcnow().isoformat(),
@@ -208,18 +164,12 @@ if __name__ == "__main__":
         "passed": passed,
         "issue_count": len(results.get("issues", [])),
         "issues": results.get("issues", []),
-        "column_null_rates": {
-            col: float(df[col].isna().mean())
-            for col in df.columns
-        },
+        "column_null_rates": {col: float(df[col].isna().mean()) for col in df.columns},
     }
-    with open(stats_path, "w", encoding="utf-8") as f:
+    with open(stats_path, "w") as f:
         json.dump(summary, f, indent=2, default=str)
 
     log.info(f"Validation {'PASSED' if passed else 'FAILED'} — stats written to {stats_path}")
-
     if not passed:
         log.warning(f"Issues: {results.get('issues', [])[:5]}")
-        # Non-zero exit so DVC marks the stage as failed, but pipeline continues
-        # (Airflow task uses trigger_rule='all_done' on detect_anomalies)
         sys.exit(1)

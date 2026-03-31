@@ -77,15 +77,11 @@ stages:
       - configs/schema_config.yaml
       - data/processed/fused
     outs:
-      - data/processed/baselines:
+      - data/processed/baselines/stats_latest.json:
           persist: true
+          cache: false
 
   detect_anomalies:
-    # Runs after validate_schema. DVC infers ordering from the shared dep on
-    # data/processed/fused — no need to list data/processed/baselines as a dep,
-    # which would conflict with validate_schema's ownership of that directory.
-    # The output anomaly_last_run.json sits inside data/processed/baselines but
-    # is declared as a file-level out so DVC does not re-lock the whole directory.
     cmd: python scripts/validation/detect_anomalies.py --input data/processed/fused --baseline-dir data/processed/baselines --output data/processed/baselines/anomaly_last_run.json
     deps:
       - scripts/validation/detect_anomalies.py
@@ -96,16 +92,4 @@ stages:
       - data/processed/baselines/anomaly_last_run.json:
           persist: true
           cache: false
-
-  export_spatial:
-    # Track B: spatial .npz outputs for CNN/GCN model training.
-    # Runs in parallel with detect_anomalies in DVC (both depend on fused only).
-    cmd: python scripts/export/export_spatial.py --input data/processed/fused --output-dir data/processed/spatial --resolution-km 64
-    deps:
-      - scripts/export/export_spatial.py
-      - scripts/utils/grid_utils.py
-      - data/processed/fused
-    outs:
-      - data/processed/spatial:
-          persist: true
 

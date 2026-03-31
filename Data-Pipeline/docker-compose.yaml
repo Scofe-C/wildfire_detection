@@ -30,6 +30,7 @@ x-airflow-common-env: &airflow-common-env
 
   FIRMS_MAP_KEY: ${FIRMS_MAP_KEY:-your_firms_api_key_here}
   GCS_BUCKET_NAME: ${GCS_BUCKET_NAME:-wildfire-mlops-dev}
+  GOOGLE_CLOUD_PROJECT: ${GOOGLE_CLOUD_PROJECT:-}
   SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}
   GOOGLE_APPLICATION_CREDENTIALS: /opt/airflow/gcp-key.json
 
@@ -43,8 +44,9 @@ x-airflow-common-volumes: &airflow-common-volumes
   # GCP service account key (create locally — never commit)
   - ${GCP_KEY_PATH:-./gcp-key.json}:/opt/airflow/gcp-key.json:ro
   # DVC config and pipeline definition (needed by version_with_dvc task)
-  # Mounted read-only: container reads config, dvc add/push write to data/
   - ./.dvc:/opt/airflow/.dvc
+  - ./dvc.yaml:/opt/airflow/dvc.yaml
+  - ./dvc.lock:/opt/airflow/dvc.lock
 
 services:
   postgres:
@@ -105,6 +107,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD-SHELL", "curl --fail http://localhost:8080/health || exit 1"]
       interval: 30s
@@ -123,6 +127,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD-SHELL", "airflow jobs check --job-type SchedulerJob --hostname $(hostname) || exit 1"]
       interval: 30s

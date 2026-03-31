@@ -196,34 +196,21 @@ def task_ingest_weather(region: str, **context):
     from scripts.utils.grid_utils import generate_full_grid
 
     execution_date = context["execution_date"]
-    params = context["params"]
-
-    # --- THE FIX: Extracting the watchdog variables you passed ---
-    resolution_km = params.get("resolution_km")
+    params         = context["params"]
+    resolution_km  = params.get("resolution_km", DEFAULT_RESOLUTION_KM)
     lookback_hours = params.get("weather_lookback_hours", 24)
-    trigger_source = params.get("trigger_source", "cron") # This was missing
-    fire_cells     = params.get("fire_cells", [])         # This was missing
-    h3_ring_max    = params.get("h3_ring_max", 5)         # This was missing
 
-    if resolution_km is None:
-        raise ValueError("resolution_km is missing from DAG params.")
-
-    # Use generate_full_grid filtered to this region so grid_ids exactly match
-    # the master grid used in fuse_features. generate_grid_for_bbox uses a
-    # different bbox/buffer and produces different H3 cell IDs (CA: 32 vs 23).
+    # Always fetch weather for the full regional grid.
+    # Resolution escalation (64km → 22km) handles precision; no focal subsetting needed.
     full_grid = generate_full_grid(resolution_km)
     grid = full_grid[full_grid["region"] == region].copy()
     grid_centroids = grid[["grid_id", "latitude", "longitude"]]
 
-    # --- THE FIX: Passing them into the function call ---
     output_path = fetch_weather_data(
         grid_centroids=grid_centroids,
         execution_date=execution_date,
         lookback_hours=lookback_hours,
         output_dir=str(RAW_DIR / "weather"),
-        trigger_source=trigger_source,  # Now the script knows it's a watchdog run
-        fire_cells=fire_cells,          # Now the script knows where the fire is
-        h3_ring_max=h3_ring_max         # Now the script knows how far to look
     )
 
     context["ti"].xcom_push(key=f"weather_raw_path_{region}", value=str(output_path))
@@ -280,25 +267,66 @@ def task_process_weather(region: str, **context):
     logger.info(f"[{region}] Weather processing complete: {len(weather_features)} rows")
 
 
+def task_ingest_goes(region: str, **context):
+    """Collect raw GOES NRT fire detections for one region. Non-blocking — failures are logged only."""
+    import json
+    try:
+        from scripts.ingestion.ingest_goes import fetch_goes_nrt_detections
+
+        bbox = REGIONS[region]["bbox"]  # [west, south, east, north]
+        detections = fetch_goes_nrt_detections(bbox=bbox)
+
+        output_dir = RAW_DIR / "goes"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        date_str = context["execution_date"].strftime("%Y%m%dT%H%M%S")
+        output_path = output_dir / f"goes_{region}_{date_str}.json"
+
+        with open(output_path, "w") as f:
+            json.dump(detections, f)
+
+        context["ti"].xcom_push(key=f"goes_raw_path_{region}", value=str(output_path))
+        logger.info(f"[{region}] GOES NRT: {len(detections)} detections → {output_path}")
+    except Exception as e:
+        logger.warning(f"[{region}] GOES NRT collection failed (non-blocking): {e}")
+
+
+def task_ingest_hrrr(region: str, **context):
+    """Collect raw HRRR wind/weather for one region. Non-blocking — failures are logged only."""
+    try:
+        from scripts.ingestion.ingest_hrrr import fetch_hrrr_for_focal_grid
+        from scripts.utils.grid_utils import generate_full_grid
+
+        execution_date = context["execution_date"]
+        resolution_km  = context["params"].get("resolution_km", DEFAULT_RESOLUTION_KM)
+
+        full_grid = generate_full_grid(resolution_km)
+        grid = full_grid[full_grid["region"] == region][["grid_id", "latitude", "longitude"]]
+
+        output_path = fetch_hrrr_for_focal_grid(
+            focal_grid=grid,
+            execution_date=execution_date,
+            output_dir=str(RAW_DIR / "hrrr"),
+        )
+        if output_path:
+            context["ti"].xcom_push(key=f"hrrr_raw_path_{region}", value=str(output_path))
+            logger.info(f"[{region}] HRRR collection complete → {output_path}")
+        else:
+            logger.warning(f"[{region}] HRRR returned no data")
+    except Exception as e:
+        logger.warning(f"[{region}] HRRR collection failed (non-blocking): {e}")
+
+
 # ---------------------------------------------------------------------------
 # Fusion and downstream tasks (shared — wait for all regions)
 # ---------------------------------------------------------------------------
 
 def task_fuse_features(**context):
-    """Join all regions data into the unified feature table.
-
-    When triggered by watchdog with confirmed fire cells, generates a focal
-    grid (5-25 km detection zone) for dense coverage around the fire.
-    Cron-triggered runs use the full regional grid.
-    """
+    """Join all regions data into the unified feature table."""
     from scripts.fusion.fuse_features import fuse_features
     import pandas as pd
 
     execution_date = context["execution_date"]
     resolution_km  = context["params"].get("resolution_km", DEFAULT_RESOLUTION_KM)
-    fire_cells     = context["params"].get("fire_cells", [])
-    h3_ring_max    = context["params"].get("h3_ring_max", 5)
-    trigger_source = context["params"].get("trigger_source", "cron")
 
     firms_dfs, weather_dfs = [], []
 
@@ -322,23 +350,7 @@ def task_fuse_features(**context):
     )
     static_df   = pd.read_parquet(static_path) if static_path else pd.DataFrame()
 
-    # Generate focal grid when watchdog provided fire cells
-    if fire_cells and trigger_source != "cron":
-        try:
-            from scripts.utils.grid_utils import generate_fire_focal_grid
-            focal_grid = generate_fire_focal_grid(
-                fire_cell_ids=fire_cells, ring_min=1, ring_max=h3_ring_max,
-            )
-            context["ti"].xcom_push(key="focal_grid_cell_count", value=len(focal_grid))
-            logger.info(
-                f"Focal grid: {len(focal_grid)} cells "
-                f"(fire={sum(focal_grid['cell_type']=='fire')}, "
-                f"zone={sum(focal_grid['cell_type']=='detection_zone')})"
-            )
-        except Exception as e:
-            logger.warning(f"Focal grid generation failed: {e}")
-
-    # --- Forward-fill: load previous window's fused output (Item 5) ---
+    # --- Forward-fill: load previous window's fused output ---
     prev_fused_path = str(PROCESSED_DIR / "fused" / "fused_features_previous.parquet")
 
     fused = fuse_features(
@@ -402,18 +414,6 @@ def task_fuse_features(**context):
 
     ml_fused = apply_temporal_lag(fused, prev_fire_df)
 
-    # --- Priority resolution (Sprint 3c) ---
-    # Apply ground truth overrides if any field telemetry data is available.
-    try:
-        from scripts.fusion.priority_resolver import resolve_priorities
-        ml_fused = resolve_priorities(
-            fused_df=ml_fused,
-            ground_truth_df=pd.DataFrame(),  # No ground truth during initial test
-            config_path=None,
-        )
-    except Exception as e:
-        logger.warning(f"Priority resolution skipped: {e}")
-
     ml_output_path = PROCESSED_DIR / "fused" / "fused_features_ml_latest.parquet"
     ml_fused = _cast_parquet_compatible(ml_fused)
     ml_fused.to_parquet(ml_output_path, index=False, version="1.0")
@@ -421,8 +421,7 @@ def task_fuse_features(**context):
 
     region_counts = fused["region"].value_counts().to_dict() if "region" in fused.columns else {}
     logger.info(
-        f"Fusion: {len(fused)} rows (regions: {region_counts}, "
-        f"src: {trigger_source}, res: {resolution_km}km) -> {output_path}"
+        f"Fusion: {len(fused)} rows (regions: {region_counts}, res: {resolution_km}km) -> {output_path}"
     )
     logger.info(f"ML-ready variant with temporal lag -> {ml_output_path}")
 
@@ -497,7 +496,11 @@ def task_export_to_parquet(**context):
     """
     import pandas as pd
 
-    fused_path    = context["ti"].xcom_pull(key="fused_features_path")
+    # Use ML-ready variant (has lag columns) — falls back to plain fused if missing
+    fused_path = (
+        context["ti"].xcom_pull(key="fused_ml_features_path")
+        or context["ti"].xcom_pull(key="fused_features_path")
+    )
     fused_df      = pd.read_parquet(fused_path)
     execution_date = context["execution_date"]
     resolution_km = context["params"].get("resolution_km", DEFAULT_RESOLUTION_KM)
@@ -537,39 +540,24 @@ def task_export_to_parquet(**context):
     context["ti"].xcom_push(key="export_path",  value=export_root)
     context["ti"].xcom_push(key="export_paths", value=exported_paths)
 
+    # Upload exported Parquet files to GCS so inference API can read them
+    bucket_name = os.environ.get("GCS_BUCKET_NAME")
+    if bucket_name:
+        try:
+            from google.cloud import storage
+            client = storage.Client()
+            bucket = client.bucket(bucket_name)
+            for local_path in exported_paths:
+                # Mirror local path structure under data/ prefix in GCS
+                rel_path = Path(local_path).relative_to(PROJECT_ROOT)
+                blob = bucket.blob(str(rel_path))
+                blob.upload_from_filename(local_path)
+                logger.info(f"GCS upload: gs://{bucket_name}/{rel_path}")
+        except Exception as e:
+            logger.warning(f"GCS upload failed (non-fatal): {e}")
+    else:
+        logger.info("GCS_BUCKET_NAME not set — skipping GCS upload")
 
-def task_export_spatial(**context):
-    """Track B: Export spatial grid arrays for CNN/GCN models.
-
-    Produces:
-      - spatial_grid_{date}.npz: 3D array (H × W × C)
-      - adjacency_{date}.npz: sparse COO adjacency matrix
-    """
-    import pandas as pd
-    from scripts.export.export_spatial import export_spatial_grid, export_adjacency_matrix
-
-    fused_ml_path = context["ti"].xcom_pull(key="fused_ml_features_path")
-    if not fused_ml_path:
-        # Fallback to raw fused if ML-ready variant not available
-        fused_ml_path = context["ti"].xcom_pull(key="fused_features_path")
-
-    fused_df = pd.read_parquet(fused_ml_path)
-    execution_date = context["execution_date"]
-    resolution_km = context["params"].get("resolution_km", DEFAULT_RESOLUTION_KM)
-    date_str = execution_date.strftime("%Y-%m-%d")
-
-    output_dir = str(PROCESSED_DIR / "spatial" / f"{resolution_km}km")
-
-    grid_path = export_spatial_grid(
-        fused_df, output_dir, resolution_km, date_str
-    )
-    adj_path = export_adjacency_matrix(
-        fused_df, output_dir, resolution_km, date_str
-    )
-
-    context["ti"].xcom_push(key="spatial_grid_path", value=str(grid_path))
-    context["ti"].xcom_push(key="adjacency_path", value=str(adj_path))
-    logger.info(f"Spatial export complete: grid={grid_path}, adj={adj_path}")
 
 
 # ---------------------------------------------------------------------------
@@ -658,10 +646,27 @@ with DAG(
                 provide_context=True,
             )
 
-            # Within-group dependencies:
-            # ingest runs first, process follows; firms and weather run in parallel
+            # GOES + HRRR: collect raw data for future use, do not block fusion
+            ingest_goes = PythonOperator(
+                task_id="ingest_goes",
+                python_callable=task_ingest_goes,
+                op_kwargs={"region": region_key},
+                provide_context=True,
+            )
+
+            ingest_hrrr = PythonOperator(
+                task_id="ingest_hrrr",
+                python_callable=task_ingest_hrrr,
+                op_kwargs={"region": region_key},
+                provide_context=True,
+            )
+
+            # Core path: ingest → process (firms and weather in parallel)
             ingest_f >> process_f
             ingest_w >> process_w
+            # GOES + HRRR run independently; failures are skipped, not blocking
+            ingest_f >> ingest_goes
+            ingest_w >> ingest_hrrr
 
         region_task_groups[region_key] = tg
 
@@ -705,72 +710,27 @@ with DAG(
 
     # Real DVC BashOperator — restored from base (lisun had a logger stub).
     # bash -c is explicit: works on WSL2, macOS Docker, Windows 10 Docker Desktop.
-    # Improvement 4c: tracks resolution_km dir tree (covers all region sub-dirs).
     version = BashOperator(
         task_id="version_with_dvc",
         bash_command="""
             set -euo pipefail
-
             echo "=== DVC version step ==="
 
-            # Git setup
-            if [ ! -d .git ]; then
-                git init
-            fi
-            git config user.email "airflow@wildfire.local"
-            git config user.name  "Airflow"
-
-            # DVC remote check
-            if ! dvc remote list | grep -q .; then
-                echo "ERROR: No DVC remote configured. Run: dvc remote add -d myremote gs://<bucket>/dvc"
-                exit 1
-            fi
-
-            # GCS credentials check
-            if [ -z "${GOOGLE_APPLICATION_CREDENTIALS:-}" ] && [ -z "${GOOGLE_CLOUD_PROJECT:-}" ]; then
-                echo "WARNING: No GCS credentials found — push to remote may fail."
-            fi
-
-            # DVC add — stage the data files
-            echo "Tracking data/processed/fused ..."
-            dvc add data/processed/fused -f
-
-            echo "Tracking data/processed/{{ params.resolution_km }}km ..."
-            dvc add data/processed/{{ params.resolution_km }}km -f
-
-            # Git commit the updated .dvc files
-            # Without this step DVC has no version history — every run
-            # overwrites the same .dvc file with no record of prior versions.
-            git add data/processed/fused.dvc \
-                    "data/processed/{{ params.resolution_km }}km.dvc" \
-                    .gitignore 2>/dev/null || true
-
-            if git diff --cached --quiet; then
-                echo "No changes to .dvc files — nothing to commit."
-            else
-                git commit -m "chore(dvc): update {{ params.resolution_km }}km + fused [{{ execution_date }}]"
-                echo "Git commit created."
-            fi
-
-            # DVC push to GCS
-            echo "Pushing to GCS remote ..."
-            dvc push data/processed/fused.dvc "data/processed/{{ params.resolution_km }}km.dvc"
-            echo "DVC push complete."
-
+            # Update the .dvc pointer file with the hash of the current data.
+            # The .dvc file is written to the mounted ./data/ volume so it
+            # appears on the host machine. Run these locally to snapshot the version:
+            #   git add data/processed/{{ params.resolution_km }}km.dvc
+            #   git commit -m 'data: run {{ execution_date }}'
+            #   dvc push
+            dvc add "data/processed/{{ params.resolution_km }}km" -f
+            echo "DVC pointer updated: data/processed/{{ params.resolution_km }}km.dvc"
             echo "=== DVC version step complete ==="
         """,
         cwd="/opt/airflow",
         dag=dag,
     )
 
-    export_spatial = PythonOperator(
-        task_id="export_spatial",
-        python_callable=task_export_spatial,
-        provide_context=True,
-    )
-
-    # Track A (tabular) and Track B (spatial) run in parallel after anomaly detection
-    fuse >> validate >> detect_anomalies >> [export, export_spatial] >> version
+    fuse >> validate >> detect_anomalies >> export >> version
 
 
 # ---------------------------------------------------------------------------

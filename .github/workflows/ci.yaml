@@ -237,7 +237,6 @@ jobs:
 
           must_pin = [
               'pyarrow',
-              'great_expectations',
               'dvc',
               'ruff',
           ]

@@ -12,10 +12,6 @@ Each cache is produced by the corresponding ingestion script:
   SRTM (elevation, slope, aspect):
       python -m scripts.ingestion.ingest_srtm --resolution-km <N> --output-dir data/static
 
-  MODIS NDVI:
-      python -m scripts.ingestion.ingest_ndvi --resolution-km <N> --output-dir data/static
-          --start-date 2024-01-01
-
 If a cache file is missing, the corresponding columns fall back to NaN stubs
 and a warning is logged.  The pipeline continues gracefully; the downstream
 ``data_quality_flag`` will be set to 4 for those cells.
@@ -40,7 +36,6 @@ STATIC_COLUMNS = [
     "fuel_model_fbfm40",
     "canopy_cover_pct",
     "vegetation_type",
-    "ndvi",
     "elevation_m",
     "slope_degrees",
     "aspect_degrees",
@@ -50,7 +45,6 @@ STATIC_COLUMNS = [
 # Columns supplied by each source
 _LANDFIRE_COLS = ["fuel_model_fbfm40", "canopy_cover_pct", "vegetation_type", "dominant_fuel_fraction"]
 _SRTM_COLS     = ["elevation_m", "slope_degrees", "aspect_degrees"]
-_NDVI_COLS     = ["ndvi"]
 
 
 def load_and_process_static(
@@ -136,38 +130,16 @@ def load_and_process_static(
         for col in _SRTM_COLS:
             df[col] = np.nan
 
-    # ── MODIS NDVI ────────────────────────────────────────────────────────────
-    ndvi_path = out_dir / f"ndvi_features_{resolution_km}km.parquet"
-    if ndvi_path.exists():
-        try:
-            ndvi = pd.read_parquet(ndvi_path)
-            ndvi["grid_id"] = ndvi["grid_id"].astype(str)
-            ndvi = ndvi[["grid_id"] + _NDVI_COLS].drop_duplicates("grid_id")
-            df = df.merge(ndvi, on="grid_id", how="left")
-            sources_loaded.append("NDVI")
-            logger.info("Loaded NDVI features from %s", ndvi_path)
-        except Exception as exc:
-            logger.error("NDVI load failed (%s) — using NaN stubs", exc)
-            df["ndvi"] = np.nan
-    else:
-        logger.warning(
-            "NDVI cache not found (%s). "
-            "Run: python -m scripts.ingestion.ingest_ndvi "
-            "--resolution-km %d --output-dir %s",
-            ndvi_path, resolution_km, output_dir,
-        )
-        df["ndvi"] = np.nan
-
     # Log overall stub status
     if not sources_loaded:
         logger.warning(
             "All static features are NaN stubs — no source caches found in %s. "
-            "See scripts/ingestion/ingest_landfire.py, ingest_srtm.py, ingest_ndvi.py.",
+            "See scripts/ingestion/ingest_landfire.py, ingest_srtm.py.",
             output_dir,
         )
     else:
         logger.info("Static features loaded from: %s", ", ".join(sources_loaded))
-        missing = [s for s in ("LANDFIRE", "SRTM", "NDVI") if s not in sources_loaded]
+        missing = [s for s in ("LANDFIRE", "SRTM") if s not in sources_loaded]
         if missing:
             logger.warning("Still using NaN stubs for: %s", ", ".join(missing))
 
