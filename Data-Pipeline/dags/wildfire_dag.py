@@ -40,11 +40,13 @@ import logging
 from datetime import datetime, timedelta
 from pathlib import Path
 
+
 from airflow import DAG
 from airflow.operators.python import PythonOperator, ShortCircuitOperator
 from airflow.operators.bash import BashOperator
 from airflow.utils.dates import days_ago
 from airflow.utils.task_group import TaskGroup
+import pandas as pd
 
 from dags.utils.slack_notify import (
     notify_slack,
