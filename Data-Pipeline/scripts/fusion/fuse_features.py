@@ -488,6 +488,8 @@ _STATIC_STUB_COLS = {
     "fuel_model_fbfm40", "canopy_cover_pct", "vegetation_type",
     "ndvi", "elevation_m", "slope_degrees", "aspect_degrees",
     "dominant_fuel_fraction",
+    # Optional LANDFIRE spread-simulation layers (NaN until rasters downloaded)
+    "canopy_base_height_m", "canopy_bulk_density", "evt_national_class",
 }
 
 # Columns that are intentionally always-null until Phase 2 is implemented.

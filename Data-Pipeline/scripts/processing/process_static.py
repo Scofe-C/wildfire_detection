@@ -2,15 +2,19 @@
 Static Feature Processing
 =========================
 Generates static terrain and fuel features for the H3 grid.
+Supports 64 km and 22 km resolutions for California + Texas.
 
 Real data is loaded from pre-computed parquet caches in ``data/static/``.
 Each cache is produced by the corresponding ingestion script:
 
-  LANDFIRE (fuel, canopy, vegetation):
-      python -m scripts.ingestion.ingest_landfire --resolution-km <N> --output-dir data/static
+  LANDFIRE (fuel, canopy, vegetation, CBH, CBD, EVT-CNC):
+      python -m scripts.ingestion.ingest_landfire --resolution-km 64 22 --output-dir data/static
 
   SRTM (elevation, slope, aspect):
-      python -m scripts.ingestion.ingest_srtm --resolution-km <N> --output-dir data/static
+      python -m scripts.ingestion.ingest_srtm --resolution-km 64 22 --output-dir data/static
+
+Then fuse both resolutions in one run:
+      python -m scripts.processing.process_static --resolution-km 64 22 --output-dir data/static
 
 If a cache file is missing, the corresponding columns fall back to NaN stubs
 and a warning is logged.  The pipeline continues gracefully; the downstream
@@ -19,6 +23,7 @@ and a warning is logged.  The pipeline continues gracefully; the downstream
 
 from __future__ import annotations
 
+import argparse
 import logging
 from pathlib import Path
 
@@ -36,15 +41,28 @@ STATIC_COLUMNS = [
     "fuel_model_fbfm40",
     "canopy_cover_pct",
     "vegetation_type",
+    "dominant_fuel_fraction",
+    # Fire spread simulation features (optional LANDFIRE layers)
+    "canopy_base_height_m",   # LF2020 CBH ÷ 10  → metres; crown fire initiation
+    "canopy_bulk_density",    # LF2024 CBD ÷ 100 → kg/m³; crown fire spread rate
+    "evt_national_class",     # LF2020 EVT-CNC code; vegetation class for fuel moisture
+    # Topography
     "elevation_m",
     "slope_degrees",
     "aspect_degrees",
-    "dominant_fuel_fraction",
 ]
 
 # Columns supplied by each source
-_LANDFIRE_COLS = ["fuel_model_fbfm40", "canopy_cover_pct", "vegetation_type", "dominant_fuel_fraction"]
-_SRTM_COLS     = ["elevation_m", "slope_degrees", "aspect_degrees"]
+_LANDFIRE_COLS = [
+    "fuel_model_fbfm40",
+    "canopy_cover_pct",
+    "vegetation_type",
+    "dominant_fuel_fraction",
+    "canopy_base_height_m",
+    "canopy_bulk_density",
+    "evt_national_class",
+]
+_SRTM_COLS = ["elevation_m", "slope_degrees", "aspect_degrees"]
 
 
 def load_and_process_static(
@@ -153,3 +171,69 @@ def load_and_process_static(
     df.to_parquet(out_path, index=False)
     logger.info("Wrote static features: %s (%d rows)", out_path, len(df))
     return out_path
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+def _parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(
+        description=(
+            "Fuse LANDFIRE + SRTM feature caches into static_features_<N>km.parquet "
+            "for each requested resolution. Covers California + Texas only. "
+            "Run ingest_landfire and ingest_srtm first to populate the source caches."
+        )
+    )
+    p.add_argument(
+        "--resolution-km",
+        type=int,
+        nargs="+",
+        default=[64, 22],
+        metavar="KM",
+        help="One or more grid resolutions in km. Default: 64 22 (both CA/TX grids).",
+    )
+    p.add_argument(
+        "--output-dir",
+        default="data/static",
+        help="Directory containing source parquet caches and where output is written.",
+    )
+    p.add_argument(
+        "--force-rebuild",
+        action="store_true",
+        help="Recompute parquet even if cached file already exists.",
+    )
+    p.add_argument(
+        "--log-level",
+        default="INFO",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+    )
+    return p.parse_args()
+
+
+if __name__ == "__main__":
+    args = _parse_args()
+    logging.basicConfig(
+        level=getattr(logging, args.log_level),
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
+
+    resolutions = args.resolution_km
+    logger.info(
+        "Running process_static for resolutions: %s  |  regions: California + Texas",
+        resolutions,
+    )
+
+    outputs = []
+    for res_km in resolutions:
+        logger.info("─── Resolution %d km ───────────────────────────────────", res_km)
+        out = load_and_process_static(
+            resolution_km=res_km,
+            output_dir=args.output_dir,
+            force_rebuild=args.force_rebuild,
+        )
+        outputs.append(out)
+
+    print("\n=== process_static complete ===")
+    for o in outputs:
+        print(f"  {o}")
