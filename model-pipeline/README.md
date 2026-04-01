@@ -4,7 +4,7 @@
 
 This directory contains the ML model pipeline infrastructure for the Wildfire Prediction & Disaster Response platform. It handles everything after the data pipeline produces features and before a model reaches production: validation, bias detection, experiment tracking, visualization, alerting, and CI/CD.
 
-**OBJ-1 (XGBoost)** is a placeholder — the infrastructure is fully implemented and tested, and once a model is plugged in, validation, bias gating, tracking, and deployment happen automatically. **OBJ-2 (Cell2Fire)** is fully implemented as a C++ subprocess wrapper with weather CSV formatting, raster clipping, burn probability parsing, and Dice coefficient validation. **OBJ-3 (Gemini Disaster Reporting)** is fully implemented with 3 swappable LLM backends, 4 structured report types, and Jinja2 rendering.
+**OBJ-1 (XGBoost)** is a placeholder — the infrastructure is fully implemented and tested, and once a model is plugged in, validation, bias gating, tracking, and deployment happen automatically. **OBJ-2 (Fire Spread)** ships two implementations: `PythonFireSpreadSimulator` (primary — pure-Python Rothermel 1972 physics engine, no C++ required, reads directly from fused Parquet) and `Cell2FireSpread` (optional — C++ Monte Carlo burn probability for raster domains). **OBJ-3 (Gemini Disaster Reporting)** is fully implemented with 3 swappable LLM backends, 4 structured report types, and Jinja2 rendering.
 
 ```
 data-pipeline/                          model-pipeline/ (this directory)
@@ -38,13 +38,23 @@ model-pipeline/
 │   └── model_config.yaml           # thresholds, paths, tracking, alert config
 ├── src/
 │   ├── data/                       # load + validate parquet from data pipeline
-│   ├── models/                     # abstract interface + OBJ-1 stub + OBJ-2 (Cell2Fire) + OBJ-3 (Gemini)
+│   ├── models/
+│   │   ├── obj1_xgboost/           # OBJ-1 stub (not yet implemented)
+│   │   ├── obj2_spread/
+│   │   │   ├── fire_spread_simulator.py  # ← PRIMARY: pure-Python Rothermel physics engine
+│   │   │   ├── cell2fire_spread.py       # Cell2Fire C++ wrapper (Monte Carlo burn probability)
+│   │   │   └── exceptions.py
+│   │   └── obj3_gemini/            # OBJ-3 Gemini disaster reporting engine
 │   ├── validation/                 # metrics, model selection gate, visualizations
 │   ├── bias/                       # Fairlearn FNR gate + FEMA NRI spatial join
 │   ├── tracking/                   # MLflow local + Vertex AI Experiments
 │   ├── notifications/              # Slack webhook alerts
 │   └── pipeline/                   # end-to-end orchestrator
 ├── tests/                          # pytest suite
+├── test_physics_palisades.py       # Physics validation: SH7 chaparral, Santa Ana wind
+├── test_physics_campfire.py        # Physics validation: TU5 timber, Diablo wind
+├── test_physics_all_fires.py       # 5-fire physics suite (Palisades/Camp/Creek/Thomas/Carr)
+├── test_pipeline_integration.py    # End-to-end: parquet → simulate → JSON + CSV output
 ├── data/static/fema_nri/           # FEMA NRI shapefile (downloaded, not committed)
 ├── models/ignition/                # trained model artifacts (DVC-tracked)
 ├── reports/                        # validation reports, bias reports, plots
@@ -187,9 +197,103 @@ Defines the contract that OBJ-1, OBJ-2, and OBJ-3 must implement.
 
 ---
 
-### 4.8 `src/models/obj2_spread/cell2fire_spread.py` — OBJ-2 Cell2Fire Fire Spread
+### 4.8 `src/models/obj2_spread/` — OBJ-2 Fire Spread
 
-**Status:** Fully implemented. Physics-based C++ simulator wrapped as a `BaseModel`. Runs Monte Carlo fire spread simulations from DEM + fuel + weather inputs, outputs burn probability grids.
+OBJ-2 now ships two implementations. `PythonFireSpreadSimulator` is the primary path and requires no C++ installation. `Cell2FireSpread` is retained for Monte Carlo burn-probability runs when raster inputs are available.
+
+```
+src/models/obj2_spread/
+├── __init__.py                  # re-exports both simulators
+├── fire_spread_simulator.py     # ← PRIMARY — pure-Python Rothermel physics engine
+├── cell2fire_spread.py          # Cell2Fire C++ wrapper (Monte Carlo burn probability)
+└── exceptions.py                # Cell2FireError, Cell2FireNotInstalledError
+```
+
+---
+
+#### 4.8.1 `fire_spread_simulator.py` — PythonFireSpreadSimulator (Primary)
+
+**Status:** Fully implemented. No C++ binary, no GeoTIFF rasters required. Reads directly from the fused Parquet output of the data pipeline.
+
+**Physics implemented:**
+
+| Reference | What it covers |
+|---|---|
+| Rothermel (1972) INT-115 | Surface fire rate-of-spread — all 11 equations in imperial units |
+| Scott & Burgan (2005) RMRS-GTR-153 | FBFM40 fuel parameter table (codes 101–204, all 40 models) |
+| Nelson/Simard EMC piecewise | 1-hr dead fuel moisture from relative humidity + temperature |
+| Byram (1959) | Fireline intensity I_B = H × w_c × R (kW/m) |
+| Van Wagner (1977) | Crown fire initiation critical intensity I_0 = f(CBH, FMC) |
+| Scott & Reinhardt (2001) RMRS-GTR-29 | Passive vs active crown fire; R_0_active = 3.0 / CBD |
+| Anderson (1983) INT-305 | Elliptical fire shape — head / flank / backing ROS distribution |
+| Andrews (2012) RMRS-GTR-266 | 10 m open-terrain wind adjustment factor (WAF = 0.4) |
+
+**Key helper functions:**
+
+| Function | Input | Output | Purpose |
+|---|---|---|---|
+| `_estimate_dfmc(rh_pct, temp_c, days_since_precip)` | weather scalars | `float` (fraction) | 1-hr dead fuel moisture via Simard/Nelson EMC piecewise regression |
+| `_estimate_fmc(temp_c, vpd_kpa)` | temperature, VPD | `float` (fraction) | Foliar moisture content from drought stress — reduces I_0 in summer fires |
+| `_rothermel_surface_ros(fuel, Mf, U_midflame_ftmin, phi_s)` | fuel params, moisture, wind, slope | `(R_ftmin, I_R)` | Full Rothermel (1972) ROS in ft/min + reaction intensity in BTU/ft²/min |
+| `_phi_slope(beta, slope_deg, aspect_deg, bearing_deg)` | packing ratio, terrain | `float` | Rothermel slope coefficient projected to a specific bearing |
+| `_byram_intensity(fuel, Mf, R_ftmin)` | fuel, moisture, ROS | `float` kW/m | Fireline intensity for crown fire initiation check |
+| `_crown_fire_assessment(surface_R, I_B, cbh_m, cbd_kgm3, FMC)` | surface fire outputs + canopy data | `(R_ftmin, status)` | Van Wagner initiation check + Scott-Reinhardt passive/active classification |
+| `_elliptical_ros(head_R, U_mph, bearing_deg, wind_from_deg)` | head ROS, wind, angles | `float` ft/min | Anderson (1983) elliptical shape — distributes head ROS to each bearing |
+
+**`PythonFireSpreadSimulator.simulate(df, ignition_grid_id, ignition_prob)`:**
+
+| Input | Type | Description |
+|---|---|---|
+| `df` | `pd.DataFrame` | Fused Parquet loaded into memory. Must have `grid_id` column |
+| `ignition_grid_id` | `str` | H3 hex cell ID where fire starts (from OBJ-1 output) |
+| `ignition_prob` | `float` | OBJ-1 ignition probability [0–1]. Scales final ROS |
+
+**Output fields:**
+
+| Field | Type | Description |
+|---|---|---|
+| `spread_direction_deg` | `float` | Dominant fire-front bearing (0–360°) |
+| `spread_speed_kmh` | `float` | Maximum spread rate across all neighbours (km/h) |
+| `dead_fuel_moisture_pct` | `float` | Estimated 1-hr DFMC (%) |
+| `foliar_moisture_content_pct` | `float` | Estimated canopy FMC (%) — drives crown fire threshold |
+| `crown_fire_status` | `str` | `"surface"` \| `"passive_crown"` \| `"active_crown"` |
+| `byram_intensity_kwm` | `float` | Peak fireline intensity (kW/m) |
+| `dominant_factor` | `str` | `"wind"` \| `"slope"` \| `"balanced"` |
+| `neighbour_details` | `list[dict]` | Per-neighbour breakdown: bearing, ROS, crown status, phi_slope |
+
+**Expected outcome:**
+- Surface fire in moderate fuel (TU1 @ 20 km/h wind, RH 40%): `spread_speed_kmh` ~1.5–3.0, `crown_fire_status = "surface"`
+- Active crown fire (TU5 @ 85 km/h Diablo wind, RH 23%, CBH=3m): `spread_speed_kmh` ~10–14, `crown_fire_status = "active_crown"`, `byram_intensity_kwm` > 2000
+- Non-burnable cell (code 91–99): zero spread returned for that neighbour
+
+**Usage:**
+```python
+import pandas as pd
+from src.models.obj2_spread import PythonFireSpreadSimulator
+
+df = pd.read_parquet("data/processed/fused/fused_2026-03-31.parquet")
+sim = PythonFireSpreadSimulator()
+result = sim.simulate(df, ignition_grid_id="822937fffffffff", ignition_prob=0.72)
+
+print(result["spread_direction_deg"])   # e.g. 243.7°
+print(result["spread_speed_kmh"])       # e.g. 11.4 km/h
+print(result["crown_fire_status"])      # "active_crown"
+```
+
+**Physics validation tests** (run from `model-pipeline/`):
+```bash
+python test_physics_palisades.py     # SH7 chaparral, Santa Ana wind — 5/5 checks
+python test_physics_campfire.py      # TU5 timber, Diablo wind — 5/5 checks
+python test_physics_all_fires.py     # 5-fire suite: Palisades / Camp / Creek / Thomas / Carr
+```
+
+The 5-fire suite covers all major fuel types (chaparral SH7/SH9, timber TU5, grass GR9), all major California/Texas wind regimes (Santa Ana, Diablo, Mono, NW afternoon), and both slope-driven and wind-driven spread scenarios. All 25 checks must pass for a physics-valid build.
+
+---
+
+#### 4.8.2 `cell2fire_spread.py` — Cell2FireSpread (Monte Carlo, optional)
+
+**Status:** Fully implemented. Physics-based C++ simulator wrapped as a `BaseModel`. Runs Monte Carlo fire spread simulations from DEM + fuel + weather inputs, outputs burn probability grids. Requires Cell2Fire C++ binary on PATH.
 
 **Helper functions:**
 
@@ -230,6 +334,15 @@ Defines the contract that OBJ-1, OBJ-2, and OBJ-3 must implement.
 }
 ```
 4. Call `model.load_model("path/to/simulation_config.json")`
+
+**When to use each simulator:**
+
+| Scenario | Recommended |
+|---|---|
+| No C++ binary, running from pipeline Parquet | `PythonFireSpreadSimulator` |
+| Need per-H3-cell directional spread + crown fire classification | `PythonFireSpreadSimulator` |
+| Need burn probability surface over a raster domain | `Cell2FireSpread` |
+| Operational Monte Carlo (200+ simulations) | `Cell2FireSpread` |
 
 ---
 
