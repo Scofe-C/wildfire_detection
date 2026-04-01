@@ -13,9 +13,16 @@ ollama:
   max_retries: 2
 
 # --- Gemini Developer API (Phase 2: free-tier API key) ---
+# Free tier: 10 RPM, 250 RPD for 2.5-flash; preview models have lower limits
+# API key read from env var GEMINI_API_KEY
 gemini_dev:
   model: "gemini-2.5-flash"
-  # API key read from env var GEMINI_API_KEY
+  # Alternative models (free tier):
+  #   "gemini-2.5-flash"              — stable, 10 RPM / 250 RPD (recommended)
+  #   "gemini-2.5-flash-lite"         — stable, 15 RPM / 1000 RPD (faster, lighter)
+  #   "gemini-3-flash-preview"        — preview, lower limits (latest generation)
+  #   "gemini-3.1-flash-lite-preview" — preview, lower limits
+  # Paid only: "gemini-2.5-pro", "gemini-3.1-pro-preview"
 
 # --- Vertex AI (Phase 3: GCP project) ---
 vertex_ai:

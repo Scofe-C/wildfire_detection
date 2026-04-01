@@ -4,9 +4,8 @@ Tests for src/models/obj2_spread/raster.py
 import numpy as np
 import pytest
 
-from src.models.obj2_spread.raster import clip_raster_to_aoi, parse_burn_probability
 from src.models.obj2_spread.exceptions import Cell2FireError
-
+from src.models.obj2_spread.raster import clip_raster_to_aoi, parse_burn_probability
 
 # ---------------------------------------------------------------------------
 # Helpers

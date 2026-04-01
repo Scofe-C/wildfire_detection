@@ -31,7 +31,6 @@ import json
 import logging
 import os
 import sys
-import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -77,7 +76,7 @@ def fetch_firms(bbox: str, days: int) -> tuple[list[dict], dict]:
         import httpx  # noqa: PLC0415
     except ImportError:
         try:
-            import urllib.request as _ur
+            import urllib.request as _ur  # noqa: F401  # availability check only; real call uses _ur2
         except ImportError:
             return [], {"status": "UNAVAILABLE", "detail": "No HTTP client available"}
         _ur_mode = True
@@ -160,7 +159,6 @@ def fetch_owm(lat: float, lon: float) -> tuple[dict | None, dict]:
                 data = resp.json()
         except ImportError:
             import urllib.request as _ur
-            import urllib.error
             with _ur.urlopen(url, timeout=15) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
 

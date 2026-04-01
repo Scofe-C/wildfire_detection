@@ -5,11 +5,10 @@ import numpy as np
 import pytest
 
 from src.models.obj2_spread.evaluation import (
-    compute_dice_coefficient,
     compute_buffered_iou,
+    compute_dice_coefficient,
     find_best_threshold,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -120,8 +119,8 @@ class TestComputeBufferedIou:
 
     def test_perfect_prediction_passes_gate(self):
         """When predicted and actual areas perfectly overlap, gate should pass."""
-        from rasterio.transform import from_bounds
         import geopandas as gpd
+        from rasterio.transform import from_bounds
         from shapely.geometry import box
 
         # Create grid covering exact same area as perimeter

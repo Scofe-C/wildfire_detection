@@ -56,7 +56,7 @@ documents:
       - id: field_definitions
         doc_type: form_schema              # distill_corpus.py uses schema extraction prompt
         keywords: ["block", "instructions", "complete", "enter"]
-        page_override: [1, 4]             # [VERIFY] Form is ~4 pages; instructions on pp.2-4
+        page_override: [1, 23]            # AUDITED: p1-4 = form, p5-23 = block-by-block instruction guide
         extract_tables: true
 
       - id: resource_summary
@@ -86,19 +86,19 @@ documents:
       - id: ics209_completion_guide
         doc_type: form_schema
         keywords: ["209", "incident status summary", "block", "completion"]
-        page_override: [130, 165]         # [VERIFY] ICS-209 is near end of booklet (~form 9 of 14)
+        page_override: [36, 58]           # AUDITED: p36-39 = ICS 209 form, p40-58 = block-by-block instructions (doc is 115pp, not ~200)
         extract_tables: true
 
       - id: ics201_briefing_guide
         doc_type: form_schema
         keywords: ["201", "incident briefing", "map", "sketch", "objectives"]
-        page_override: [5, 35]            # [VERIFY] ICS-201 is first form, pages ~5-35
+        page_override: [5, 12]            # AUDITED: p5 = forms index, p6-9 = ICS 201 form, p10-11 = instructions
         extract_tables: false
 
       - id: ics204_assignment_guide
         doc_type: form_schema
         keywords: ["204", "assignment list", "branch", "division", "work assignment"]
-        page_override: [65, 90]           # [VERIFY] ICS-204 is 4th form in sequence
+        page_override: [18, 21]           # AUDITED: p18 = ICS 204 form, p19-20 = assignment instructions
         extract_tables: true
 
   # ---------------------------------------------------------------------------
@@ -139,25 +139,25 @@ documents:
       - id: incident_complexity
         doc_type: prose_guide
         keywords: ["complexity", "type 1", "type 2", "type 3", "type 4", "type 5"]
-        page_override: [22, 26]           # [VERIFY] Content p.8-10 + offset ~14
+        page_override: [24, 26]           # AUDITED: p24 = "Indicators of Incident Complexity" (exact start)
         extract_tables: true
 
       - id: resource_typing
         doc_type: prose_guide
         keywords: ["resource", "typing", "engine", "crew", "helicopter", "dozer"]
-        page_override: [97, 120]          # [VERIFY] Content p.83-106 (Other References) + offset ~14
+        page_override: [99, 120]          # AUDITED: p99 = "OTHER REFERENCES" start (engine typing, chainsaw, equipment)
         extract_tables: true
 
       - id: risk_management
         doc_type: prose_guide
         keywords: ["lces", "watch out", "risk management", "hazard", "safety zone"]
-        page_override: [15, 46]           # [VERIFY] Content p.1-32 (Op.Engagement + Specific Hazards) + offset ~14
+        page_override: [15, 48]           # AUDITED: p15 = stress/AAR, p17 = Risk Mgmt Process, p33 = Specific Hazards, p48 = end
         extract_tables: false
 
       - id: wui_considerations
         doc_type: prose_guide
         keywords: ["wildland urban interface", "wui", "structure", "triage", "defensible"]
-        page_override: [25, 32]           # [VERIFY] Content p.11-18 + offset ~14
+        page_override: [27, 32]           # AUDITED: p27 = "Wildland Urban Interface (WUI) Firefighting" (exact start)
         extract_tables: false
 
   # ---------------------------------------------------------------------------
@@ -211,7 +211,7 @@ documents:
         doc_type: methodology_doc
         keywords: ["expected annual loss", "social vulnerability", "composite score",
                    "risk index", "methodology", "formula"]
-        page_override: [1, 15]            # [VERIFY] Intro, EAL formula, rating tiers, scoring equation
+        page_override: [28, 50]           # AUDITED: p1-27 = front matter; p28 = Intro, p36 = Risk Overview, p43 = Risk Components, p49 = EAL
         extract_tables: true
 
       - id: wildfire_risk_overview
@@ -223,14 +223,14 @@ documents:
         # Does NOT contain per-county rows — those are excluded by page_override.
         keywords: ["wildfire", "burn probability", "fsim", "flame length",
                    "historic loss ratio", "exposure"]
-        page_override: [85, 95]           # [VERIFY] Wildfire section 2.17 — burn probability, FSim, EAL
+        page_override: [374, 393]         # AUDITED: p374 = "22. Wildfire" + FSim/burn probability, p393 = last page before Section 23
         extract_tables: true
 
       - id: vulnerability_indicators
         doc_type: methodology_doc
         keywords: ["vulnerable population", "social vulnerability", "community resilience",
                    "cdc svi", "disability", "elderly"]
-        page_override: [105, 120]         # [VERIFY] Social Vulnerability (CDC SVI) + Community Resilience (BRIC)
+        page_override: [43, 50]           # AUDITED: p43 = "4. Risk Components", p44 = Social Vulnerability (4.1), p45 = Community Resilience (4.2)
         extract_tables: false
 
   # ---------------------------------------------------------------------------
@@ -268,32 +268,32 @@ documents:
       - id: fuel_model_table
         doc_type: tabular_reference       # verbatim numeric extraction — NO paraphrasing
         keywords: ["fuel model", "fbfm", "gr", "gs", "sh", "tu", "tl", "nb", "sb"]
-        page_override: [3, 69]            # [VERIFY] All 40 fuel models; skips cover+abstract (pp.1-2) and references (pp.70-72)
+        page_override: [5, 76]            # AUDITED: p3=acknowledgments, p4/6=images; p5=TOC through p76=SB4 (last fuel model)
         extract_tables: true
 
       - id: fire_behavior_characteristics
         doc_type: prose_guide
         keywords: ["spread rate", "flame length", "crown fire", "spotting", "rate of spread",
                    "fireline intensity"]
-        page_override: [3, 16]            # FIXED from [1,16]: skip cover/abstract/acknowledgments on pp.1-2
+        page_override: [7, 22]            # AUDITED: p3=acknowledgments, p4/6=images; p7=Introduction through p22=fuel type selection guide
         extract_tables: true
 
       - id: fuel_moisture_reference
         doc_type: tabular_reference
         keywords: ["fuel moisture", "dead fuel", "live fuel", "1-hour", "10-hour", "100-hour"]
-        page_override: [6, 16]            # [VERIFY] Moisture scenarios (p.8) + selection guide tables
+        page_override: [13, 22]           # AUDITED: p6=image (no text); p13="Table 2: Level of curing" + moisture scenarios through p22
         extract_tables: true
 
       - id: ca_fuel_types
         doc_type: tabular_reference
         keywords: ["california", "chaparral", "coastal", "shrub", "manzanita"]
-        page_override: [37, 69]           # SH (shrub, incl. chaparral) + TU/TL — CA-relevant fuel types
+        page_override: [46, 71]           # AUDITED: p37-45=GR/GS grass models (TX-relevant); p46=SH shrub start (chaparral/manzanita=CA-relevant)
         output_geography: california
         extract_tables: true              # FIXED: was false
 
       - id: tx_fuel_types
         doc_type: tabular_reference
         keywords: ["texas", "grassland", "savanna", "plains", "mesquite"]
-        page_override: [21, 36]           # GR (grass) + GS (grass-shrub) — TX-relevant fuel types
+        page_override: [31, 45]           # AUDITED: p21-30=timber crosswalk+NB models; p31=GR grass start through p45=GS4 (TX grassland/savanna)
         output_geography: texas
         extract_tables: true

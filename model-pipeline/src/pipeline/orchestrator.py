@@ -3,9 +3,10 @@ from __future__ import annotations
 import logging
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import yaml
 
@@ -88,7 +89,7 @@ class PipelineResult:
     artifact_pushed: bool = False
     error: str | None = None
     # Per-source freshness status — consumed by OBJ-3 context builder.
-    # Keys: source names (e.g. "FIRMS", "OWM", "SMAP")
+    # Keys: source names (e.g. "FIRMS", "Open-Meteo", "SMAP")
     # Values: {"status": "OK"|"STALE"|"UNAVAILABLE", "detail": "..."}
     source_status: dict[str, dict[str, str]] = field(default_factory=dict)
 

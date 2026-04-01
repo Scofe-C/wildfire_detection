@@ -9,6 +9,7 @@ from src.models.obj3_gemini.schemas.base_schema import (
     Recommendation,
     RiskCell,
     VulnerableGroup,
+    WeatherObservation,
 )
 
 
@@ -21,3 +22,6 @@ class HighRiskReport(BaseReport):
     preventive_recommendations: list[Recommendation] = Field(min_length=2)
     vulnerable_populations: list[VulnerableGroup] | None = None
     escalation_trigger: str
+    # Light additions for preview
+    weather_observations: WeatherObservation | None = None
+    evacuation_readiness: str | None = None

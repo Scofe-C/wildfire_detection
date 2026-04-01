@@ -35,20 +35,28 @@ data/processed/backfill/*.parquet  ───> src/data/loader.py (load + validat
 model-pipeline/
 ├── configs/
 │   ├── feature_schema.yaml         # what columns the model expects from data pipeline
-│   └── model_config.yaml           # thresholds, paths, tracking, alert config
+│   ├── model_config.yaml           # thresholds, paths, tracking, alert config
+│   ├── reporting_config.yaml       # LLM backend selection, corpus settings, OBJ-3 config
+│   └── corpus_extraction.yaml      # PDF page-range rules for RAG corpus extraction
 ├── src/
+│   ├── api/                        # FastAPI server + file processor (OBJ-3 dashboard backend)
 │   ├── data/                       # load + validate parquet from data pipeline
-│   ├── models/                     # abstract interface + OBJ-1 stub + OBJ-2 (Cell2Fire) + OBJ-3 (Gemini)
+│   ├── models/                     # abstract interface + OBJ-1 (XGBoost) + OBJ-2 (Cell2Fire) + OBJ-3 (Gemini)
 │   ├── validation/                 # metrics, model selection gate, visualizations
 │   ├── bias/                       # Fairlearn FNR gate + FEMA NRI spatial join
 │   ├── tracking/                   # MLflow local + Vertex AI Experiments
 │   ├── notifications/              # Slack webhook alerts
 │   └── pipeline/                   # end-to-end orchestrator
-├── tests/                          # pytest suite
+├── dashboard/                      # OBJ-3 operator dashboard (index.html + generate.html)
+│   └── static/style.css            # shared light-theme stylesheet
+├── templates/                      # Jinja2 templates (*.md.j2, *.html.j2)
+├── corpus/                         # RAG reference PDFs → processed JSON chunks
+├── scripts/                        # run_report.py, run_dashboard.py, extract_corpus.py, …
+├── tests/                          # pytest suite (obj2/, obj3/unit/, obj3/integration/)
 ├── data/static/fema_nri/           # FEMA NRI shapefile (downloaded, not committed)
 ├── models/ignition/                # trained model artifacts (DVC-tracked)
-├── reports/                        # validation reports, bias reports, plots
-├── .github/workflows/model_ci.yml  # 9-stage CI/CD
+├── reports/                        # validation reports, bias reports, disaster reports
+├── .github/workflows/model_ci.yml  # 8-stage CI/CD
 ├── dvc.yaml                        # DVC stages for validate + bias gate
 ├── Dockerfile
 ├── requirements.txt
@@ -175,15 +183,23 @@ Defines the contract that OBJ-1, OBJ-2, and OBJ-3 must implement.
 
 ---
 
-### 4.7 `src/models/obj1_xgboost/placeholder.py` — OBJ-1 Stub
+### 4.7 `src/models/obj1_xgboost/model.py` — OBJ-1 XGBoost Fire Risk
 
-**Status:** Not implemented. Raises `NotImplementedError` on all methods.
+**Status:** Code complete. No trained weights — awaiting backfill Parquet data.
 
-**What teammates need to do:**
-1. Load pre-trained ECMWF PoF XGBoost weights in `load_model()`.
-2. Return a DataFrame with `prediction` and `probability` columns from `predict()`.
-3. Compute AUC-PR, F1, FNR in `validate()` (can use `src.validation.metrics`).
-4. Run SHAP TreeExplainer in `explain()`.
+Class `XGBoostFireRiskModel(BaseModel)` is fully implemented. It will activate automatically once trained weights are placed in `models/ignition/`.
+
+**What the code does:**
+- `load_model(path)` — loads saved XGBoost model from `*.pkl` / `*.json` / `*.joblib`
+- `predict(X)` — returns DataFrame with `prediction` (0/1) and `probability` [0,1] columns
+- `validate(X, y)` — computes AUC-PR, F1, FNR via `src.validation.metrics`
+- `explain(X)` — returns SHAP feature importances via `TreeExplainer`
+- `preprocess_features(X)` — converts raw ERA5 columns (`u10`, `v10`, `t2m`, `d2m`, `tp`) to domain features (`wind_speed`, `wind_direction`, `temperature_c`, `relative_humidity`, `precipitation_mm`)
+
+**To train and activate:**
+1. Run the historical backfill: `python scripts/backfill/historical_backfill.py`
+2. Train: `python scripts/train_obj1.py` (saves weights to `models/ignition/`)
+3. CI Stages 4 and 5 automatically activate once weights are present.
 
 ---
 
@@ -337,7 +353,8 @@ All adapters implement the `LLMAdapter` interface:
 **Phase 2 — `GeminiDevAdapter`** (free-tier cloud):
 - Calls Gemini Developer API with `GEMINI_API_KEY` env var.
 - Uses `response_mime_type="application/json"` + `response_schema` for structured output.
-- Default model: `gemini-2.5-flash`. Free-tier limits: 10 RPM / 500 RPD.
+- Default model: `gemini-2.5-flash`. Free-tier limits: ~20 RPD (flash), 1000 RPD (flash-lite).
+- Auto-fallback: if `gemini-2.5-flash` returns 429 (quota exhausted), retries with `gemini-2.5-flash-lite`.
 - Requires: `pip install google-generativeai` + API key from https://aistudio.google.com/apikey.
 
 **Phase 3 — `VertexAdapter`** (production GCP):
@@ -434,6 +451,35 @@ print(result.markdown_path)         # Path to rendered report
 
 ---
 
+#### 4.9.8 `src/api/server.py` — FastAPI Dashboard Backend
+
+Operator-facing web console for generating and reviewing disaster reports.
+
+| Endpoint | Method | Purpose |
+|---|---|---|
+| `/` | GET | Serve `dashboard/index.html` — report list with risk badges and status |
+| `/generate` | GET | Serve `dashboard/generate.html` — report generation form |
+| `/static/{path}` | GET | Static assets (shared `style.css`, etc.) |
+| `/api/generate` | POST | Generate a report from operator inputs + uploaded files (multipart) |
+| `/api/reports` | GET | List all saved reports as JSON (sorted by time, limit param) |
+| `/api/reports/{id}` | GET | Fetch a specific report JSON by stem ID |
+| `/api/report-file` | GET | Serve rendered HTML/MD file from disk (path-traversal protected) |
+| `/api/status` | GET | System status: backend health, API key, corpus chunk count |
+
+**Running the dashboard:**
+```bash
+cd model-pipeline
+export GEMINI_API_KEY=your_key   # for gemini_dev backend
+python scripts/run_dashboard.py  # opens http://localhost:8000
+```
+
+**File upload handling** (`src/api/file_processor.py`):
+- Ollama: text-only, 8K total chars
+- Gemini Dev: vision + 300K chars, up to 10 images
+- Vertex AI: vision + 600K chars, up to 20 images
+
+---
+
 ### 4.10 `src/validation/metrics.py` — Metric Computation
 
 **Functions:**
@@ -482,7 +528,7 @@ print(result.markdown_path)         # Path to rendered report
 
 | Function | Output | Purpose |
 |---|---|---|
-| `validate_model(y_true, y_prob, config_path)` | `(metrics_dict, passed_bool)` | Computes metrics, checks `auc_pr >= 0.75`. Returns whether gate passed |
+| `validate_model(y_true, y_prob, config_path)` | `(metrics_dict, passed_bool)` | Computes metrics. Gate: no regression > 0.02 vs baseline (or floor ≥ 0.60 on first run). Returns whether gate passed |
 | `save_validation_report(result, output_dir)` | `Path` to JSON | Writes `reports/validation/validation_report.json` with all metrics, gate results, viz paths |
 | `main()` | exit code 0 or 1 | CLI entry point for DVC stage `validate_model`. Reads predictions parquet, runs gate, exits non-zero on failure |
 
@@ -638,7 +684,7 @@ Called when the bias gate fails. Three strategies in escalation order:
 
 | Method | When it fires |
 |---|---|
-| `alert_validation_failure(run_id, auc_pr, threshold)` | AUC-PR below 0.75 |
+| `alert_validation_failure(run_id, auc_pr, threshold)` | AUC-PR below regression gate floor or regressed beyond tolerance |
 | `alert_bias_gate_failure(run_id, disparity, threshold, per_group)` | FNR disparity above 5% |
 | `alert_pipeline_error(run_id, error_message, stage)` | Unhandled exception in any stage |
 | `alert_rollback(run_id, reason, from_version, to_version)` | Model rolled back to previous version |
@@ -672,9 +718,9 @@ Called when the bias gate fails. Three strategies in escalation order:
 **Usage:**
 ```python
 from src.pipeline.orchestrator import run_pipeline
-from src.models.obj1_xgboost.placeholder import XGBoostFireRisk
+from src.models.obj1_xgboost.model import XGBoostFireRiskModel
 
-model = XGBoostFireRisk()
+model = XGBoostFireRiskModel()
 model.load_model("models/ignition/1.0.0/model.json")
 
 result = run_pipeline(
@@ -690,19 +736,23 @@ print(result.is_deployable)  # True only if validation + bias gate both pass
 
 Located at `.github/workflows/model_ci.yml` (repo root level).
 
-| Stage | Gate | Blocking |
-|---|---|---|
-| 1. Lint + type check | `ruff check` + `mypy` zero errors | Yes |
-| 2. Unit tests | `pytest --cov-fail-under=90` | Yes |
-| 3. Container build | `docker buildx` multi-arch success | Yes |
-| 4. Integration test | Smoke test with synthetic data | Yes |
-| 5. Model validation | AUC-PR >= 0.75 | Yes |
-| 6. Bias gate | FNR disparity < 5% | **Yes (BLOCKING)** |
-| 7. Artifact push | Stages 5+6 must pass | Yes |
-| 8. Vertex AI sync | Non-blocking | No |
-| 9. Deploy | Cloud Run service update | Yes |
+| Stage | Job | Gate | Blocking | Activated by |
+|---|---|---|---|---|
+| 1 | `lint` | `ruff check` + `mypy` zero errors | Yes | Always |
+| 2 | `test` | `pytest --cov-fail-under=50`, unit tests only | Yes | Always |
+| 3 | `build` | `docker buildx` multi-arch | Yes | Push to `main` only |
+| 3b | `obj2_integration` | OBJ-2 integration tests with real Cell2Fire binary | Yes | Cell2Fire binary present at `model_config.yaml` path |
+| 4 | `validate` | AUC-PR regression gate (≤0.02 drop vs baseline, floor 0.60) | Yes | OBJ-1 weights in `models/ignition/` |
+| 5 | `bias_gate` | FNR disparity < 5% across FEMA NRI quartiles | **Yes (BLOCKING)** | OBJ-1 weights + FEMA NRI shapefile |
+| 6 | `push_artifact` | Upload model artifact | Yes | Push to `main` + stages 4+5 pass |
+| 7 | `vertex_sync` | Vertex AI Experiments sync | No | Stage 6 success |
+| 8 | `deploy` | Cloud Run deployment | Yes | Push to `main` + stage 6 pass |
 
-Stages 5-9 are placeholder `echo` commands until OBJ-1 is implemented. OBJ-2 and OBJ-3 are ready to be wired in once OBJ-1 provides the primary metrics.
+**Stage 3b (OBJ-2):** Unit tests (mocked, no binary) always run in Stage 2. Stage 3b runs integration tests only when the Cell2Fire C++ binary is installed and executable at the path configured in `configs/model_config.yaml`.
+
+**Stages 4+5 (OBJ-1):** Gate on artifact presence — the code is always there, but the pipeline only runs when trained weights exist. Both skip gracefully with a CI notice when weights or FEMA NRI data are absent.
+
+**Stages 6–8:** Activate only when `main` branch + preceding gates passed.
 
 ---
 

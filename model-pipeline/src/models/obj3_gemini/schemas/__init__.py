@@ -2,13 +2,20 @@
 
 from src.models.obj3_gemini.schemas.base_schema import (
     BaseReport,
+    Casualties,
+    EvacuationEvent,
+    EvacuationZone,
+    FireBehavior,
+    ProjectedActivity,
     ProjectedLoss,
     Recommendation,
     ResourceDeployed,
     ResourceRequirement,
     RiskCell,
+    StructureSummary,
     TimelineEvent,
     VulnerableGroup,
+    WeatherObservation,
 )
 from src.models.obj3_gemini.schemas.daily_schema import DailyReport
 from src.models.obj3_gemini.schemas.final_schema import FinalReport
@@ -24,16 +31,23 @@ SCHEMA_MAP: dict[str, type[BaseReport]] = {
 
 __all__ = [
     "BaseReport",
+    "Casualties",
     "DailyReport",
+    "EvacuationEvent",
+    "EvacuationZone",
     "FinalReport",
+    "FireBehavior",
     "HighRiskReport",
     "IncidentReport",
+    "ProjectedActivity",
     "ProjectedLoss",
     "Recommendation",
     "ResourceDeployed",
     "ResourceRequirement",
     "RiskCell",
     "SCHEMA_MAP",
+    "StructureSummary",
     "TimelineEvent",
     "VulnerableGroup",
+    "WeatherObservation",
 ]

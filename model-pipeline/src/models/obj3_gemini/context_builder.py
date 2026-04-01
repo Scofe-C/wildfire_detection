@@ -57,7 +57,7 @@ class ContextBundle:
     incident_id: str
     # Processed uploaded files — adapter decides how to inject (text vs vision)
     # Import is local to avoid circular deps at module level
-    uploaded_files: "list[Any]" = field(default_factory=list)
+    uploaded_files: list[Any] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -73,17 +73,31 @@ def build_system_prompt(report_type: str, schema: dict[str, Any]) -> str:
     schema_str = json.dumps(schema, indent=2)
     return (
         "You are a professional disaster reporting assistant specialised in "
-        "wildfire analysis. You generate structured reports based on real-time "
+        "wildfire analysis. You generate structured reports aligned with "
+        "ICS-209 Incident Status Summary conventions, based on real-time "
         "ML pipeline outputs, environmental data, and official emergency "
         "management doctrine.\n\n"
         "RULES:\n"
         "1. Output ONLY valid JSON matching the schema below.\n"
         "2. Do NOT hallucinate data — if a value is unknown, use null for "
-        "optional fields.\n"
+        "optional fields. Say 'insufficient data' rather than inventing figures.\n"
         "3. Every report MUST include the disclaimer: "
         '"AI-generated. Not for operational use without human review."\n'
         "4. Set human_review_required=true if report_confidence < 0.70.\n"
-        "5. Do NOT add markdown code fences or text outside the JSON object.\n\n"
+        "5. Do NOT add markdown code fences or text outside the JSON object.\n"
+        "6. GROUNDING: You MUST list the corpus documents you referenced in "
+        "the 'grounding_sources' field. Use the exact filenames from the "
+        "REFERENCE CORPUS section. Set 'grounding_search_count' to the number "
+        "of distinct sources you actually consulted.\n"
+        "7. Be GEOGRAPHICALLY SPECIFIC — use H3 cell indices, specific "
+        "neighborhoods, and precise coordinates rather than vague county-level "
+        "references.\n"
+        "8. For incident reports: populate weather_observations and "
+        "fire_behavior from the telemetry and ML data provided. Use ICS-209 "
+        "tiered projections (12/24/48/72h) in projected_activity when data "
+        "supports forecasting.\n"
+        "9. For resource_requirements: reference ICS resource typing standards "
+        "(Type 1-7) from the IRPG corpus when available.\n\n"
         f"REPORT TYPE: {report_type}\n\n"
         f"RESPONSE SCHEMA:\n{schema_str}"
     )
@@ -144,7 +158,7 @@ def build_data_block(
 ) -> str:
     """Serialise data pipeline snapshot into a structured text block.
 
-    Sections: source staleness, OWM/SMAP telemetry, FIRMS hotspots
+    Sections: source staleness, Open-Meteo/SMAP telemetry, FIRMS hotspots
     (with spatial detail), FEMA NRI tracts.
     """
     parts: list[str] = []
@@ -166,12 +180,16 @@ def build_data_block(
             else:
                 parts.append(f"- [OK] {source_name}")
 
-    # Telemetry
+    # Telemetry — structured for WeatherObservation fields
     telem = pipeline_result.get("telemetry")
     if telem:
-        parts.append("\n## Environmental Telemetry")
+        parts.append("\n## Environmental Telemetry (use for weather_observations field)")
         for k, v in telem.items():
             parts.append(f"- {k}: {v}")
+        parts.append(
+            "Map these to weather_observations: temperature_f, "
+            "relative_humidity_pct, wind_speed_mph, wind_direction, fuel_moisture_1hr"
+        )
 
     # FIRMS — count + spatial detail
     firms_count = pipeline_result.get("firms_hotspot_count", 0)

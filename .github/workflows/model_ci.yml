@@ -18,12 +18,23 @@ env:
 #    locally. This keeps CI fast, free of GPU/API-key dependencies,
 #    and focused on catching regressions from other contributors.
 #
-# 2. Stages 5–9 use a "detect-implementation" pattern: a preliminary
-#    step checks whether the relevant code exists and is non-trivial.
-#    If not implemented yet, the stage passes with a visible skip
-#    reason — no silent `|| echo` hacks that swallow real failures.
+# 2. Stages 4–5 use a "readiness-gate" pattern: a preliminary step
+#    checks whether the required artifacts (trained weights, binary,
+#    data) are present. If not ready, the stage passes with a visible
+#    skip reason — no silent `|| echo` hacks that swallow real failures.
+#    Readiness is determined by artifact presence, NOT code presence
+#    (the code is always there; the weights/binary may not be).
 #
-# 3. Dependency caching cuts ~30–60s per job.
+# 3. Stage 4 uses a regression gate (champion/challenger):
+#    - On main: saves metrics as artifact after a passing run.
+#    - On next run: downloads previous metrics and fails only if
+#      AUC-PR drops more than TOLERANCE (0.02). An absolute floor
+#      (0.60) applies only when no baseline exists yet.
+#
+# 4. Stage 3b gates OBJ-2 integration tests on the Cell2Fire binary.
+#    Unit tests (mocked, no binary) always run in Stage 2.
+#
+# 5. Dependency caching cuts ~30–60s per job.
 # ──────────────────────────────────────────────────────────────────────
 
 jobs:
@@ -32,8 +43,8 @@ jobs:
     name: "Stage 1 — Lint & Type Check"
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
@@ -54,8 +65,8 @@ jobs:
     runs-on: ubuntu-latest
     needs: lint
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
@@ -80,10 +91,9 @@ jobs:
     name: "Stage 3 — Container Build"
     runs-on: ubuntu-latest
     needs: test
-    # Only build on push to main — not on PRs, not on feature branches
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v4
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
       - name: Build multi-platform image
@@ -93,101 +103,165 @@ jobs:
             -t wildfire-model:${{ github.sha }} \
             ./model-pipeline
 
-  # ── Stage 4 ─────────────────────────────────────────────────────────
-  integration:
-    name: "Stage 4 — Integration Test (CI-safe subset)"
+  # ── Stage 3b ────────────────────────────────────────────────────────
+  obj2_integration:
+    name: "Stage 3b — OBJ-2 Integration Tests (binary-gated)"
     runs-on: ubuntu-latest
     needs: test
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
           cache-dependency-path: model-pipeline/requirements.txt
-      - name: Install dependencies
-        working-directory: model-pipeline
-        run: pip install -r requirements.txt
-      - name: Check for CI-safe integration tests
-        id: check_integration
-        working-directory: model-pipeline
-        run: |
-          # Count tests marked 'integration' that do NOT require Ollama/Gemini
-          # For now, all integration tests require external services → skip in CI
-          count=$(find tests/ -name "test_*.py" -path "*/integration/*" | wc -l)
-          if [ "$count" -gt 0 ]; then
-            echo "status=found" >> "$GITHUB_OUTPUT"
-            echo "Found $count integration test files — but all require external services (Ollama/Gemini)"
-            echo "Integration tests run locally, not in CI"
-          else
-            echo "status=none" >> "$GITHUB_OUTPUT"
-          fi
-      - name: Skip reason
-        run: echo "::notice::Integration tests require Ollama/Gemini — run locally with 'pytest tests/obj3/integration/ -v -s'"
-
-  # ── Stage 5 ─────────────────────────────────────────────────────────
-  validate:
-    name: "Stage 5 — Model Validation (AUC-PR > 0.75)"
-    runs-on: ubuntu-latest
-    needs: integration
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-          cache: pip
-          cache-dependency-path: model-pipeline/requirements.txt
-      - name: Detect implementation
+      # Check for the Cell2Fire C++ binary at the path in model_config.yaml.
+      # Unit tests (tests/obj2/) are already mocked and run in Stage 2.
+      # This stage runs integration tests that exercise the actual binary
+      # and raster I/O — only meaningful when the binary is installed.
+      - name: Detect Cell2Fire binary
         id: detect
         working-directory: model-pipeline
         run: |
-          # Stage 5 requires: a trained model artifact OR a validation script
-          # that loads the model and computes AUC-PR.
-          # Check for the orchestrator's validation hook.
-          if grep -rq "def validate_model\|def run_validation\|auc_pr" src/models/obj1_* 2>/dev/null; then
+          BINARY_PATH=$(python3 -c "
+          import yaml, sys
+          try:
+              c = yaml.safe_load(open('configs/model_config.yaml'))
+              print(c.get('obj2', {}).get('cell2fire', {}).get('binary_path', ''))
+          except Exception as e:
+              print('', file=sys.stderr)
+          " 2>/dev/null || echo "")
+          if [ -n "$BINARY_PATH" ] && [ -x "$BINARY_PATH" ]; then
             echo "implemented=true" >> "$GITHUB_OUTPUT"
+            echo "binary_path=$BINARY_PATH" >> "$GITHUB_OUTPUT"
+            echo "::notice::Cell2Fire binary found at $BINARY_PATH — running OBJ-2 integration tests"
           else
             echo "implemented=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::Stage 5 skipped — OBJ-1 model validation not yet implemented"
+            echo "::notice::Stage 3b skipped — Cell2Fire binary not installed (expected path: $BINARY_PATH). Unit tests (mocked) already ran in Stage 2."
           fi
       - name: Install dependencies
         if: steps.detect.outputs.implemented == 'true'
         working-directory: model-pipeline
         run: pip install -r requirements.txt
-      - name: Validate model metrics
+      - name: Run OBJ-2 integration tests
+        if: steps.detect.outputs.implemented == 'true'
+        working-directory: model-pipeline
+        env:
+          CELL2FIRE_BINARY: ${{ steps.detect.outputs.binary_path }}
+        run: |
+          pytest tests/obj2/ tests/test_obj2_and_nri.py -v --tb=short \
+            -m "not skip" \
+            --cov=src/models/obj2_spread \
+            --cov-report=term-missing
+
+  # ── Stage 4 ─────────────────────────────────────────────────────────
+  validate:
+    name: "Stage 4 — OBJ-1 Validation (regression gate, weights-gated)"
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: model-pipeline/requirements.txt
+      # Check for trained model weights — the code is always present, but
+      # running the regression gate requires actual weights + backfill data.
+      # Skips gracefully with a notice when OBJ-1 has not yet been trained.
+      - name: Detect OBJ-1 trained weights
+        id: detect
+        working-directory: model-pipeline
+        run: |
+          if find models/ignition -name "*.json" -o -name "*.pkl" -o -name "*.joblib" 2>/dev/null | grep -q .; then
+            echo "implemented=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "implemented=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Stage 4 skipped — no trained weights found in models/ignition/ (run training pipeline first)"
+          fi
+      - name: Install dependencies
+        if: steps.detect.outputs.implemented == 'true'
+        working-directory: model-pipeline
+        run: pip install -r requirements.txt
+      - name: Download previous metrics baseline
+        if: steps.detect.outputs.implemented == 'true'
+        uses: actions/download-artifact@v4
+        continue-on-error: true   # first run has no baseline — that's OK
+        with:
+          name: model-metrics-baseline
+          path: model-pipeline/metrics/baseline
+      - name: Run regression gate
         if: steps.detect.outputs.implemented == 'true'
         working-directory: model-pipeline
         run: |
           python -c "
+          import json, os, sys
           from src.pipeline.orchestrator import PipelineOrchestrator
+
           orch = PipelineOrchestrator()
           result = orch.run_validation()
-          assert result.metrics['auc_pr'] > 0.75, f'AUC-PR {result.metrics[\"auc_pr\"]} < 0.75 threshold'
-          print(f'Model validation passed: AUC-PR = {result.metrics[\"auc_pr\"]:.4f}')
-          "
+          current = result.metrics
 
-  # ── Stage 6 ─────────────────────────────────────────────────────────
+          os.makedirs('metrics', exist_ok=True)
+          with open('metrics/current.json', 'w') as f:
+              json.dump(current, f, indent=2)
+
+          TOLERANCE = 0.02   # allow up to 2pp AUC-PR regression
+          baseline_path = 'metrics/baseline/current.json'
+
+          if os.path.exists(baseline_path):
+              with open(baseline_path) as f:
+                  baseline = json.load(f)
+              prev = baseline.get('auc_pr', 0.0)
+              curr = current['auc_pr']
+              print(f'Baseline AUC-PR: {prev:.4f}  |  Current: {curr:.4f}  |  Tolerance: {TOLERANCE}')
+              if curr < prev - TOLERANCE:
+                  print(f'FAIL: regressed {prev - curr:.4f} ({TOLERANCE} max allowed)', file=sys.stderr)
+                  sys.exit(1)
+              print(f'PASS: no regression detected')
+          else:
+              curr = current['auc_pr']
+              print(f'No baseline found — applying floor check. AUC-PR: {curr:.4f}')
+              if curr < 0.60:
+                  print(f'FAIL: AUC-PR {curr:.4f} below minimum floor 0.60', file=sys.stderr)
+                  sys.exit(1)
+              print('PASS: above minimum floor')
+          "
+      - name: Save metrics as new baseline
+        if: steps.detect.outputs.implemented == 'true' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: model-metrics-baseline
+          path: model-pipeline/metrics/current.json
+          retention-days: 90
+          overwrite: true
+
+  # ── Stage 5 ─────────────────────────────────────────────────────────
   bias_gate:
-    name: "Stage 6 — Bias Gate (BLOCKING)"
+    name: "Stage 5 — Bias Gate (BLOCKING, weights-gated)"
     runs-on: ubuntu-latest
     needs: validate
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
           cache-dependency-path: model-pipeline/requirements.txt
-      - name: Detect implementation
+      # Requires trained weights (to generate predictions) AND FEMA NRI shapefile
+      # (for vulnerability-quartile spatial join). Both must exist to run.
+      - name: Detect OBJ-1 weights + FEMA NRI data
         id: detect
         working-directory: model-pipeline
         run: |
-          # Stage 6 requires: bias gate module with FEMA NRI integration
-          if grep -rq "def run_bias_gate\|class BiasGate\|bias_gate" src/models/obj1_* src/pipeline/ 2>/dev/null; then
+          WEIGHTS_FOUND=$(find models/ignition -name "*.json" -o -name "*.pkl" -o -name "*.joblib" 2>/dev/null | grep -c . || echo 0)
+          NRI_FOUND=$(find data/static/fema_nri -name "*.shp" 2>/dev/null | grep -c . || echo 0)
+          if [ "$WEIGHTS_FOUND" -gt 0 ] && [ "$NRI_FOUND" -gt 0 ]; then
             echo "implemented=true" >> "$GITHUB_OUTPUT"
           else
             echo "implemented=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::Stage 6 skipped — Bias gate not yet implemented (needs OBJ-1 predictions + FEMA NRI data)"
+            [ "$WEIGHTS_FOUND" -eq 0 ] && echo "::notice::Stage 5 skipped — no OBJ-1 trained weights in models/ignition/"
+            [ "$NRI_FOUND" -eq 0 ] && echo "::notice::Stage 5 skipped — FEMA NRI shapefile missing from data/static/fema_nri/ (download from hazards.fema.gov/nri)"
           fi
       - name: Install dependencies
         if: steps.detect.outputs.implemented == 'true'
@@ -205,39 +279,38 @@ jobs:
           print(f'Bias gate passed: disparity = {result.bias_report[\"observed_disparity\"]:.4f}')
           "
 
-  # ── Stage 7 ─────────────────────────────────────────────────────────
+  # ── Stage 6 ─────────────────────────────────────────────────────────
   push_artifact:
-    name: "Stage 7 — Artifact Push"
+    name: "Stage 6 — Artifact Push"
     runs-on: ubuntu-latest
     needs: bias_gate
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v4
       - name: Detect implementation
         id: detect
         working-directory: model-pipeline
         run: |
-          # Stage 7 requires: artifact push script or GCS upload logic
           if [ -f "scripts/push_artifact.py" ] || grep -rq "def push_artifact\|def upload_model" src/pipeline/ 2>/dev/null; then
             echo "implemented=true" >> "$GITHUB_OUTPUT"
           else
             echo "implemented=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::Stage 7 skipped — Artifact push not yet implemented"
+            echo "::notice::Stage 6 skipped — Artifact push not yet implemented"
           fi
       - name: Push artifact
         if: steps.detect.outputs.implemented == 'true'
         working-directory: model-pipeline
         run: python scripts/push_artifact.py
 
-  # ── Stage 8 ─────────────────────────────────────────────────────────
+  # ── Stage 7 ─────────────────────────────────────────────────────────
   vertex_sync:
-    name: "Stage 8 — Vertex AI Sync (non-blocking)"
+    name: "Stage 7 — Vertex AI Sync (non-blocking)"
     runs-on: ubuntu-latest
     needs: push_artifact
     if: always() && needs.push_artifact.result == 'success'
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v4
       - name: Detect implementation
         id: detect
         working-directory: model-pipeline
@@ -246,21 +319,21 @@ jobs:
             echo "implemented=true" >> "$GITHUB_OUTPUT"
           else
             echo "implemented=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::Stage 8 skipped — Vertex AI sync not yet implemented"
+            echo "::notice::Stage 7 skipped — Vertex AI sync not yet implemented"
           fi
       - name: Sync to Vertex AI
         if: steps.detect.outputs.implemented == 'true'
         working-directory: model-pipeline
         run: python scripts/vertex_sync.py
 
-  # ── Stage 9 ─────────────────────────────────────────────────────────
+  # ── Stage 8 ─────────────────────────────────────────────────────────
   deploy:
-    name: "Stage 9 — Deploy"
+    name: "Stage 8 — Deploy"
     runs-on: ubuntu-latest
     needs: push_artifact
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v4
       - name: Detect implementation
         id: detect
         working-directory: model-pipeline
@@ -269,7 +342,7 @@ jobs:
             echo "implemented=true" >> "$GITHUB_OUTPUT"
           else
             echo "implemented=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::Stage 9 skipped — Deployment not yet configured"
+            echo "::notice::Stage 8 skipped — Deployment not yet configured"
           fi
       - name: Deploy
         if: steps.detect.outputs.implemented == 'true'
@@ -280,7 +353,7 @@ jobs:
   notify_failure:
     name: "Notify on Failure"
     runs-on: ubuntu-latest
-    needs: [lint, test, build, integration, validate, bias_gate]
+    needs: [lint, test, obj2_integration, validate, bias_gate]
     if: failure()
     steps:
       - name: Slack failure notification

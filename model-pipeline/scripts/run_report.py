@@ -20,7 +20,7 @@ Usage
     python scripts/run_report.py --demo emergency
     python scripts/run_report.py --demo low_risk
 
-Exit criterion (TODO 0.5)
+Exit criterion
 --------------------------
 After this script completes, you should see:
     reports/disaster_reports/<type>_<incident_id>_<timestamp>.json
@@ -76,8 +76,8 @@ _DEMO_SCENARIOS: dict[str, dict] = {
         "metrics": {"auc_pr": 0.82, "f1": 0.74, "fnr": 0.12},
         "source_status": {
             "FIRMS": {"status": "OK", "detail": ""},
-            "OWM": {"status": "OK", "detail": ""},
-            "SMAP": {"status": "UNAVAILABLE", "detail": "No credentials"},
+            "Open-Meteo": {"status": "OK", "detail": ""},
+            "SMAP": {"status": "OK", "detail": "Via Open-Meteo soil moisture"},
         },
     },
     "high_risk": {
@@ -114,8 +114,8 @@ _DEMO_SCENARIOS: dict[str, dict] = {
         "metrics": {"auc_pr": 0.85, "f1": 0.77, "fnr": 0.10},
         "source_status": {
             "FIRMS": {"status": "OK", "detail": ""},
-            "OWM": {"status": "OK", "detail": ""},
-            "SMAP": {"status": "UNAVAILABLE", "detail": "No credentials"},
+            "Open-Meteo": {"status": "OK", "detail": ""},
+            "SMAP": {"status": "OK", "detail": "Via Open-Meteo soil moisture"},
         },
     },
     "emergency": {
@@ -153,8 +153,8 @@ _DEMO_SCENARIOS: dict[str, dict] = {
         "metrics": {"auc_pr": 0.88, "f1": 0.81, "fnr": 0.08},
         "source_status": {
             "FIRMS": {"status": "OK", "detail": ""},
-            "OWM": {"status": "STALE", "detail": "OWM returned 429, using cached data"},
-            "SMAP": {"status": "UNAVAILABLE", "detail": "No credentials"},
+            "Open-Meteo": {"status": "STALE", "detail": "OWM returned 429, using cached data"},
+            "SMAP": {"status": "OK", "detail": "Via Open-Meteo soil moisture"},
         },
     },
 }
@@ -218,11 +218,12 @@ def main() -> int:
     if args.backend:
         # Write a temporary patched config
         import tempfile
+
         import yaml  # noqa: PLC0415
         with open(config_path, encoding="utf-8") as fh:
             cfg = yaml.safe_load(fh)
         cfg["llm_backend"] = args.backend
-        tmp = tempfile.NamedTemporaryFile(
+        tmp = tempfile.NamedTemporaryFile(  # noqa: SIM115  # delete=False requires explicit close before use on Windows
             suffix=".yaml", mode="w", encoding="utf-8", delete=False
         )
         yaml.dump(cfg, tmp)

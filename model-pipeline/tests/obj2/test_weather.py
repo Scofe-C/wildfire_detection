@@ -1,18 +1,16 @@
 """
 Tests for src/models/obj2_spread/weather.py
 """
-import io
 from pathlib import Path
 
 import pandas as pd
 import pytest
 
+from src.models.obj2_spread.exceptions import Cell2FireError
 from src.models.obj2_spread.weather import (
     format_weather_csv,
     validate_weather_df,
 )
-from src.models.obj2_spread.exceptions import Cell2FireError
-
 
 # ---------------------------------------------------------------------------
 # Fixtures

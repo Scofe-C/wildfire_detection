@@ -127,8 +127,8 @@ class GeminiDisasterReporter(BaseModel):
         with open(config_path, encoding="utf-8") as fh:
             self._config = yaml.safe_load(fh) or {}
 
-        # Resolve paths relative to config file location
-        base_dir = config_path.resolve().parent.parent  # model-pipeline/
+        # Resolve paths relative to project root (this file is at src/models/obj3_gemini/)
+        base_dir = Path(__file__).resolve().parents[3]  # model-pipeline/
         self._template_dir = base_dir / "templates"
         self._output_dir = base_dir / self._config.get(
             "reporting", {}
@@ -578,10 +578,12 @@ def _preprocess_report_json(raw_json: str, context_bundle: ContextBundle) -> str
       ``review_status`` and ``priority`` in nested recommendation lists.
     """
     import json as _json  # noqa: PLC0415
-    from datetime import UTC, datetime as _dt  # noqa: PLC0415
+    from datetime import UTC  # noqa: PLC0415
+    from datetime import datetime as _dt
 
     _UPPERCASE_FIELDS = {
         "incident_status", "risk_level", "operating_mode", "review_status",
+        "incident_complexity",
     }
     _RECOMMENDATION_LIST_FIELDS = (
         "recommendations", "preventive_recommendations", "resource_requirements",
@@ -622,12 +624,12 @@ def _preprocess_report_json(raw_json: str, context_bundle: ContextBundle) -> str
                 sanitized = "".join(c for c in s if c.isprintable()).strip()
                 if sanitized:
                     cleaned_sources.append(sanitized)
-        data["data_sources_used"] = cleaned_sources or ["XGBoost", "FIRMS", "OWM", "FEMA NRI"]
+        data["data_sources_used"] = cleaned_sources or ["XGBoost", "FIRMS", "Open-Meteo", "FEMA NRI"]
     else:
-        data["data_sources_used"] = ["XGBoost", "FIRMS", "OWM", "FEMA NRI"]
+        data["data_sources_used"] = ["XGBoost", "FIRMS", "Open-Meteo", "FEMA NRI"]
 
     # --- Normalise: uppercase all known enum fields ---
-    for field in _UPPERCASE_FIELDS:
+    for field in _UPPERCASE_FIELDS:  # noqa: F402
         if field in data and isinstance(data[field], str):
             data[field] = data[field].upper()
 
@@ -638,6 +640,20 @@ def _preprocess_report_json(raw_json: str, context_bundle: ContextBundle) -> str
             for item in items:
                 if isinstance(item, dict) and isinstance(item.get("priority"), str):
                     item["priority"] = item["priority"].upper()
+
+    # --- Normalise: uppercase enum fields in nested objects ---
+    # evacuation_status[].status
+    for zone in data.get("evacuation_status") or []:
+        if isinstance(zone, dict) and isinstance(zone.get("status"), str):
+            zone["status"] = zone["status"].upper()
+    # fire_behavior.fire_type
+    fb = data.get("fire_behavior")
+    if isinstance(fb, dict) and isinstance(fb.get("fire_type"), str):
+        fb["fire_type"] = fb["fire_type"].upper()
+    # evacuation_history[].action
+    for evt in data.get("evacuation_history") or []:
+        if isinstance(evt, dict) and isinstance(evt.get("action"), str):
+            evt["action"] = evt["action"].upper()
 
     # --- Normalise: scores that must be 0.0–1.0 but model outputs 0–100 ---
     # vulnerability_score in vulnerable_populations

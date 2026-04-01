@@ -248,7 +248,7 @@ async def generate_report(
     report_type_override: str = Form("auto"),
     backend_override: str | None = Form(None),
     # Files
-    files: list[UploadFile] = File(default=[]),
+    files: list[UploadFile] = File(default=[]),  # noqa: B008
 ) -> JSONResponse:
     """Generate a disaster report from operator-supplied data and files."""
 
@@ -290,8 +290,8 @@ async def generate_report(
         "metrics": {},
         "source_status": {
             "FIRMS": {"status": "OK", "detail": "Operator-supplied"},
-            "OWM": {"status": "OK", "detail": "Operator-supplied"},
-            "SMAP": {"status": "UNAVAILABLE", "detail": "Not provided"},
+            "Open-Meteo": {"status": "OK", "detail": "Operator-supplied"},
+            "SMAP": {"status": "OK", "detail": "Via Open-Meteo soil moisture"},
         },
     }
 
@@ -368,7 +368,7 @@ async def generate_report(
         result = await asyncio.to_thread(_run)
     except Exception as exc:
         logger.exception("generate_report failed")
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     rr = result.report_result
     val = result.validation

@@ -11,10 +11,9 @@ based on elapsed time since last hotspot detection.
 from __future__ import annotations
 
 import enum
-import json
 import logging
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
