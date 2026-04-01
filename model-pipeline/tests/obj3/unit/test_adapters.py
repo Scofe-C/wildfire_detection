@@ -55,7 +55,7 @@ class TestOllamaAdapterInit:
     def test_default_config(self) -> None:
         from src.models.obj3_gemini.adapters.ollama_adapter import OllamaAdapter
         adapter = OllamaAdapter({})
-        assert adapter._model == "qwen2.5:7b"
+        assert adapter._model == "qwen3:8b"
         assert adapter._base_url == "http://localhost:11434"
         assert adapter._temperature == 0.0
         assert adapter._max_retries == 2
