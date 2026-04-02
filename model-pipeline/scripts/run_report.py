@@ -64,6 +64,7 @@ _DEMO_SCENARIOS: dict[str, dict] = {
             {"h3_index": "8928308280fffff", "probability": 0.15, "lat": 37.4, "lon": -119.5},
         ],
         "cell2fire_geojson": None,
+        "obj2_simulation": None,
         "propagator_summary": None,
         "telemetry": {
             "temperature_max": 22.0,
@@ -100,12 +101,31 @@ _DEMO_SCENARIOS: dict[str, dict] = {
             {"h3_index": "8928308281fffff", "probability": 0.74, "lat": 34.14, "lon": -118.30},
         ],
         "cell2fire_geojson": None,
-        "propagator_summary": "4 active hotspots. Peak FRP 85.3 MW near lat=34.12, lon=-118.32. Risk: HIGH.",
+        "obj2_simulation": {
+            "ignition_cell": "8928308280fffff",
+            "ignition_probability": 0.72,
+            "spread_direction_deg": 77.1,
+            "spread_speed_kmh": 2.27,
+            "crown_fire_status": "passive_crown",
+            "byram_intensity_kwm": 1446.1,
+            "dead_fuel_moisture_pct": 11.3,
+            "foliar_moisture_content_pct": 115.0,
+            "dominant_factor": "wind",
+            "inputs_used": {
+                "wind_speed_10m_ms": 9.64,
+                "midflame_wind_mph": 8.63,
+                "ignition_cell_slope_deg": 2.2,
+                "ignition_cell_fbfm40": 122.0,
+            },
+            "warnings": [],
+        },
+        "propagator_summary": "Ignition cell: 8928308280fffff. spreading at 2.27 km/h (1.4 mph). direction 77.1°. crown fire: passive_crown. Byram intensity: 1446.1 kW/m. dominant factor: wind.",
         "telemetry": {
             "temperature_max": 38.5,
             "wind_speed_mph": 22.0,
             "relative_humidity": 14.0,
             "soil_moisture": 0.06,
+            "dead_fuel_moisture_pct": 11.3,
         },
         "fema_nri_tracts": [
             {"tract_id": "06037701000", "nri_score": 78.2, "county": "Los Angeles"},
@@ -135,15 +155,35 @@ _DEMO_SCENARIOS: dict[str, dict] = {
             for i in range(5)
         ],
         "cell2fire_geojson": '{"type":"FeatureCollection","features":[]}',
+        "obj2_simulation": {
+            "ignition_cell": "8928308280fffff",
+            "ignition_probability": 0.95,
+            "spread_direction_deg": 45.0,
+            "spread_speed_kmh": 5.8,
+            "crown_fire_status": "active_crown",
+            "byram_intensity_kwm": 4200.0,
+            "dead_fuel_moisture_pct": 5.2,
+            "foliar_moisture_content_pct": 80.0,
+            "dominant_factor": "wind",
+            "inputs_used": {
+                "wind_speed_10m_ms": 17.0,
+                "midflame_wind_mph": 15.2,
+                "ignition_cell_slope_deg": 8.5,
+                "ignition_cell_fbfm40": 165.0,
+            },
+            "warnings": ["Extreme fire behavior expected"],
+        },
         "propagator_summary": (
             "EMERGENCY: 15 active hotspots. Peak FRP 300 MW. "
-            "Estimated spread NE at 3.5 mph. ~420 acres."
+            "Spreading NE at 5.8 km/h (3.6 mph). Active crown fire. "
+            "Byram intensity 4200 kW/m. ~420 acres."
         ),
         "telemetry": {
             "temperature_max": 43.0,
             "wind_speed_mph": 38.0,
             "relative_humidity": 6.0,
             "soil_moisture": 0.03,
+            "dead_fuel_moisture_pct": 5.2,
         },
         "fema_nri_tracts": [
             {"tract_id": "06037701000", "nri_score": 91.5, "county": "Los Angeles"},

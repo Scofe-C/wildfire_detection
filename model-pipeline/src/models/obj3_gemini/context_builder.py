@@ -135,6 +135,29 @@ def build_ml_block(
         else:
             parts.append(str(c2f)[:2000])
 
+    # OBJ-2 Rothermel Simulation
+    sim = pipeline_result.get("obj2_simulation")
+    if sim:
+        parts.append("\n## OBJ-2 Fire Spread Simulation (Rothermel)")
+        parts.append(f"- Ignition cell: {sim.get('ignition_cell', 'N/A')}")
+        parts.append(f"- Ignition probability: {sim.get('ignition_probability', 'N/A')}")
+        parts.append(f"- Spread direction: {sim.get('spread_direction_deg', 'N/A')} degrees")
+        parts.append(f"- Spread speed: {sim.get('spread_speed_kmh', 'N/A')} km/h")
+        parts.append(f"- Crown fire status: {sim.get('crown_fire_status', 'N/A')}")
+        parts.append(f"- Byram fire intensity: {sim.get('byram_intensity_kwm', 'N/A')} kW/m")
+        parts.append(f"- Dead fuel moisture: {sim.get('dead_fuel_moisture_pct', 'N/A')}%")
+        parts.append(f"- Foliar moisture: {sim.get('foliar_moisture_content_pct', 'N/A')}%")
+        parts.append(f"- Dominant spread factor: {sim.get('dominant_factor', 'N/A')}")
+        inputs_used = sim.get("inputs_used") or {}
+        if inputs_used:
+            parts.append(f"- Wind speed (10m): {inputs_used.get('wind_speed_10m_ms', 'N/A')} m/s")
+            parts.append(f"- Midflame wind: {inputs_used.get('midflame_wind_mph', 'N/A')} mph")
+            parts.append(f"- Slope: {inputs_used.get('ignition_cell_slope_deg', 'N/A')} degrees")
+            parts.append(f"- FBFM40 fuel model: {inputs_used.get('ignition_cell_fbfm40', 'N/A')}")
+        warnings = sim.get("warnings") or []
+        if warnings:
+            parts.append(f"- Warnings: {', '.join(str(w) for w in warnings)}")
+
     # Propagator
     prop = pipeline_result.get("propagator_summary")
     if prop:

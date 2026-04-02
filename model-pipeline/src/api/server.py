@@ -242,6 +242,7 @@ async def generate_report(
     propagator_summary: str | None = Form(None),
     xgboost_cells_json: str | None = Form(None),
     cell2fire_summary: str | None = Form(None),
+    obj2_simulation_json: str | None = Form(None),
     # Operator input
     operator_notes: str | None = Form(None),
     # Settings
@@ -275,6 +276,12 @@ async def generate_report(
         except json.JSONDecodeError:
             pass
 
+    obj2_sim: dict[str, Any] | None = None
+    if obj2_simulation_json:
+        import contextlib
+        with contextlib.suppress(json.JSONDecodeError):
+            obj2_sim = json.loads(obj2_simulation_json)
+
     pipeline_result: dict[str, Any] = {
         "run_id": f"dashboard-{datetime.now(tz=UTC).strftime('%Y%m%d-%H%M%S')}",
         "is_deployable": True,
@@ -283,6 +290,7 @@ async def generate_report(
         "firms_hotspots": [],
         "xgboost_top_cells": xgboost_top_cells,
         "cell2fire_geojson": cell2fire_summary,
+        "obj2_simulation": obj2_sim,
         "propagator_summary": propagator_summary,
         "telemetry": telemetry or None,
         "fema_nri_tracts": [],
