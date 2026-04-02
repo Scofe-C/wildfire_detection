@@ -745,11 +745,11 @@ with DAG(
             echo "DVC pointer updated: dvc/processed_{{ params.resolution_km }}km.dvc"
 
             # Track plain fused features (OBJ-2 input)
+            # data/processed/fused is owned by dvc.yaml fuse_features stage —
+            # use dvc commit instead of dvc add to avoid overlap error.
             if [ -d "data/processed/fused/{{ params.resolution_km }}km" ]; then
-                dvc add "data/processed/fused/{{ params.resolution_km }}km" -f
-                cp "data/processed/fused/{{ params.resolution_km }}km.dvc" \
-                   "dvc/fused_{{ params.resolution_km }}km.dvc"
-                echo "DVC pointer updated: dvc/fused_{{ params.resolution_km }}km.dvc"
+                dvc commit data/processed/fused -f
+                echo "DVC commit complete: data/processed/fused"
             else
                 echo "Fused {{ params.resolution_km }}km dir not yet populated — skipping"
             fi
