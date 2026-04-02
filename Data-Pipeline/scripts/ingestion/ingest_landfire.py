@@ -106,7 +106,9 @@ def _locate_rasters(raw_dir: Path) -> dict[str, Path]:
     keyword search returns the first alphabetical match; rename files to
     disambiguate (e.g. prefix with "LF2022_" vs "LF2020_").
     """
-    required_mapping = {
+    # NOTE: FBFM40, CC, EVT are preferred but optional if CBH/CBD are available
+    # (for fire spread crown fire simulation without fuel reclassification).
+    preferred_mapping = {
         "fbfm40": ["f40", "fbfm40"],
         "cc":     ["_cc_", "_cc."],
         "evt":    ["evt"],
@@ -118,22 +120,24 @@ def _locate_rasters(raw_dir: Path) -> dict[str, Path]:
     }
 
     found: dict[str, Path] = {}
-    missing_required: list[str] = []
+    missing_preferred: list[str] = []
 
-    for layer, keywords in required_mapping.items():
+    for layer, keywords in preferred_mapping.items():
         path = _find_raster(raw_dir, keywords)
         if path:
             found[layer] = path
             logger.info("Found LANDFIRE %s: %s", layer.upper(), path.name)
         else:
-            missing_required.append(layer.upper())
+            missing_preferred.append(layer.upper())
 
-    if missing_required:
-        raise FileNotFoundError(
-            f"Missing required LANDFIRE rasters in {raw_dir}: {missing_required}\n"
-            "Download from https://landfire.gov/data/FullExtentDownloads "
+    if missing_preferred:
+        logger.warning(
+            "Missing preferred LANDFIRE rasters in %s: %s\n"
+            "If available, download from https://landfire.gov/data/FullExtentDownloads "
             "(LF 2022 → CONUS → Fuel) and place extracted .tif files there.\n"
-            "Expected keywords in filenames: F40/FBFM40, _CC_, EVT."
+            "Expected keywords in filenames: F40/FBFM40, _CC_, EVT.\n"
+            "Proceeding with optional layers only (e.g. CBH/CBD for crown fire).",
+            raw_dir, missing_preferred
         )
 
     for layer, keywords in optional_mapping.items():
