@@ -17,7 +17,11 @@ def _load_tracking_config() -> dict[str, Any]:
 
 
 class MLflowLogger:
-    def __init__(self, experiment_name: str | None = None, tracking_uri: str | None = None):
+    def __init__(
+        self,
+        experiment_name: str | None = None,
+        tracking_uri: str | None = None,
+    ):
         import mlflow
         self._mlflow = mlflow
 
@@ -25,6 +29,7 @@ class MLflowLogger:
         self._mlflow.set_tracking_uri(tracking_uri or config["tracking_uri"])
         self._mlflow.set_experiment(experiment_name or config["experiment_name"])
         self._run: Any = None  # mlflow.ActiveRun — untyped, annotated as Any
+        self._registered_model_name: str = config.get("registered_model_name", "wildfire-ignition")
 
     def start_run(self, run_name: str | None = None, tags: dict[str, str] | None = None) -> str:
         self._run = self._mlflow.start_run(run_name=run_name, tags=tags)
@@ -55,11 +60,15 @@ class MLflowLogger:
                 self._mlflow.log_metric(f"input_{feat}_{stat}", val)
 
     def log_bias_gate_result(self, bias_report: dict[str, Any]):
-        self._mlflow.log_param("bias_gate_result", bias_report["gate_result"])
-        self._mlflow.log_metric("bias_fnr_disparity", bias_report["disparity_between_groups"])
-        self._mlflow.log_metric("bias_overall_fnr", bias_report["overall_fnr"])
-        for group, fnr in bias_report.get("per_group_fnr", {}).items():
-            self._mlflow.log_metric(f"bias_fnr_{group}", fnr)
+        """Log bias gate results from bias_check.run_bias_check() report format."""
+        self._mlflow.log_param("bias_gate_result", bias_report.get("gate_result", "UNKNOWN"))
+        self._mlflow.log_metric("bias_overall_fnr", bias_report.get("overall_fnr", 0.0))
+        for slice_name, slice_data in bias_report.get("slices", {}).items():
+            disparity = slice_data.get("disparity", 0.0)
+            self._mlflow.log_metric(f"bias_disparity_{slice_name}", disparity)
+            for group, fnr in slice_data.get("per_group_fnr", {}).items():
+                safe = group.replace(" ", "_").replace("/", "_")
+                self._mlflow.log_metric(f"bias_fnr_{slice_name}_{safe}", fnr)
 
     def log_validation_result(self, metrics: dict[str, Any], passed: bool):
         self._mlflow.log_param("validation_passed", str(passed))
@@ -70,6 +79,26 @@ class MLflowLogger:
             if Path(path).exists():
                 self.log_artifact(path, artifact_subdir="visualizations")
 
+    def log_shap(self, shap_dict: dict[str, float]) -> None:
+        """Log mean absolute SHAP values per feature as MLflow metrics.
+
+        Each feature is logged as 'shap_{feature_name}' so they appear
+        side-by-side in the MLflow UI and can be tracked for drift.
+        """
+        for feature, value in shap_dict.items():
+            if isinstance(value, (int, float)) and value is not None:
+                safe_name = f"shap_{feature}".replace(" ", "_").replace("/", "_")
+                self._mlflow.log_metric(safe_name, float(value))
+
+    def log_threshold(self, threshold: float, recall_at_threshold: float) -> None:
+        """Log the operational decision threshold alongside the model.
+
+        Logged as a metric (not a param) so it can be written after get_params()
+        which may already have logged a default threshold value — MLflow params
+        are immutable once written, metrics are not.
+        """
+        self._mlflow.log_metric("tuned_threshold", threshold)
+        self._mlflow.log_metric("recall_at_threshold", recall_at_threshold)
 
 def compute_input_statistics(X: pd.DataFrame) -> dict[str, dict[str, float]]:
     stats = {}

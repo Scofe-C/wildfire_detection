@@ -29,11 +29,14 @@ class VertexAISync:
         self._experiment_name = experiment_name or config.get("experiment_name", "wildfire-model-pipeline")
         self._initialized = False
 
-    def _init_vertex(self):
-        if self._initialized:
-            return
+    def _init_vertex(self, experiment: str | None = None):
         from google.cloud import aiplatform
-        aiplatform.init(project=self._project_id, location=self._location)
+        # Always re-init when experiment context is needed — init is idempotent
+        aiplatform.init(
+            project=self._project_id,
+            location=self._location,
+            experiment=experiment or self._experiment_name,
+        )
         self._aiplatform = aiplatform
         self._initialized = True
         logger.info("Vertex AI initialized — project: %s", self._project_id)
@@ -45,18 +48,17 @@ class VertexAISync:
         params: dict[str, str],
     ) -> str:
         self._init_vertex()
-        experiment = self._aiplatform.Experiment.get_or_create(
-            experiment_name=self._experiment_name,
-        )
-        with experiment.start_run(run=run_id) as run:
+        # run name must be lowercase alphanumeric + hyphens
+        safe_run_id = run_id.lower().replace("_", "-")
+        with self._aiplatform.start_run(run=safe_run_id) as run:
             float_metrics = {k: float(v) for k, v in metrics.items() if isinstance(v, (int, float))}
             if float_metrics:
                 run.log_metrics(float_metrics)
             str_params = {k: str(v) for k, v in params.items()}
             if str_params:
                 run.log_params(str_params)
-        logger.info("Synced to Vertex AI — run: %s", run_id)
-        return run_id
+        logger.info("Synced to Vertex AI Experiment '%s' — run: %s", self._experiment_name, safe_run_id)
+        return safe_run_id
 
     def sync_rollback_event(
         self,

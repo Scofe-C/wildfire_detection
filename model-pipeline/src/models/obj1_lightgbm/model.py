@@ -1,11 +1,11 @@
 """
-XGBoost fire risk model — OBJ-1 ignition prediction.
+LightGBM fire risk model — OBJ-1 ignition prediction (secondary model).
 
 Based on notebook experimentation results (california.ipynb):
-  - ROC-AUC: 0.9426, PR-AUC: 0.8927
-  - Decision threshold: 0.365 (≥90% recall on Jan 2025 LA fires test set)
-  - scale_pos_weight handles class imbalance
-  - OrdinalEncoder required (XGBoost cannot handle pandas category dtype)
+  - ROC-AUC: 0.9374, PR-AUC: 0.8837  (XGBoost wins at 0.9426 / 0.8927)
+  - Decision threshold: 0.239 (≥90% recall on Jan 2025 LA fires test set)
+  - is_unbalance=True handles class imbalance (LightGBM equivalent of scale_pos_weight)
+  - Natively handles pandas category dtype — no OrdinalEncoder needed
   - RandomizedSearchCV with TimeSeriesSplit(5), n_iter=50, scoring=roc_auc
 """
 from __future__ import annotations
@@ -23,24 +23,25 @@ from src.validation.metrics import compute_auc_pr, compute_f1, compute_fnr
 
 logger = logging.getLogger(__name__)
 
-# Hyperparameter search space from notebook Cell 17
+# Hyperparameter search space
 _PARAM_DISTRIBUTIONS = {
-    "max_depth":          [3, 4, 5, 6, 7, 8],
+    "num_leaves":         [20, 31, 50, 63, 100, 127],
     "n_estimators":       [100, 200, 300, 400, 500],
     "learning_rate":      [0.01, 0.05, 0.1, 0.2, 0.3],
+    "min_child_samples":  [10, 20, 30, 50, 100],
     "subsample":          [0.6, 0.7, 0.8, 0.9, 1.0],
     "colsample_bytree":   [0.6, 0.7, 0.8, 0.9, 1.0],
-    "min_child_weight":   [1, 3, 5, 7, 10],
-    "gamma":              [0, 0.1, 0.2, 0.3, 0.5],
+    "reg_alpha":          [0.0, 0.01, 0.1, 0.5, 1.0],
+    "reg_lambda":         [0.0, 0.01, 0.1, 0.5, 1.0],
 }
 
 
-class XGBoostFireRiskModel(BaseModel):
-    """XGBoost classifier for wildfire ignition risk.
+class LightGBMFireRiskModel(BaseModel):
+    """LightGBM classifier for wildfire ignition risk.
 
     Usage
     -----
-    model = XGBoostFireRiskModel()
+    model = LightGBMFireRiskModel()
     best_params = model.tune(X_train, y_train)
     model.fit(X_train, y_train, best_params)
     threshold = model.tune_threshold(y_test, model.predict_proba(X_test))
@@ -48,11 +49,10 @@ class XGBoostFireRiskModel(BaseModel):
     """
 
     def __init__(self, version: str = "1.0.0"):
-        super().__init__(model_name="xgboost_ignition", version=version)
+        super().__init__(model_name="lightgbm_ignition", version=version)
         self._best_params: dict = {}
-        self._threshold: float = 0.365       # default from notebook; overridden by tune_threshold
-        self._scale_pos_weight: float = 1.0
-        self._fit_medians: dict = {}          # stored from training for inference-time imputation
+        self._threshold: float = 0.239       # default from notebook; overridden by tune_threshold
+        self._fit_medians: dict = {}
 
     # ── Preprocessing ─────────────────────────────────────────────────────────
 
@@ -61,11 +61,8 @@ class XGBoostFireRiskModel(BaseModel):
         df: pd.DataFrame,
         is_inference: bool = False,
     ) -> tuple[pd.DataFrame, dict]:
-        """Apply full preprocessing pipeline for XGBoost (with OrdinalEncoder).
-
-        Returns (X, medians_dict).  At inference, pass self._fit_medians.
-        """
-        return full_pipeline(df, model_type="xgb", is_inference=is_inference,
+        """Apply full preprocessing pipeline for LightGBM (category dtype, no OrdinalEncoder)."""
+        return full_pipeline(df, model_type="lgbm", is_inference=is_inference,
                              fit_medians=self._fit_medians if is_inference else None)
 
     # ── Hyperparameter tuning ─────────────────────────────────────────────────
@@ -79,30 +76,17 @@ class XGBoostFireRiskModel(BaseModel):
         n_jobs: int = -1,
         random_state: int = 42,
     ) -> dict:
-        """RandomizedSearchCV with TimeSeriesSplit.
-
-        Parameters
-        ----------
-        X_train, y_train : preprocessed training features and labels.
-        n_iter : number of random parameter combinations to try.
-        cv_splits : number of TimeSeriesSplit folds.
-
-        Returns
-        -------
-        best_params : dict of best hyperparameters found.
-        """
-        from scipy.stats import randint, uniform
+        """RandomizedSearchCV with TimeSeriesSplit."""
+        from lightgbm import LGBMClassifier
         from sklearn.model_selection import RandomizedSearchCV, TimeSeriesSplit
-        from xgboost import XGBClassifier
 
-        logger.info("Tuning XGBoost — n_iter=%d, cv=%d ...", n_iter, cv_splits)
+        logger.info("Tuning LightGBM — n_iter=%d, cv=%d ...", n_iter, cv_splits)
 
-        scale_pos = float((y_train == 0).sum() / max(1, (y_train == 1).sum()))
-        base_model = XGBClassifier(
-            scale_pos_weight=scale_pos,
-            eval_metric="logloss",
+        base_model = LGBMClassifier(
+            is_unbalance=True,
             random_state=random_state,
-            n_jobs=1,  # parallelism via RandomizedSearchCV n_jobs
+            n_jobs=1,
+            verbose=-1,
         )
 
         tscv = TimeSeriesSplit(n_splits=cv_splits)
@@ -130,46 +114,37 @@ class XGBoostFireRiskModel(BaseModel):
         y_train: pd.Series,
         params: dict | None = None,
     ) -> None:
-        """Train XGBoost on preprocessed features.
+        """Train LightGBM on preprocessed features."""
+        from lightgbm import LGBMClassifier
 
-        Parameters
-        ----------
-        X_train : preprocessed feature DataFrame (output of self.preprocess()).
-        y_train : binary labels.
-        params : hyperparameters (from tune()) or None for defaults.
-        """
-        from xgboost import XGBClassifier
+        logger.info("Fitting LightGBM — %d train rows", len(X_train))
 
-        self._scale_pos_weight = float((y_train == 0).sum() / max(1, (y_train == 1).sum()))
-        logger.info(
-            "Fitting XGBoost — %d train rows, scale_pos_weight=%.2f",
-            len(X_train), self._scale_pos_weight,
-        )
-
-        final_params = {
-            "scale_pos_weight": self._scale_pos_weight,
-            "eval_metric": "logloss",
+        final_params: dict = {
+            "is_unbalance": True,
             "random_state": 42,
+            "verbose": -1,
         }
         if params:
             final_params.update(params)
 
-        self._model = XGBClassifier(**final_params)
+        self._model = LGBMClassifier(**final_params)
         self._model.fit(X_train, y_train)
         self._is_loaded = True
-        logger.info("XGBoost fit complete — %d features", X_train.shape[1])
+        logger.info("LightGBM fit complete — %d features", X_train.shape[1])
 
     # ── Required BaseModel interface ──────────────────────────────────────────
 
     def load_model(self, model_path: str | Path) -> None:
-        from xgboost import XGBClassifier
+        from lightgbm import Booster, LGBMClassifier
         model_path = Path(model_path)
         if not model_path.exists():
             raise FileNotFoundError(f"Model file not found: {model_path}")
-        self._model = XGBClassifier()
-        self._model.load_model(str(model_path))
+        # LightGBM saves the booster; wrap in sklearn estimator
+        booster = Booster(model_file=str(model_path))
+        self._model = LGBMClassifier()
+        self._model._Booster = booster
         self._is_loaded = True
-        logger.info("Loaded XGBoost model from %s", model_path)
+        logger.info("Loaded LightGBM model from %s", model_path)
 
     def predict(self, X: pd.DataFrame) -> pd.DataFrame:
         """Return DataFrame with 'prediction' (0/1) and 'probability' columns."""
@@ -191,16 +166,13 @@ class XGBoostFireRiskModel(BaseModel):
         }
 
     def explain(self, X_sample: pd.DataFrame) -> dict[str, Any]:
-        """SHAP TreeExplainer on a sample of the test set.
-
-        Returns dict with 'feature_importance' (native XGBoost gain) and
-        'shap_mean_abs' (mean absolute SHAP values per feature).
-        """
+        """SHAP TreeExplainer on a sample of the test set."""
         if not self._is_loaded:
             raise RuntimeError("Model not trained or loaded")
 
+        feat_names = list(X_sample.columns)
         native_importance = dict(zip(
-            self._model.feature_names_in_ if hasattr(self._model, "feature_names_in_") else FEATURES,
+            feat_names,
             self._model.feature_importances_,
             strict=False,
         ))
@@ -211,13 +183,10 @@ class XGBoostFireRiskModel(BaseModel):
             import shap
             explainer = shap.TreeExplainer(self._model)
             shap_values = explainer.shap_values(X_sample)
-            feat_names = (
-                list(self._model.feature_names_in_)
-                if hasattr(self._model, "feature_names_in_")
-                else list(X_sample.columns)
-            )
+            # LightGBM returns list [class0, class1] for binary classification
+            sv = shap_values[1] if isinstance(shap_values, list) else shap_values
             shap_mean_abs = {
-                feat: float(np.abs(shap_values[:, i]).mean())
+                feat: float(np.abs(sv[:, i]).mean())
                 for i, feat in enumerate(feat_names)
             }
             shap_mean_abs = dict(sorted(shap_mean_abs.items(), key=lambda x: x[1], reverse=True))
@@ -229,7 +198,6 @@ class XGBoostFireRiskModel(BaseModel):
     # ── Additional methods ────────────────────────────────────────────────────
 
     def predict_proba(self, X: pd.DataFrame) -> np.ndarray:
-        """Return raw probability scores (not thresholded)."""
         if not self._is_loaded:
             raise RuntimeError("Model not trained or loaded")
         return self._model.predict_proba(X)[:, 1]
@@ -240,26 +208,10 @@ class XGBoostFireRiskModel(BaseModel):
         y_prob: np.ndarray,
         target_recall: float = 0.90,
     ) -> float:
-        """Find the highest threshold that achieves >= target_recall.
-
-        Uses candidates[-1] fix from notebook Cell 18 — np.argmax would return
-        the first (lowest) threshold meeting recall, giving near-100% recall at
-        the cost of precision.  We want the HIGHEST threshold still meeting recall.
-
-        Parameters
-        ----------
-        y_true : true labels.
-        y_prob : predicted probabilities.
-        target_recall : minimum recall to achieve (default 0.90).
-
-        Returns
-        -------
-        threshold : float
-        """
+        """Find the highest threshold achieving >= target_recall (candidates[-1] fix)."""
         from sklearn.metrics import precision_recall_curve
 
         prec, rec, thresholds = precision_recall_curve(y_true, y_prob)
-        # thresholds has len(prec) - 1 entries; rec[:-1] aligns with thresholds
         candidates = np.where(rec[:-1] >= target_recall)[0]
         if len(candidates) == 0:
             logger.warning(
@@ -267,20 +219,18 @@ class XGBoostFireRiskModel(BaseModel):
             )
             self._threshold = 0.5
         else:
-            idx = candidates[-1]   # highest threshold still meeting recall
+            idx = candidates[-1]
             self._threshold = float(thresholds[idx])
 
         logger.info(
-            "Threshold tuned: %.4f (recall=%.3f at this threshold, target=%.2f)",
-            self._threshold, rec[candidates[-1]] if len(candidates) > 0 else 0.0, target_recall,
+            "Threshold tuned: %.4f (target recall=%.2f)", self._threshold, target_recall
         )
         return self._threshold
 
     def get_params(self) -> dict:
-        """Return all model parameters for MLflow logging."""
         params = {
-            "model_type": "xgboost",
-            "scale_pos_weight": self._scale_pos_weight,
+            "model_type": "lightgbm",
+            "is_unbalance": True,
             "threshold": self._threshold,
             "n_features": len(FEATURES),
             "features": ",".join(FEATURES),
