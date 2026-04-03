@@ -180,18 +180,18 @@ data-pipeline/
 │   │   ├── ingest_goes.py           # GOES NRT quick-check + S3 direct access
 │   │   ├── ingest_weather.py        # Open-Meteo + NWS fallback (rate-limited)
 │   │   ├── ingest_hrrr.py           # NOAA HRRR rapid weather (emergency mode)
-│   │   ├── ingest_landfire.py       # LANDFIRE 2022 raster → H3 zonal stats (one-time)
+│   │   ├── ingest_landfire.py       # LANDFIRE 2022 raster → H3 zonal stats (one-time). --resolution-km accepts multiple values; --raw-dir for custom download path
 │   │   ├── ingest_srtm.py           # USGS SRTM 30m tiles → elevation/slope/aspect (one-time)
 │   │   ├── ingest_ndvi.py           # MODIS MOD13A2 NDVI via AppEEARS GeoTIFF (one-time)
 │   │   └── ingest_field_telemetry.py
 │   │
 │   ├── processing/
 │   │   ├── process_firms.py         # Spatial join, FRP clipping, confidence norm
-│   │   ├── process_static.py        # Merge LANDFIRE + SRTM + NDVI parquets into unified cache
+│   │   ├── process_static.py        # Merge LANDFIRE + SRTM + NDVI parquets into unified cache. Full CLI: --resolution-km, --static-dir, --force-rebuild
 │   │   └── process_weather.py       # 6h aggregation + Canadian FWI + derived fire weather features
 │   │
 │   ├── fusion/
-│   │   ├── fuse_features.py         # Left-join from master grid (all cells preserved)
+│   │   ├── fuse_features.py         # Left-join from master grid (all cells preserved). Includes LANDFIRE spread-simulation stubs: canopy_base_height_m, canopy_bulk_density, evt_national_class
 │   │   └── priority_resolver.py     # Ground truth > satellite priority hierarchy
 │   │
 │   ├── validation/
@@ -277,7 +277,7 @@ data-pipeline/
 | Open-Meteo | Hourly weather (7 variables) | Hourly | Weather features | ✅ Live |
 | NWS API | Forecast weather | Hourly | Weather fallback | ✅ Live |
 | NOAA HRRR | Rapid-refresh weather | Hourly | Emergency-mode weather | ✅ Live |
-| LANDFIRE 2022 (FBFM40, CC, EVT) | Fuel model, canopy cover, vegetation type | Static (one-time) | Fuel/veg features | ⚠️ Manual download — see §6a |
+| LANDFIRE 2022 (FBFM40, CC, EVT, CBH, CBD) | Fuel model, canopy cover, vegetation type, canopy base height, canopy bulk density | Static (one-time) | Fuel/veg features + OBJ-2 crown fire inputs | ⚠️ Manual download — see §6a |
 | USGS SRTM 30m (OpenTopography) | Elevation, slope, aspect | Static (one-time) | Terrain features | ⚠️ Manual download — see §6b |
 | MODIS MOD13A2 v061 (NASA AppEEARS) | 1 km 16-day NDVI composite | Static (seasonal) | Vegetation greenness | ⚠️ Manual download — see §6c |
 
@@ -289,34 +289,61 @@ All data is indexed to an **H3 hexagonal grid** at configurable resolution (defa
 
 Static layers must be downloaded once. Without them the pipeline still runs — static columns output `NaN` with `data_quality_flag=4` (all static missing) or `5` (partial). Rebuild the cache any time a new source is added.
 
-### 6a. LANDFIRE 2022 — Fuel Model, Canopy Cover, Vegetation Type
+### 6a. LANDFIRE 2022 — Fuel Model, Canopy Cover, Vegetation Type, Canopy Structure
 
 **Download:** https://landfire.gov/data/FullExtentDownloads → LF 2022 → CONUS
 
-Download and extract these three ZIPs:
+Download and extract these five ZIPs:
 
-| Layer | ZIP | Column produced |
-|---|---|---|
-| Fuel model (FBFM40) | `LF2022_FBFM40_230_CONUS.zip` | `fuel_model_fbfm40` |
-| Canopy cover (CC) | `LF2022_CC_230_CONUS.zip` | `canopy_cover_pct` |
-| Vegetation type (EVT) | `LF2022_EVT_230_CONUS.zip` | `vegetation_type`, `dominant_fuel_fraction` |
+| Layer | ZIP | Column produced | Used by |
+|---|---|---|---|
+| Fuel model (FBFM40) | `LF2022_FBFM40_230_CONUS.zip` | `fuel_model_fbfm40` | OBJ-1, OBJ-2 |
+| Canopy cover (CC) | `LF2022_CC_230_CONUS.zip` | `canopy_cover_pct` | OBJ-1 |
+| Vegetation type (EVT) | `LF2022_EVT_230_CONUS.zip` | `vegetation_type`, `dominant_fuel_fraction` | OBJ-1 |
+| Canopy base height (CBH) | `LF2022_CBH_230_CONUS.zip` | `canopy_base_height_m` | OBJ-2 crown fire |
+| Canopy bulk density (CBD) | `LF2022_CBD_230_CONUS.zip` | `canopy_bulk_density` | OBJ-2 crown fire |
 
-Place the extracted `.tif` files (any name containing `F40`/`FBFM40`, `_CC_`, `EVT`) in:
+`canopy_base_height_m` and `canopy_bulk_density` are required by the OBJ-2 fire spread simulator (Van Wagner 1977 crown fire initiation and Scott & Reinhardt 2001 active crown fire threshold). Without them the simulator runs surface-fire-only mode — no crown fire classification.
+
+Place the extracted `.tif` files in:
 ```
 data/static/landfire_raw/
     LC22_F40_230.tif
     LC22_CC_230.tif
     LC22_EVT_230.tif
+    LC22_CBH_230.tif
+    LC22_CBD_230.tif
 ```
 
-Run:
+Run for both resolutions at once (recommended):
+```bash
+python -m scripts.ingestion.ingest_landfire \
+    --resolution-km 64 22 \
+    --raw-dir data/static/landfire_raw \
+    --output-dir data/static
+```
+
+Or one resolution at a time:
 ```bash
 python -m scripts.ingestion.ingest_landfire --resolution-km 64 --output-dir data/static
+python -m scripts.ingestion.ingest_landfire --resolution-km 22 --output-dir data/static
 ```
+
+**New CLI arguments:**
+
+| Argument | Default | Description |
+|---|---|---|
+| `--resolution-km` | `64 22` | One or more resolutions (space-separated). Loops through each in a single run |
+| `--raw-dir` | `data/static/landfire_raw` | Path to the folder containing downloaded LANDFIRE `.tif` files |
+| `--output-dir` | `data/static` | Where to write output Parquet files |
 
 The script clips the CONUS rasters to CA + TX, resamples to 0.01° (~1 km) to avoid OOM, reprojects to WGS84, and runs `rasterstats.zonal_stats()` on each H3 cell.
 
-Output: `data/static/landfire_features_64km.parquet`
+Outputs:
+```
+data/static/landfire_features_64km.parquet   ← quiet-mode (H3 res-2)
+data/static/landfire_features_22km.parquet   ← active/emergency mode (H3 res-5)
+```
 
 ---
 
@@ -413,13 +440,26 @@ Output: `data/static/ndvi_features_64km.parquet` — column: `ndvi` (scaled 0.0�
 
 ### 6d. Rebuild the static cache
 
-After adding any new source parquet, regenerate the unified static cache:
+After adding any new source parquet, regenerate the unified static cache. `process_static.py` now has a full CLI:
+
 ```bash
-python -c "
-from scripts.processing.process_static import load_and_process_static
-load_and_process_static(64, 'data/static', force_rebuild=True)
-"
+# Rebuild both resolutions in one command (recommended)
+python -m scripts.processing.process_static \
+    --resolution-km 64 22 \
+    --static-dir data/static \
+    --force-rebuild
+
+# Or one resolution at a time
+python -m scripts.processing.process_static --resolution-km 64 --static-dir data/static
 ```
+
+**CLI arguments:**
+
+| Argument | Default | Description |
+|---|---|---|
+| `--resolution-km` | `64 22` | One or more resolutions to rebuild (space-separated) |
+| `--static-dir` | `data/static` | Directory containing individual source Parquet files |
+| `--force-rebuild` | `False` | Re-run even if the cache file already exists |
 
 Missing sources fall back to `NaN` gracefully — partial static data is flagged `data_quality_flag=5` and still used for training.
 
@@ -436,7 +476,8 @@ All 28 features are defined in `configs/schema_config.yaml` — the single sourc
 | Fire detections | `fire_radiative_power`, `fire_confidence`, `fire_pixel_count`, `active_fire_count`, `mean_frp` | FIRMS |
 | Weather | `temperature_2m`, `relative_humidity_2m`, `wind_speed_10m`, `wind_direction_10m`, `precipitation`, `days_since_precipitation`, `drought_index_proxy`, `cumulative_wind_run_24h` | Open-Meteo / NWS |
 | Terrain | `elevation_m`, `slope_deg`, `aspect_deg`, `terrain_roughness` | USGS SRTM |
-| Fuel / Vegetation | `fuel_model_fbfm40`, `canopy_cover_pct`, `canopy_height_m`, `stand_age`, `vegetation_type` | LANDFIRE |
+| Fuel / Vegetation | `fuel_model_fbfm40`, `canopy_cover_pct`, `canopy_height_m`, `stand_age`, `vegetation_type`, `dominant_fuel_fraction` | LANDFIRE |
+| Fire spread (OBJ-2) | `canopy_base_height_m`, `canopy_bulk_density`, `evt_national_class` | LANDFIRE CBH/CBD/EVT |
 | Grid metadata | `grid_id`, `latitude`, `longitude`, `region`, `resolution_km`, `data_quality_flag`, `timestamp_utc` | Computed |
 
 ### Data Quality Flag Codes
@@ -450,6 +491,8 @@ All 28 features are defined in `configs/schema_config.yaml` — the single sourc
 | 5 | Some static columns null — boundary cell or missing tile | Use for training (partial static) |
 
 Phase 2 placeholder columns (`fire_weather_index` is now computed; `ndvi` requires AppEEARS download) are excluded from quality flag null-rate calculations so they do not inflate flag=3 counts.
+
+**Fire spread columns (OBJ-2 inputs):** `canopy_base_height_m`, `canopy_bulk_density`, and `evt_national_class` are optional spread-simulation columns added via `fuse_features.py`. They are `NaN` until the LANDFIRE CBH/CBD download is complete (see §6a). When `NaN`, the OBJ-2 simulator falls back to surface-fire-only mode — no crown fire classification — which is still valid. These columns are excluded from the `data_quality_flag=3` null-rate threshold.
 
 ---
 

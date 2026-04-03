@@ -124,7 +124,14 @@ class Cell2FireSpread(BaseModel):
 
         work_dir = Path(tempfile.mkdtemp(prefix="cell2fire_"))
         output_dir = work_dir / "output"
-        shutil.copy("/home/ibrahim/C2F-W/data/ScottAndBurgan/Hom_Fuel_101_40x40-asc/spain_lookup_table.csv", work_dir / "spain_lookup_table.csv")
+        # Resolve spain_lookup_table.csv relative to this file's package directory
+        _pkg_data = Path(__file__).parent / "data" / "spain_lookup_table.csv"
+        if not _pkg_data.exists():
+            raise Cell2FireError(
+                f"spain_lookup_table.csv not found at {_pkg_data}. "
+                "Place it under model-pipeline/src/models/obj2_spread/data/"
+            )
+        shutil.copy(_pkg_data, work_dir / "spain_lookup_table.csv")
         output_dir.mkdir()
 
         try:

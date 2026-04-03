@@ -104,8 +104,24 @@ data_sources:
         description: "Forest Canopy Cover percentage"
         download_url: "https://landfire.gov/bulk/downloadfile.php?FNAME=LF2022_CC_230_CONUS.zip"
       vegetation_type:
-        description: "Existing Vegetation Type"
+        description: "Existing Vegetation Type (LF2022)"
         download_url: "https://landfire.gov/bulk/downloadfile.php?FNAME=LF2022_EVT_230_CONUS.zip"
+      # --- New products for fire spread simulation ---
+      cbh:
+        description: "Canopy Base Height — height at which continuous canopy fuel begins (raw ×10 = tenths of meters)"
+        download_url: "https://landfire.gov/bulk/downloadfile.php?FNAME=LF2020_CBH_200_CONUS.zip"
+        raw_file_hint: "US_200CBH.tif"
+        optional: true   # Pipeline continues gracefully if not present
+      cbd:
+        description: "Canopy Bulk Density — available canopy fuel per unit volume (raw ×100 = kg/100m³)"
+        download_url: "https://landfire.gov/bulk/downloadfile.php?FNAME=LF2024_CBD_240_CONUS.zip"
+        raw_file_hint: "US_240CBD.tif"
+        optional: true
+      evt_cnc:
+        description: "Existing Vegetation Type National Canopy Class (LF2020) — simplified vegetation classes"
+        download_url: "https://landfire.gov/bulk/downloadfile.php?FNAME=LF2020_EVT_200_CONUS.zip"
+        raw_file_hint: "US_200EVT.tif"
+        optional: true
     native_crs: "EPSG:5070"
     native_resolution_m: 30
 
@@ -344,6 +360,55 @@ features:
       enabled: true
       nullable: true
       aggregation: "mode"
+      regional_priority:
+        california: "standard"
+        texas: "standard"
+
+    - name: "canopy_base_height_m"
+      type: "float32"
+      description: "Mean canopy base height within cell (meters, from LF2020 CBH ÷ 10)"
+      source: "landfire"
+      enabled: true
+      nullable: true
+      validation:
+        min: 0.0
+        max: 40.0
+      aggregation: "mean"
+      simulator_use: "crown_fire_initiation"
+      # Crown fire initiates when surface fire intensity exceeds the Van Wagner
+      # critical intensity threshold, which depends on CBH.
+      # Lower CBH (< 2 m) → easier crown fire transition → higher spread speed.
+      regional_priority:
+        california: "critical"   # Chaparral and conifer forests with low CBH
+        texas: "standard"
+
+    - name: "canopy_bulk_density"
+      type: "float32"
+      description: "Canopy bulk density (kg/m³, from LF2024 CBD ÷ 100)"
+      source: "landfire"
+      enabled: true
+      nullable: true
+      validation:
+        min: 0.0
+        max: 0.45
+      aggregation: "mean"
+      simulator_use: "crown_fire_spread_rate"
+      # Crown fire ROS scales with CBD (Van Wagner 1977).
+      # Threshold for active crown fire: CBD ≥ 0.1 kg/m³ (Scott & Reinhardt 2001).
+      regional_priority:
+        california: "critical"   # Dense Sierra Nevada conifer stands
+        texas: "standard"
+
+    - name: "evt_national_class"
+      type: "float64"
+      description: "LANDFIRE 2020 EVT National Canopy Class code (simplified vegetation class)"
+      source: "landfire"
+      enabled: true
+      nullable: true
+      aggregation: "mode"
+      simulator_use: "fuel_moisture_proxy"
+      # Provides finer vegetation characterisation than FBFM40 for estimating
+      # foliar moisture content and fuel curing state.
       regional_priority:
         california: "standard"
         texas: "standard"
