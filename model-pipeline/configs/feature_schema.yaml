@@ -1,39 +1,76 @@
-version: "1.0.0"
+version: "2.0.0"
+# Canonical feature schema for OBJ-1 wildfire ignition model.
+# Derived from notebook experimentation (california.ipynb).
+# BREAKING CHANGES from v1.0.0:
+#   - index column: h3_index → grid_id
+#   - target: fire_detected → fire_detected_binary
+#   - all features replaced with actual pipeline output columns
+#   - leakage columns (frp_max, fire_count, etc.) removed entirely
 
 index_columns:
-  - name: h3_index
+  - name: grid_id
     dtype: string
     required: true
   - name: timestamp
-    dtype: datetime64[ns]
+    dtype: datetime64[ns, UTC]
     required: true
 
 target:
-  name: fire_detected
+  name: fire_detected_binary
   dtype: int8
   required: true
 
 features:
-  # FIRMS (in data pipeline)
-  - { name: frp_max,              dtype: float32, source: firms,    bounds: [0.0, 5000.0], required: true }
-  - { name: fire_count,           dtype: int32,   source: firms,    bounds: [0, 1000],     required: true }
-  # OpenWeatherMap (in data pipeline)
-  - { name: temperature_max,      dtype: float32, source: weather,  bounds: [200.0, 350.0], required: true }
-  - { name: wind_speed_max,       dtype: float32, source: weather,  bounds: [0.0, 100.0],   required: true }
-  - { name: wind_direction_sin,   dtype: float32, source: weather,  bounds: [-1.0, 1.0],    required: true }
-  - { name: wind_direction_cos,   dtype: float32, source: weather,  bounds: [-1.0, 1.0],    required: true }
-  - { name: humidity_min,         dtype: float32, source: weather,  bounds: [0.0, 100.0],   required: true }
-  # SMAP (not yet in data pipeline)
-  - { name: soil_moisture_0_5cm,  dtype: float32, source: smap,     bounds: [0.0, 1.0],     required: false }
-  - { name: soil_moisture_0_100cm,dtype: float32, source: smap,     bounds: [0.0, 1.0],     required: false }
-  # USGS 3DEP (not yet)
-  - { name: elevation,            dtype: float32, source: 3dep,     bounds: [-100.0, 5000.0], required: false }
-  - { name: slope,                dtype: float32, source: 3dep,     bounds: [0.0, 90.0],      required: false }
-  # LANDFIRE (not yet)
-  - { name: fuel_class,           dtype: int16,   source: landfire, bounds: [0, 256],   required: false }
-  # MODIS (not yet)
-  - { name: ndvi,                 dtype: float32, source: modis,    bounds: [-1.0, 1.0], required: false }
-  # SEDAC (not yet)
-  - { name: population_density_log, dtype: float32, source: sedac,  bounds: [0.0, 15.0], required: false }
+  # ── Continuous weather (required) ─────────────────────────────────────────
+  - { name: temperature_2m,          dtype: float32, source: open_meteo,  bounds: [-30.0, 60.0],   required: true }
+  - { name: relative_humidity_2m,    dtype: float32, source: open_meteo,  bounds: [0.0, 100.0],    required: true }
+  - { name: wind_speed_10m,          dtype: float32, source: open_meteo,  bounds: [0.0, 80.0],     required: true }
+  - { name: precipitation,           dtype: float32, source: open_meteo,  bounds: [0.0, 500.0],    required: true }
+  - { name: soil_moisture_0_to_7cm,  dtype: float32, source: open_meteo,  bounds: [0.0, 1.0],      required: true }
+  - { name: vpd,                     dtype: float32, source: open_meteo,  bounds: [0.0, 10.0],     required: true }
+  - { name: fire_weather_index,      dtype: float32, source: derived,     bounds: [0.0, 200.0],    required: true }
 
-normalization_stats_path: "data/static/normalization_stats.json"
+  # ── Angular features (sin/cos encoded — raw degrees NOT accepted) ──────────
+  - { name: wind_direction_10m_sin,  dtype: float32, source: open_meteo,  bounds: [-1.0, 1.0],     required: true }
+  - { name: wind_direction_10m_cos,  dtype: float32, source: open_meteo,  bounds: [-1.0, 1.0],     required: true }
+  - { name: aspect_degrees_sin,      dtype: float32, source: srtm,        bounds: [-1.0, 1.0],     required: true }
+  - { name: aspect_degrees_cos,      dtype: float32, source: srtm,        bounds: [-1.0, 1.0],     required: true }
+
+  # ── Static terrain (required) ─────────────────────────────────────────────
+  - { name: elevation_m,             dtype: float32, source: srtm,        bounds: [-100.0, 5000.0], required: true }
+  - { name: slope_degrees,           dtype: float32, source: srtm,        bounds: [0.0, 90.0],     required: true }
+  - { name: dominant_fuel_fraction,  dtype: float32, source: landfire,    bounds: [0.0, 1.0],      required: true }
+  - { name: ndvi,                    dtype: float32, source: modis,       bounds: [-1.0, 1.0],     required: true }
+
+  # ── Geo coordinates (required) ────────────────────────────────────────────
+  - { name: latitude,                dtype: float32, source: grid,        bounds: [24.0, 50.0],    required: true }
+  - { name: longitude,               dtype: float32, source: grid,        bounds: [-125.0, -93.0], required: true }
+
+  # ── Static categorical (required) ─────────────────────────────────────────
+  - { name: fuel_model_fbfm40,       dtype: category, source: landfire,   required: true }
+  - { name: vegetation_type,         dtype: category, source: landfire,   required: true }
+
+  # ── Weather-derived (required) ────────────────────────────────────────────
+  - { name: cumulative_wind_run_24h, dtype: float32, source: derived,     bounds: [0.0, 2000.0],   required: true }
+  - { name: drought_index_proxy,     dtype: float32, source: derived,     bounds: [0.0, 100.0],    required: true }
+
+# ── Columns that must NEVER appear at inference (leakage from FIRMS) ─────────
+# These are listed here for documentation only. feature_engineering.py will
+# raise ValueError if any of these are passed to the model.
+leakage_columns:
+  - active_fire_count
+  - mean_frp
+  - median_frp
+  - max_confidence
+  - nearest_fire_distance_km
+
+# ── Columns dropped during preprocessing ─────────────────────────────────────
+dropped_columns:
+  - days_since_last_precipitation   # ablation: Delta ROC-AUC -0.0006 — hurts model
+  - canopy_cover_pct                # >50% null after -9999 sentinel cleanup
+  - data_quality_flag               # pipeline metadata, not a feature
+  - resolution_km                   # constant (always 64), zero variance
+  - date                            # export-only string, not a feature
+  - region                          # metadata
+  - wind_direction_10m              # replaced by sin/cos encoding
+  - aspect_degrees                  # replaced by sin/cos encoding
