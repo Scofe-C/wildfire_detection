@@ -390,7 +390,48 @@ select option { background: var(--surface); }
 
               <div style="height:1px;background:var(--border);margin:16px 0"></div>
 
-              <button type="submit" class="btn btn-primary" id="submitBtn">
+              <!-- Re-run with Local Data toggle -->
+              <div style="margin-bottom:12px">
+                <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;font-weight:600">
+                  <input type="checkbox" id="rerunToggle" onchange="toggleRerun(this.checked)" style="width:16px;height:16px">
+                  Re-run with Local Observations
+                </label>
+                <div style="font-size:11px;color:var(--muted);margin-top:2px">
+                  Models re-run with your measurements. Other data filled from latest pipeline run.
+                </div>
+              </div>
+
+              <div id="rerunPanel" style="display:none;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px;margin-bottom:14px">
+                <div style="font-size:12px;font-weight:600;margin-bottom:10px;color:var(--warning)">⚡ Local Observation Override</div>
+                <div class="field">
+                  <label>Grid ID <span style="color:var(--critical)">*</span></label>
+                  <input type="text" id="rerun_grid_id" placeholder="e.g. 852830bffffffff">
+                </div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+                  <div class="field">
+                    <label>Temperature (°F)</label>
+                    <input type="number" id="rerun_temp_f" placeholder="e.g. 105" step="0.1">
+                  </div>
+                  <div class="field">
+                    <label>Wind Speed (mph)</label>
+                    <input type="number" id="rerun_wind_mph" placeholder="e.g. 35" step="0.1">
+                  </div>
+                  <div class="field">
+                    <label>Relative Humidity (%)</label>
+                    <input type="number" id="rerun_rh" placeholder="e.g. 12" step="0.1">
+                  </div>
+                  <div class="field">
+                    <label>Soil Moisture (m³/m³)</label>
+                    <input type="number" id="rerun_soil" placeholder="e.g. 0.08" step="0.001">
+                  </div>
+                </div>
+                <div class="field">
+                  <label>Fire Weather Index</label>
+                  <input type="number" id="rerun_fwi" placeholder="e.g. 28.5" step="0.1">
+                </div>
+              </div>
+
+              <button type="button" class="btn btn-primary" id="submitBtn" onclick="handleSubmit()">
                 <span id="si">🚀</span>
                 <span id="st">Generate Report</span>
               </button>
@@ -483,34 +524,64 @@ function renderFiles() {
   }).join('');
 }
 
-// ── Submit ──
-document.getElementById('form').addEventListener('submit', async e => {
-  e.preventDefault();
+// ── Rerun panel toggle ──
+function toggleRerun(enabled) {
+  document.getElementById('rerunPanel').style.display = enabled ? 'block' : 'none';
+  document.getElementById('st').textContent = enabled ? 'Re-run with Local Data' : 'Generate Report';
+}
+
+// ── Submit (handles both /api/generate and /api/rerun) ──
+async function handleSubmit() {
   const btn = document.getElementById('submitBtn');
   const si = document.getElementById('si');
   const st = document.getElementById('st');
   btn.disabled = true;
   si.innerHTML = '<span class="spinner"></span>';
+  const origLabel = st.textContent;
   st.textContent = 'Generating…';
 
   document.getElementById('resultWrap').classList.remove('show');
 
-  const fd = new FormData(e.target);
-  fd.delete('files');
-  files.forEach(f => fd.append('files', f));
+  const isRerun = document.getElementById('rerunToggle').checked;
 
   try {
-    const res = await fetch('/api/generate', { method:'POST', body:fd });
-    const d = await res.json();
+    let res, d;
+    if (isRerun) {
+      const fd = new FormData();
+      const gridId = document.getElementById('rerun_grid_id').value.trim();
+      if (!gridId) { showResult({ success:false, error:'Grid ID is required for local re-run.' }); return; }
+      fd.append('grid_id', gridId);
+      fd.append('region', document.querySelector('[name=region]')?.value || 'california');
+      const tempF   = document.getElementById('rerun_temp_f').value;
+      const windMph = document.getElementById('rerun_wind_mph').value;
+      const rh      = document.getElementById('rerun_rh').value;
+      const soil    = document.getElementById('rerun_soil').value;
+      const fwi     = document.getElementById('rerun_fwi').value;
+      if (tempF)   fd.append('temperature_f', tempF);
+      if (windMph) fd.append('wind_speed_mph', windMph);
+      if (rh)      fd.append('relative_humidity', rh);
+      if (soil)    fd.append('soil_moisture', soil);
+      if (fwi)     fd.append('fire_weather_index', fwi);
+      const notes = document.getElementById('operator_notes')?.value;
+      if (notes)   fd.append('operator_notes', notes);
+      res = await fetch('/api/rerun', { method:'POST', body:fd });
+    } else {
+      const form = document.getElementById('form');
+      const fd = new FormData(form);
+      fd.delete('files');
+      files.forEach(f => fd.append('files', f));
+      res = await fetch('/api/generate', { method:'POST', body:fd });
+    }
+    d = await res.json();
     showResult(d);
   } catch(err) {
     showResult({ success:false, error: String(err) });
   } finally {
     btn.disabled = false;
     si.textContent = '🚀';
-    st.textContent = 'Generate Report';
+    st.textContent = origLabel;
   }
-});
+}
 
 function showResult(d) {
   const wrap = document.getElementById('resultWrap');

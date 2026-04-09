@@ -302,6 +302,7 @@ def run_training_pipeline(
                 )
             except RuntimeError as e:
                 logger.error("[%s] Both models failed: %s — triggering rollback", run_id, e)
+                alerter.alert_validation_failure(run_id, 0.0, config.auc_pr_threshold)
                 _trigger_rollback(config, run_id, alerter, tracker)
                 result.error = str(e)
                 return result
@@ -316,6 +317,7 @@ def run_training_pipeline(
                 )
             except RuntimeError as e:
                 logger.error("[%s] XGBoost failed AUC-PR gate: %s — triggering rollback", run_id, e)
+                alerter.alert_validation_failure(run_id, 0.0, config.auc_pr_threshold)
                 _trigger_rollback(config, run_id, alerter, tracker)
                 result.error = str(e)
                 return result
@@ -366,7 +368,19 @@ def run_training_pipeline(
         sample_size = min(config.shap_n_samples, len(winner_X_test))
         try:
             shap_result = winner.explain(winner_X_test.sample(sample_size, random_state=42))
-            tracker.log_shap(shap_result.get("shap_mean_abs", shap_result.get("feature_importance", {})))
+            shap_importances = shap_result.get("shap_mean_abs", shap_result.get("feature_importance", {}))
+            tracker.log_shap(shap_importances)
+            # Alert if soil moisture importance drops below threshold (feature drift signal)
+            import yaml as _yaml
+            _shap_cfg = (_yaml.safe_load(open(
+                Path(__file__).resolve().parents[2] / "configs" / "model_config.yaml"
+            )) or {}).get("shap", {})
+            _min_soil_importance = _shap_cfg.get("min_soil_moisture_importance", 0.05)
+            _soil_importance = shap_importances.get("soil_moisture_0_to_7cm", 1.0)
+            if _soil_importance < _min_soil_importance:
+                alerter.alert_shap_drift(
+                    run_id, "soil_moisture_0_to_7cm", _soil_importance, _min_soil_importance,
+                )
         except Exception as e:
             logger.warning("[%s] SHAP failed (non-blocking): %s", run_id, e)
 

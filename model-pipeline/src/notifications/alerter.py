@@ -112,6 +112,24 @@ class SlackAlerter:
             "Feature": feature, "Importance": f"{importance:.4f}", "Threshold": f"{threshold:.4f}",
         }, run_id))
 
+    def alert_critical_fire_risk(self, region: str, grid_id: str, probability: float):
+        if "critical_fire_risk" not in self._alert_types:
+            return
+        self._send(self._build("pipeline_error", "CRITICAL Fire Risk Detected", {
+            "Region": region, "Grid ID": grid_id, "Probability": f"{probability:.4f}",
+        }))
+
+    def alert_data_drift(
+        self, run_id: str, drifted_features: list[str], overall_psi: float, verdict: str,
+    ):
+        if "data_drift" not in self._alert_types:
+            return
+        self._send(self._build("shap_drift", "Data Drift Detected", {
+            "Overall PSI": f"{overall_psi:.4f}",
+            "Verdict": verdict,
+            "Drifted Features": ", ".join(drifted_features[:5]) or "none",
+        }, run_id))
+
     def alert_success(self, run_id: str, model_version: str, auc_pr: float):
         self._send(self._build("success", "Pipeline SUCCESS", {
             "Version": model_version, "AUC-PR": f"{auc_pr:.4f}", "Bias Gate": "PASSED",

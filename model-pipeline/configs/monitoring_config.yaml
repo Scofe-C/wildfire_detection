@@ -1,0 +1,16 @@
+monitoring:
+  psi_warning_threshold: 0.1
+  psi_critical_threshold: 0.25
+  prediction_mean_shift_threshold: 0.1
+  critical_rate_multiplier: 2.0
+  check_interval_hours: 6
+  # GCS paths for baselines (written by orchestrator after Vertex AI push)
+  baseline_gcs_prefix: "model-artifacts/baselines"
+  inference_gcs_prefix: "inference-outputs"
+
+retraining:
+  auto_trigger: false  # set true in production
+  github_repo: "Scofe-C/wildfire_detection"
+  workflow_file: "model_ci.yml"
+  cooldown_hours: 24
+  github_token_secret: "GITHUB_TOKEN"

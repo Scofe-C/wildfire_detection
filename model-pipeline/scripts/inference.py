@@ -470,9 +470,11 @@ def main() -> None:
         try:
             from src.notifications.alerter import SlackAlerter
             alerter = SlackAlerter()
-            alerter.send_message(
-                f"CRITICAL fire risk detected — {n_critical} cells above 0.65 threshold. "
-                f"Top cell: {all_critical[0]}"
+            top = all_critical[0]
+            alerter.alert_critical_fire_risk(
+                region=top.get("region", "unknown"),
+                grid_id=str(top.get("grid_id", "unknown")),
+                probability=float(top.get("fire_risk_score", 0.0)),
             )
         except Exception as e:
             logger.warning("Slack alert failed (non-blocking): %s", e)

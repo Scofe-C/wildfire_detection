@@ -402,3 +402,127 @@ async def generate_report(
         "files_processed": len(processed_files),
         "backend_used": active_backend,
     })
+
+
+# ---------------------------------------------------------------------------
+# API — operator re-run with local observations
+# ---------------------------------------------------------------------------
+
+@app.post("/api/rerun")
+async def rerun_with_local_data(
+    grid_id: str = Form(...),
+    region: str = Form("california"),
+    temperature_f: float | None = Form(None),
+    wind_speed_mph: float | None = Form(None),
+    relative_humidity: float | None = Form(None),
+    soil_moisture: float | None = Form(None),
+    fire_weather_index: float | None = Form(None),
+    operator_notes: str | None = Form(None),
+    backend_override: str | None = Form(None),
+) -> JSONResponse:
+    """Re-run OBJ-1 + OBJ-2 with operator-supplied local observations.
+
+    Loads the latest pipeline data for the region from disk/GCS, replaces
+    operator-overridden columns in the target grid cell, re-scores with the
+    production model, then generates an OBJ-3 report with real predictions.
+    """
+    if _reporter is None:
+        raise HTTPException(status_code=503, detail="Reporter not loaded — check server logs")
+
+    import json as _json
+
+    # Build override dict from non-None form fields
+    overrides: dict[str, float] = {}
+    for field_name, value in [
+        ("temperature_f", temperature_f),
+        ("wind_speed_mph", wind_speed_mph),
+        ("relative_humidity", relative_humidity),
+        ("soil_moisture", soil_moisture),
+        ("fire_weather_index", fire_weather_index),
+    ]:
+        if value is not None:
+            overrides[field_name] = value
+
+    # Load latest pipeline data for the region
+    import pandas as pd
+    pipeline_data_path = _ROOT / "historical_data" / f"{region}_merged.parquet"
+    if not pipeline_data_path.exists():
+        # Fallback: look for any parquet with region name
+        candidates = list(_ROOT.rglob(f"*{region}*.parquet"))
+        if not candidates:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No pipeline data found for region '{region}'. Run inference first.",
+            )
+        pipeline_data_path = candidates[0]
+
+    try:
+        df = pd.read_parquet(pipeline_data_path)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load pipeline data: {e}") from e
+
+    # Load production model metadata
+    local_model_dir = _ROOT / "models" / "ignition"
+    pointer = local_model_dir / f"latest_{region}.txt"
+    if not pointer.exists():
+        raise HTTPException(
+            status_code=503,
+            detail=f"No local model pointer for '{region}'. Run training first.",
+        )
+    model_dir = pointer.read_text().strip()
+    try:
+        meta = _json.loads((Path(model_dir) / "model_metadata.json").read_text())
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load model metadata: {e}") from e
+
+    # Re-run with overrides
+    def _run_rerun() -> Any:
+        from src.pipeline.rerun_engine import RerunEngine
+
+        engine = RerunEngine(model_path=model_dir, config=meta)
+        df_overridden = engine.apply_overrides(df, grid_id=grid_id, overrides=overrides)
+        predictions, input_df = engine.run_obj1(df_overridden)
+        obj2_sim = engine.run_obj2(df_overridden, predictions)
+        pipeline_result = engine.build_result(predictions, input_df, obj2_sim, firms=None)
+
+        # Wire operator notes into HumanInput
+        from src.models.obj3_gemini.context_builder import HumanInput
+
+        human_inputs = []
+        if operator_notes:
+            override_summary = ", ".join(f"{k}={v}" for k, v in overrides.items())
+            human_inputs.append(HumanInput(
+                text_notes=(
+                    f"Operator local observations applied to grid_id={grid_id}: "
+                    f"{override_summary}. Notes: {operator_notes}"
+                ),
+                uploaded_files=[],
+                source="operator",
+                submitted_at=datetime.now(tz=UTC).isoformat(),
+            ))
+
+        return _reporter.generate_report(
+            pipeline_result=pipeline_result,
+            human_inputs=human_inputs,
+            uploaded_files=[],
+        )
+
+    try:
+        result = await asyncio.to_thread(_run_rerun)
+    except Exception as exc:
+        logger.exception("rerun failed")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    rr = result.report_result
+    return JSONResponse({
+        "success": rr.error is None,
+        "error": rr.error,
+        "report_type": rr.report_type,
+        "grid_id": grid_id,
+        "region": region,
+        "overrides_applied": overrides,
+        "json_path": str(result.json_path.relative_to(_ROOT)) if result.json_path else None,
+        "rendered_path": str(
+            (result.html_path or result.markdown_path).relative_to(_ROOT)
+        ) if (result.html_path or result.markdown_path) else None,
+    })

@@ -29,7 +29,7 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Install dependencies
-        working-directory: wildfire_detection/model-pipeline
+        working-directory: model-pipeline
         run: pip install -r requirements.txt
 
       - name: Authenticate to GCP
@@ -38,7 +38,7 @@ jobs:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
 
       - name: Promote model version to Production in Vertex AI
-        working-directory: wildfire_detection/model-pipeline
+        working-directory: model-pipeline
         env:
           GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
         run: |
