@@ -201,6 +201,21 @@ async def get_report(report_id: str) -> JSONResponse:
     return JSONResponse(json.loads(matches[0].read_text(encoding="utf-8")))
 
 
+@app.delete("/api/reports/{report_id}")
+async def delete_report_endpoint(report_id: str) -> JSONResponse:
+    """Delete a report and its companion files by ID."""
+    from src.reports.report_manager import delete_report  # noqa
+
+    reports_dir = _ROOT / "reports" / "disaster_reports"
+    deleted = delete_report(report_id, reports_dir)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"Report {report_id} not found")
+    return JSONResponse({
+        "deleted": [str(p.relative_to(_ROOT)) for p in deleted],
+        "count": len(deleted),
+    })
+
+
 @app.get("/api/report-file")
 async def serve_report_file(path: str) -> FileResponse:
     """Serve a report HTML or MD file from disk.
@@ -223,6 +238,58 @@ async def serve_report_file(path: str) -> FileResponse:
 
     media = "text/html" if full.suffix == ".html" else "text/plain"
     return FileResponse(str(full), media_type=media)
+
+
+@app.get("/api/reports/{report_id}/render")
+async def render_report_on_demand(report_id: str, format: str = "auto") -> HTMLResponse:
+    """Render a saved JSON report to HTML or Markdown on demand.
+
+    This enables JSON-only storage while still allowing readable report views.
+    The rendered output is NOT saved to disk — it is computed on the fly.
+
+    Parameters
+    ----------
+    report_id:
+        Report filename stem (e.g. ``IncidentReport_20260330_0338``).
+    format:
+        ``"html"``, ``"md"``, or ``"auto"`` (picks based on report type).
+    """
+    from src.models.obj3_gemini.renderer import render_html, render_markdown, markdown_to_html  # noqa
+    from src.models.obj3_gemini.schemas import SCHEMA_MAP  # noqa
+
+    reports_dir = _ROOT / "reports" / "disaster_reports"
+    matches = list(reports_dir.rglob(f"{report_id}.json"))
+    if not matches:
+        raise HTTPException(status_code=404, detail=f"Report {report_id} not found")
+
+    data = json.loads(matches[0].read_text(encoding="utf-8"))
+    report_type = data.get("report_type", "daily")
+
+    schema_cls = SCHEMA_MAP.get(report_type)
+    if schema_cls is None:
+        raise HTTPException(status_code=400, detail=f"Unknown report_type: {report_type}")
+
+    try:
+        parsed = schema_cls.model_validate(data)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"Schema validation failed: {exc}") from exc
+
+    template_dir = _ROOT / "templates"
+
+    # Determine output format
+    if format == "auto":
+        format = "html" if report_type in ("incident", "final") else "md"
+
+    if format == "html":
+        if report_type in ("incident", "final"):
+            content = render_html(parsed, template_dir)
+        else:
+            md_content = render_markdown(parsed, template_dir)
+            content = markdown_to_html(md_content)
+        return HTMLResponse(content)
+    else:
+        md_content = render_markdown(parsed, template_dir)
+        return HTMLResponse(f"<pre style='font-family:monospace;white-space:pre-wrap;padding:24px'>{md_content}</pre>")
 
 
 # ---------------------------------------------------------------------------
@@ -294,12 +361,17 @@ async def generate_report(
         "propagator_summary": propagator_summary,
         "telemetry": telemetry or None,
         "fema_nri_tracts": [],
-        "bias_report": {"gate_result": "PASS", "observed_disparity": 0.0},
+        "bias_report": None,          # Dashboard-generated reports have no bias evaluation
         "metrics": {},
-        "source_status": {
-            "FIRMS": {"status": "OK", "detail": "Operator-supplied"},
-            "Open-Meteo": {"status": "OK", "detail": "Operator-supplied"},
-            "SMAP": {"status": "OK", "detail": "Via Open-Meteo soil moisture"},
+        "source_status": None,         # Operator-supplied data has no staleness tracking
+        "data_completeness": {
+            "xgboost_predictions": bool(xgboost_top_cells),
+            "obj2_simulation": obj2_sim is not None,
+            "firms_hotspots": firms_hotspot_count > 0,
+            "telemetry": bool(telemetry),
+            "fema_nri": False,
+            "bias_report": False,
+            "source_status": False,
         },
     }
 

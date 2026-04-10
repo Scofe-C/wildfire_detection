@@ -419,6 +419,33 @@ def run_training_pipeline(
 
         result.bias_gate_passed = True  # non-blocking: pipeline proceeds regardless
 
+        # ── 9.5. Save monitoring baselines to GCS ────────────────────────────
+        # These are used by monitor_runner.py to detect feature/prediction drift.
+        # GCS path convention: {baseline_gcs_prefix}/{run_id}/feature_baseline.json
+        #                      {baseline_gcs_prefix}/{run_id}/prediction_baseline.json
+        # Required setup: GCS_BUCKET_NAME env var or config.gcs_bucket must point
+        # to the same bucket referenced in monitoring_config.yaml.
+        if not config.local_model_dir:
+            try:
+                from src.monitoring.drift_detector import save_baseline
+                from src.monitoring.performance_monitor import save_prediction_baseline
+                from src.preprocessing.feature_engineering import FEATURES as _BASELINE_FEATURES
+
+                _baseline_prefix = "model-artifacts/baselines"
+                save_baseline(
+                    train_df, _BASELINE_FEATURES, run_id,
+                    config.gcs_bucket, _baseline_prefix,
+                )
+                save_prediction_baseline(
+                    winner_y_prob, run_id,
+                    config.gcs_bucket, _baseline_prefix,
+                )
+                logger.info("[%s] Monitoring baselines saved to GCS", run_id)
+            except Exception as e:
+                logger.warning("[%s] Baseline saving failed (non-blocking): %s", run_id, e)
+        else:
+            logger.debug("[%s] Skipping GCS baseline save (local dev mode)", run_id)
+
         # ── 10. Model Registry push (Vertex AI or local) ──────────────────────
         if result.is_deployable:
             if config.local_model_dir:

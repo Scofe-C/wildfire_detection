@@ -249,14 +249,20 @@ def build_pipeline_result(
         "propagator_summary": propagator_summary,
         "telemetry": telemetry or None,
         "fema_nri_tracts": [],
-        "bias_report": bias_report or {"gate_result": "PASS", "observed_disparity": 0.0},
+        "bias_report": bias_report,  # None if not provided — context builder handles absence
         "metrics": {
             "max_probability": round(max_prob, 4),
             "mean_probability": round(float(merged["_prob"].mean()), 4) if len(merged) > 0 else 0.0,
             "cells_above_50pct": int((merged["_prob"] >= 0.5).sum()) if len(merged) > 0 else 0,
         },
-        "source_status": source_status or {
-            "FIRMS": {"status": "OK", "detail": ""},
-            "Open-Meteo": {"status": "OK", "detail": ""},
+        "source_status": source_status,  # None if not provided — context builder handles absence
+        "data_completeness": {
+            "xgboost_predictions": len(xgboost_top_cells) > 0,
+            "obj2_simulation": obj2_simulation is not None,
+            "firms_hotspots": len(firms_hotspots) > 0,
+            "telemetry": bool(telemetry),
+            "fema_nri": False,  # Not yet integrated
+            "bias_report": bias_report is not None,
+            "source_status": source_status is not None,
         },
     }

@@ -297,7 +297,7 @@ async function loadAll() {
           <td style="white-space:nowrap;display:flex;gap:6px">
             ${r.rendered_path
               ? `<button class="btn btn-ghost btn-sm" onclick="viewReport('${r.rendered_path}','${r.id}')">👁 View</button>`
-              : ''}
+              : `<button class="btn btn-ghost btn-sm" onclick="viewRendered('${r.id}','${r.report_type}')">👁 View</button>`}
             <a class="btn btn-ghost btn-sm" href="/api/reports/${r.id}" target="_blank">⬇ JSON</a>
           </td>
         </tr>`;
@@ -312,6 +312,12 @@ async function loadAll() {
 function viewReport(path, id) {
   document.getElementById('modalTitle').textContent = id;
   document.getElementById('modalFrame').src = `/api/report-file?path=${encodeURIComponent(path)}`;
+  document.getElementById('modal').classList.add('open');
+}
+function viewRendered(id, reportType) {
+  const fmt = (reportType === 'incident' || reportType === 'final') ? 'html' : 'html';
+  document.getElementById('modalTitle').textContent = id;
+  document.getElementById('modalFrame').src = `/api/reports/${id}/render?format=${fmt}`;
   document.getElementById('modal').classList.add('open');
 }
 function closeModal() {

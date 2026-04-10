@@ -7,10 +7,13 @@ to the adapter.  No LLM calls happen here.
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Literal
+
+logger = logging.getLogger(__name__)
 
 from src.models.obj3_gemini.state_machine import (
     AdminToggle,
@@ -109,70 +112,95 @@ def build_ml_block(
 ) -> str:
     """Serialise ML pipeline outputs into a structured text block.
 
-    Sections: XGBoost top cells, Cell2Fire GeoJSON, Propagator summary,
-    bias gate result.
+    Uses priority-based assembly: when truncating (Ollama fallback),
+    always keeps top 5 XGBoost cells and OBJ-2 simulation data first,
+    then adds lower-priority sections if space remains.
     """
-    parts: list[str] = []
+    # Build sections in priority order (highest first)
+    sections: list[str] = []
 
-    # XGBoost scores
+    # Priority 1: XGBoost top cells (always keep at least 5)
     top_cells = pipeline_result.get("xgboost_top_cells") or []
     if top_cells:
-        parts.append("## XGBoost Top Risk Cells")
-        for cell in top_cells[:20]:
-            parts.append(
+        xgb_lines = ["## XGBoost Top Risk Cells"]
+        # Under tight limits, show fewer cells
+        cell_limit = 5 if max_chars < 10_000 else 20
+        for cell in top_cells[:cell_limit]:
+            xgb_lines.append(
                 f"- H3: {cell.get('h3_index')}  "
                 f"P={cell.get('probability', 'N/A')}  "
                 f"({cell.get('lat', '?')}, {cell.get('lon', '?')})"
             )
+        sections.append("\n".join(xgb_lines))
 
-    # Cell2Fire
-    c2f = pipeline_result.get("cell2fire_geojson")
-    if c2f:
-        parts.append("\n## Cell2Fire Spread Model (top-10)")
-        if isinstance(c2f, list):
-            for feat in c2f[:10]:
-                parts.append(f"- {json.dumps(feat)}")
-        else:
-            parts.append(str(c2f)[:2000])
-
-    # OBJ-2 Rothermel Simulation
+    # Priority 2: OBJ-2 Rothermel Simulation (critical for emergency reports)
     sim = pipeline_result.get("obj2_simulation")
     if sim:
-        parts.append("\n## OBJ-2 Fire Spread Simulation (Rothermel)")
-        parts.append(f"- Ignition cell: {sim.get('ignition_cell', 'N/A')}")
-        parts.append(f"- Ignition probability: {sim.get('ignition_probability', 'N/A')}")
-        parts.append(f"- Spread direction: {sim.get('spread_direction_deg', 'N/A')} degrees")
-        parts.append(f"- Spread speed: {sim.get('spread_speed_kmh', 'N/A')} km/h")
-        parts.append(f"- Crown fire status: {sim.get('crown_fire_status', 'N/A')}")
-        parts.append(f"- Byram fire intensity: {sim.get('byram_intensity_kwm', 'N/A')} kW/m")
-        parts.append(f"- Dead fuel moisture: {sim.get('dead_fuel_moisture_pct', 'N/A')}%")
-        parts.append(f"- Foliar moisture: {sim.get('foliar_moisture_content_pct', 'N/A')}%")
-        parts.append(f"- Dominant spread factor: {sim.get('dominant_factor', 'N/A')}")
+        sim_lines = ["\n## OBJ-2 Fire Spread Simulation (Rothermel)"]
+        sim_lines.append(f"- Ignition cell: {sim.get('ignition_cell', 'N/A')}")
+        sim_lines.append(f"- Ignition probability: {sim.get('ignition_probability', 'N/A')}")
+        sim_lines.append(f"- Spread direction: {sim.get('spread_direction_deg', 'N/A')} degrees")
+        sim_lines.append(f"- Spread speed: {sim.get('spread_speed_kmh', 'N/A')} km/h")
+        sim_lines.append(f"- Crown fire status: {sim.get('crown_fire_status', 'N/A')}")
+        sim_lines.append(f"- Byram fire intensity: {sim.get('byram_intensity_kwm', 'N/A')} kW/m")
+        sim_lines.append(f"- Dead fuel moisture: {sim.get('dead_fuel_moisture_pct', 'N/A')}%")
+        sim_lines.append(f"- Foliar moisture: {sim.get('foliar_moisture_content_pct', 'N/A')}%")
+        sim_lines.append(f"- Dominant spread factor: {sim.get('dominant_factor', 'N/A')}")
         inputs_used = sim.get("inputs_used") or {}
         if inputs_used:
-            parts.append(f"- Wind speed (10m): {inputs_used.get('wind_speed_10m_ms', 'N/A')} m/s")
-            parts.append(f"- Midflame wind: {inputs_used.get('midflame_wind_mph', 'N/A')} mph")
-            parts.append(f"- Slope: {inputs_used.get('ignition_cell_slope_deg', 'N/A')} degrees")
-            parts.append(f"- FBFM40 fuel model: {inputs_used.get('ignition_cell_fbfm40', 'N/A')}")
+            sim_lines.append(f"- Wind speed (10m): {inputs_used.get('wind_speed_10m_ms', 'N/A')} m/s")
+            sim_lines.append(f"- Midflame wind: {inputs_used.get('midflame_wind_mph', 'N/A')} mph")
+            sim_lines.append(f"- Slope: {inputs_used.get('ignition_cell_slope_deg', 'N/A')} degrees")
+            sim_lines.append(f"- FBFM40 fuel model: {inputs_used.get('ignition_cell_fbfm40', 'N/A')}")
         warnings = sim.get("warnings") or []
         if warnings:
-            parts.append(f"- Warnings: {', '.join(str(w) for w in warnings)}")
+            sim_lines.append(f"- Warnings: {', '.join(str(w) for w in warnings)}")
+        sections.append("\n".join(sim_lines))
 
-    # Propagator
+    # Priority 3: Propagator summary
     prop = pipeline_result.get("propagator_summary")
     if prop:
-        parts.append("\n## Propagator Summary (secondary comparison)")
-        parts.append(str(prop)[:2000])
+        sections.append(f"\n## Propagator Summary (secondary comparison)\n{str(prop)[:2000]}")
 
-    # Bias gate
+    # Priority 4: Bias gate
     bias = pipeline_result.get("bias_report")
     if bias:
-        parts.append("\n## Bias Gate Result")
-        parts.append(f"- Gate: {bias.get('gate_result', 'N/A')}")
-        parts.append(f"- Observed disparity: {bias.get('observed_disparity', 'N/A')}")
+        sections.append(
+            f"\n## Bias Gate Result\n"
+            f"- Gate: {bias.get('gate_result', 'N/A')}\n"
+            f"- Observed disparity: {bias.get('observed_disparity', 'N/A')}"
+        )
+    else:
+        sections.append("\n## Bias Gate Result: not run (no bias evaluation available)")
 
-    block = "\n".join(parts)
-    return block[:max_chars] if len(block) > max_chars else block
+    # Priority 5: Cell2Fire (lowest priority, often large)
+    c2f = pipeline_result.get("cell2fire_geojson")
+    if c2f:
+        c2f_lines = ["\n## Cell2Fire Spread Model (top-10)"]
+        if isinstance(c2f, list):
+            for feat in c2f[:10]:
+                c2f_lines.append(f"- {json.dumps(feat)}")
+        else:
+            c2f_lines.append(str(c2f)[:2000])
+        sections.append("\n".join(c2f_lines))
+
+    # Assemble with priority-aware truncation
+    block = ""
+    for section in sections:
+        if len(block) + len(section) + 1 > max_chars:
+            break
+        block = block + ("\n" if block else "") + section
+
+    # Log warning if context was truncated
+    total_len = sum(len(s) for s in sections)
+    if total_len > max_chars:
+        logger.warning(
+            "ML block truncated: %d chars available, %d chars total content. "
+            "Lower-priority sections may be dropped.",
+            max_chars, total_len,
+        )
+
+    return block
 
 
 def build_data_block(
@@ -186,10 +214,18 @@ def build_data_block(
     """
     parts: list[str] = []
 
+    # Data completeness summary (from bridge)
+    completeness = pipeline_result.get("data_completeness")
+    if completeness:
+        parts.append("## Data Completeness")
+        for key, available in completeness.items():
+            status_str = "available" if available else "NOT AVAILABLE"
+            parts.append(f"- {key}: {status_str}")
+
     # Source staleness warnings (from orchestrator resilience)
-    source_status = pipeline_result.get("source_status") or {}
+    source_status = pipeline_result.get("source_status")
     if source_status:
-        parts.append("## Data Source Status")
+        parts.append("\n## Data Source Status")
         for source_name, status in source_status.items():
             if isinstance(status, dict):
                 state = status.get("status", "UNKNOWN")
@@ -202,6 +238,8 @@ def build_data_block(
                 parts.append(f"- [{status}] {source_name}")
             else:
                 parts.append(f"- [OK] {source_name}")
+    else:
+        parts.append("\n## Data Source Status: unavailable (no freshness info provided)")
 
     # Telemetry — structured for WeatherObservation fields
     telem = pipeline_result.get("telemetry")
@@ -334,14 +372,35 @@ def assemble(
         max_ml = reporting_cfg.get("max_ml_block_chars", 20_000)
         max_data = reporting_cfg.get("max_data_block_chars", 20_000)
 
+    system_prompt = build_system_prompt(report_type, schema_dict)
+    ml_block = build_ml_block(pipeline_result, max_chars=max_ml)
+    data_block = build_data_block(pipeline_result, max_chars=max_data)
+    human_block = build_human_block(human_inputs, toggle)
+    instruction = build_instruction(report_type, incident_id, dt_str)
+
+    # Token estimation — warn when approaching context limits (especially Ollama 32K)
+    total_chars = (
+        len(system_prompt) + len(ml_block) + len(data_block)
+        + len(human_block) + len(instruction) + len(corpus_text or "")
+    )
+    estimated_tokens = total_chars // 4
+    warn_threshold = reporting_cfg.get("max_context_tokens_warn", 28_000)
+    if estimated_tokens > warn_threshold:
+        logger.warning(
+            "Estimated context tokens (%d) exceeds threshold (%d). "
+            "LLM may truncate or degrade quality. Consider reducing corpus "
+            "or context block sizes.",
+            estimated_tokens, warn_threshold,
+        )
+
     return ContextBundle(
-        system_prompt=build_system_prompt(report_type, schema_dict),
+        system_prompt=system_prompt,
         corpus_ref=corpus_ref,
         corpus_text=corpus_text,
-        ml_block=build_ml_block(pipeline_result, max_chars=max_ml),
-        data_block=build_data_block(pipeline_result, max_chars=max_data),
-        human_block=build_human_block(human_inputs, toggle),
-        instruction=build_instruction(report_type, incident_id, dt_str),
+        ml_block=ml_block,
+        data_block=data_block,
+        human_block=human_block,
+        instruction=instruction,
         report_type=report_type,
         incident_id=incident_id,
         uploaded_files=uploaded_files or [],

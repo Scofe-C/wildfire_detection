@@ -171,6 +171,9 @@ class BaseReport(BaseModel):
     disagreement_flag: bool = False
     disclaimer: str
     data_sources_used: list[str]
+    # B4: data quality — stamped deterministically by reporter.py, not by the LLM.
+    data_quality_score: float = Field(default=0.0, ge=0.0, le=1.0)
+    data_completeness: dict[str, bool] | None = None
 
     @field_validator("disclaimer")
     @classmethod

@@ -231,24 +231,40 @@ class GeminiDisasterReporter(BaseModel):
 
         latency = (time.perf_counter() - t0) * 1000
 
-        # Parse JSON → Pydantic
+        # Parse JSON → Pydantic with configurable retry + exponential backoff
+        max_retries = self._config.get("reporting", {}).get("parse_max_retries", 3)
+        base_delay = self._config.get("reporting", {}).get("parse_retry_base_delay", 1.0)
+
         try:
             raw_json = _preprocess_report_json(raw_json, context_bundle)
             parsed = schema_cls.model_validate_json(raw_json)
         except Exception as exc:
-            logger.warning("JSON parse failed, retrying: %s", exc)
-            # Retry once
-            try:
-                raw_json = self._adapter.generate(context_bundle, schema_dict)
-                raw_json = _preprocess_report_json(raw_json, context_bundle)
-                parsed = schema_cls.model_validate_json(raw_json)
-            except Exception as retry_exc:
+            import random  # noqa: PLC0415
+
+            parsed = None
+            last_error = exc
+            for attempt in range(1, max_retries + 1):
+                delay = base_delay * (2 ** (attempt - 1)) + random.uniform(0, 0.5)
+                logger.warning(
+                    "JSON parse failed (attempt %d/%d), retrying in %.1fs: %s",
+                    attempt, max_retries, delay, last_error,
+                )
+                time.sleep(delay)
+                try:
+                    raw_json = self._adapter.generate(context_bundle, schema_dict)
+                    raw_json = _preprocess_report_json(raw_json, context_bundle)
+                    parsed = schema_cls.model_validate_json(raw_json)
+                    break  # Success
+                except Exception as retry_exc:
+                    last_error = retry_exc
+
+            if parsed is None:
                 return ReportResult(
                     raw_json=raw_json,
                     parsed_report=None,
                     report_type=context_bundle.report_type,
                     incident_id=context_bundle.incident_id,
-                    error=f"Parse failed after retry: {retry_exc}",
+                    error=f"Parse failed after {max_retries} retries: {last_error}",
                     latency_ms=latency,
                 )
 
@@ -312,6 +328,8 @@ class GeminiDisasterReporter(BaseModel):
             "grounding_search_count": parsed.grounding_search_count,
             "report_type": parsed.report_type,
             "latency_ms": report_result.latency_ms,
+            "data_quality_score": parsed.data_quality_score,
+            "data_completeness": parsed.data_completeness,
         }
 
     # -- High-level convenience method -----------------------------------------
@@ -323,6 +341,7 @@ class GeminiDisasterReporter(BaseModel):
         uploaded_files: list[Any] | None = None,
         mode: OperationalMode | None = None,
         sub_state: EmergencySubState | None = None,
+        render_format: str | None = None,
     ) -> GeneratedReport:
         """Full report generation pipeline: resolve → build → generate →
         validate → render → save.
@@ -340,6 +359,12 @@ class GeminiDisasterReporter(BaseModel):
             raise RuntimeError("Call load_model() before generate_report().")
 
         human_inputs = human_inputs or []
+
+        # Resolve render_format from config if not explicitly provided
+        if render_format is None:
+            render_format = self._config.get("reporting", {}).get(
+                "default_render_format", "json"
+            )
 
         # 1–2: Resolve mode
         disagreement_flag = False
@@ -386,16 +411,20 @@ class GeminiDisasterReporter(BaseModel):
             result.parsed_report.review_status = (
                 "PENDING_REVIEW" if hrr else "AUTO_APPROVED"
             )
+            # Stamp data_completeness from pipeline_result
+            result.parsed_report.data_completeness = pipeline_result.get(
+                "data_completeness"
+            )
             # Re-serialize so the saved JSON reflects deterministic stamps
             result.raw_json = result.parsed_report.model_dump_json(indent=2)
 
         # 7: Validate
         validation = self.validate(result, disagreement_flag=disagreement_flag)
 
-        # 8: Render
+        # 8: Render (skip when render_format is "json" for efficiency)
         rendered_content = ""
         fmt = "md"
-        if result.parsed_report is not None:
+        if result.parsed_report is not None and render_format != "json":
             if report_type in ("incident", "final"):
                 rendered_content = render_html(result.parsed_report, self._template_dir)
                 fmt = "html"
@@ -448,9 +477,12 @@ class GeminiDisasterReporter(BaseModel):
         # 10: GCS sync
         gcs_bucket = self._config.get("reporting", {}).get("gcs_bucket", "")
         gcs_paths: list[str] = []
-        if gcs_bucket and json_path and rendered_path:
+        if gcs_bucket and json_path:
+            sync_files = [json_path]
+            if rendered_path:
+                sync_files.append(rendered_path)
             gcs_paths = sync_to_gcs(
-                [json_path, rendered_path],
+                sync_files,
                 gcs_bucket,
                 gcs_prefix=report_type + "/",
             )
@@ -672,6 +704,23 @@ def _preprocess_report_json(raw_json: str, context_bundle: ContextBundle) -> str
     rc = data.get("report_confidence")
     if isinstance(rc, (int, float)) and rc > 1.0:
         data["report_confidence"] = round(rc / 100.0, 4)
+
+    # --- Stamp: data_quality_score (fraction of data sections populated) ---
+    quality_signals = [
+        bool(data.get("top_risk_cells") or data.get("xgboost_top_cells")),
+        bool(data.get("weather_observations") or data.get("weather_summary")),
+        (data.get("grounding_search_count") or 0) >= 3,
+        bool(
+            data.get("immediate_actions")
+            or data.get("preventive_recommendations")
+            or data.get("summary")
+        ),
+    ]
+    data["data_quality_score"] = round(sum(quality_signals) / len(quality_signals), 2)
+
+    # Stamp data_completeness from context bundle (not LLM-generated)
+    # This is set later by generate_report() from pipeline_result if available
+    data.setdefault("data_completeness", None)
 
     return _json.dumps(data)
 

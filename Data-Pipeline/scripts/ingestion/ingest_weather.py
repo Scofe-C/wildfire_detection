@@ -58,9 +58,10 @@ OPEN_METEO_HOURLY_PARAMS: list[str] = [
 # Phase 2 MVP: daily vars disabled (avoid unsupported "fire_weather_index_max")
 OPEN_METEO_DAILY_PARAMS: list[str] = []
 
-# Open-Meteo supports up to 1000 locations per request.
-# 300 is a safe ceiling that keeps URL length well under limits.
-OPEN_METEO_MAX_LOCATIONS = 300
+# Open-Meteo multi-location limit via GET. Each location adds ~35 chars
+# (latitude=XX.XXX&longitude=-YYY.YYY). Some reverse proxies have 4KB URI
+# limits. 30 locations keeps total URL well under 2KB.
+OPEN_METEO_MAX_LOCATIONS = 30
 
 # Expected output schema columns (in order)
 _SCHEMA_COLS = [
@@ -521,7 +522,11 @@ def _batch_fetch_open_meteo(
             weather_df["grid_id"] = weather_df["grid_id"].astype(str)
             weather_df["data_quality_flag"] = quality_flag
             all_rows.append(weather_df)
-            time.sleep(0.3)  # polite pause between successful batches
+            # At 22km (~800+ cells/region), we need 3-4 batches of 300.
+            # Open-Meteo free tier: 10,000 req/day but burst-sensitive.
+            # Use longer pause between batches to avoid 429s.
+            pause = 1.0 if len(batches) > 2 else 0.3
+            time.sleep(pause)
         else:
             logger.warning(
                 "  Open-Meteo failed for batch %d — checking NWS fallback.",
@@ -545,7 +550,12 @@ def _batch_fetch_open_meteo(
                 failed_cells.extend(batch["grid_id"].astype(str).tolist())
                 continue
 
+            # NWS per-cell fallback is slow (~5-15s per cell due to 2 HTTP calls).
+            # Cap at 10 cells to prevent timeout spirals. Remaining cells are
+            # forward-filled downstream from the last cron window.
+            _NWS_MAX_FALLBACK_CELLS = 10
             offshore_count = 0
+            nws_attempted = 0
             for _, cell in batch.iterrows():
                 lat = float(cell["latitude"])
                 lon = float(cell["longitude"])
@@ -555,6 +565,11 @@ def _batch_fetch_open_meteo(
                     offshore_count += 1
                     continue
 
+                if nws_attempted >= _NWS_MAX_FALLBACK_CELLS:
+                    failed_cells.append(str(cell["grid_id"]))
+                    continue
+
+                nws_attempted += 1
                 nws_df = _fetch_nws_fallback(
                     lat=lat,
                     lon=lon,
@@ -569,12 +584,16 @@ def _batch_fetch_open_meteo(
                 else:
                     failed_cells.append(str(cell["grid_id"]))
 
-            if offshore_count:
+            skipped_nws = len(batch) - offshore_count - nws_attempted
+            if offshore_count or skipped_nws:
                 logger.info(
-                    "  Batch %d: %d offshore/out-of-bounds cells skipped "
-                    "(expected for large ring_max values near coastline).",
+                    "  Batch %d: %d offshore skipped, %d NWS attempted (cap=%d), "
+                    "%d deferred to forward-fill.",
                     batch_idx + 1,
                     offshore_count,
+                    nws_attempted,
+                    _NWS_MAX_FALLBACK_CELLS,
+                    skipped_nws,
                 )
 
     return all_rows, failed_cells
