@@ -1,0 +1,628 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Generate Report — OBJ-3</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/style.css">
+<style>
+/* ── Form layout ── */
+.form-layout { display: grid; grid-template-columns: 1fr 320px; gap: 20px; align-items: start; }
+
+/* ── Cards ── */
+.card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); overflow: hidden; margin-bottom: 16px;
+  box-shadow: var(--shadow);
+}
+.card-header {
+  padding: 12px 18px; border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; gap: 10px;
+  background: var(--panel);
+}
+.card-header .ch-icon { font-size: 16px; }
+.card-header .ch-title { font-size: 12px; font-weight: 700; text-transform: uppercase;
+                          letter-spacing: 0.07em; color: var(--text-2); }
+.card-body { padding: 18px; }
+
+/* ── Form controls ── */
+.field { margin-bottom: 14px; }
+.field:last-child { margin-bottom: 0; }
+.field label {
+  display: block; font-size: 11px; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.06em; color: var(--text-3); margin-bottom: 5px;
+}
+.field label .opt { font-weight: 400; text-transform: none; letter-spacing: 0; color: var(--text-3); font-size: 11px; }
+input[type=text], input[type=number], select, textarea {
+  width: 100%; background: var(--surface); border: 1px solid var(--border);
+  border-radius: 6px; color: var(--text); padding: 8px 11px;
+  font-size: 13px; font-family: inherit; outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+input:focus, select:focus, textarea:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(37,99,235,0.10);
+}
+input::placeholder, textarea::placeholder { color: var(--text-3); }
+textarea { resize: vertical; min-height: 76px; }
+select option { background: var(--surface); }
+.field-row   { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.field-row-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
+
+/* ── Risk selector ── */
+.risk-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.risk-opt { position: relative; cursor: pointer; }
+.risk-opt input { position: absolute; opacity: 0; width: 0; height: 0; }
+.risk-label {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  padding: 12px 8px; border-radius: 7px; border: 2px solid var(--border);
+  background: var(--bg); transition: all 0.15s; text-align: center; cursor: pointer;
+}
+.risk-label .rl-dot { width: 10px; height: 10px; border-radius: 50%; margin-bottom: 5px; }
+.risk-label .rl-name { font-size: 11px; font-weight: 700; letter-spacing: 0.05em; }
+.risk-label .rl-desc { font-size: 10px; color: var(--text-3); margin-top: 2px; }
+
+.risk-opt[data-risk="LOW"]      .risk-label { color: var(--low); }
+.risk-opt[data-risk="MODERATE"] .risk-label { color: var(--moderate); }
+.risk-opt[data-risk="HIGH"]     .risk-label { color: var(--high); }
+.risk-opt[data-risk="CRITICAL"] .risk-label { color: var(--critical); }
+.risk-opt[data-risk="LOW"]      .rl-dot { background: var(--low); }
+.risk-opt[data-risk="MODERATE"] .rl-dot { background: var(--moderate); }
+.risk-opt[data-risk="HIGH"]     .rl-dot { background: var(--high); }
+.risk-opt[data-risk="CRITICAL"] .rl-dot { background: var(--critical); }
+
+.risk-opt[data-risk="LOW"]      input:checked ~ .risk-label { border-color: var(--low);      background: var(--low-bg); }
+.risk-opt[data-risk="MODERATE"] input:checked ~ .risk-label { border-color: var(--moderate); background: var(--moderate-bg); }
+.risk-opt[data-risk="HIGH"]     input:checked ~ .risk-label { border-color: var(--high);     background: var(--high-bg); }
+.risk-opt[data-risk="CRITICAL"] input:checked ~ .risk-label { border-color: var(--critical); background: var(--critical-bg); }
+
+/* ── Telemetry cards ── */
+.telem-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.telem-card { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 12px; }
+.telem-label { font-size: 10px; font-weight: 600; text-transform: uppercase;
+               letter-spacing: 0.06em; color: var(--text-3); margin-bottom: 6px; }
+.telem-input-wrap { display: flex; align-items: center; gap: 8px; }
+.telem-input-wrap input { flex: 1; background: var(--surface); }
+.telem-unit { font-size: 11px; color: var(--text-3); flex-shrink: 0; white-space: nowrap; }
+
+/* ── File drop zone ── */
+.drop-zone {
+  border: 2px dashed var(--border-hi); border-radius: 7px; padding: 24px 16px;
+  text-align: center; cursor: pointer; transition: all 0.2s; background: var(--panel);
+}
+.drop-zone:hover, .drop-zone.over { border-color: var(--accent); background: var(--accent-bg); }
+.dz-icon  { font-size: 28px; margin-bottom: 8px; opacity: 0.6; }
+.dz-title { font-size: 13px; font-weight: 500; margin-bottom: 3px; }
+.dz-hint  { font-size: 11px; color: var(--text-3); }
+.file-list { margin-top: 10px; display: flex; flex-direction: column; gap: 5px; }
+.file-row {
+  display: flex; align-items: center; gap: 8px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 5px; padding: 7px 10px;
+}
+.file-type { font-size: 10px; font-weight: 700; padding: 2px 6px; border-radius: 3px; flex-shrink: 0; }
+.ft-img { background: rgba(109,95,186,0.12); color: #6d5fba; }
+.ft-pdf { background: var(--critical-bg);    color: var(--critical); }
+.ft-txt { background: var(--accent-bg);      color: var(--accent); }
+.ft-geo { background: var(--low-bg);         color: var(--low); }
+.file-name { flex: 1; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-size { font-size: 11px; color: var(--text-3); flex-shrink: 0; }
+.file-del  {
+  background: none; border: none; color: var(--text-3); cursor: pointer;
+  font-size: 14px; flex-shrink: 0; padding: 0 2px; border-radius: 3px;
+  transition: color 0.15s;
+}
+.file-del:hover { color: var(--critical); }
+
+/* ── Presets ── */
+.preset-bar { display: flex; gap: 6px; flex-wrap: wrap; }
+.preset-btn {
+  display: flex; align-items: center; gap: 5px;
+  padding: 6px 12px; border-radius: 6px; border: 1px solid var(--border);
+  background: var(--bg); color: var(--text-2);
+  cursor: pointer; font-size: 12px; font-family: inherit; transition: all 0.15s;
+}
+.preset-btn:hover { color: var(--text); background: var(--panel); border-color: var(--border-hi); }
+
+/* ── Right rail ── */
+.rail-card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); margin-bottom: 14px; overflow: hidden;
+  position: sticky; top: 0; box-shadow: var(--shadow);
+}
+.rail-header {
+  padding: 11px 16px; background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  font-size: 11px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.07em; color: var(--text-3);
+}
+.rail-body { padding: 16px; }
+.rail-body .btn-primary { width: 100%; justify-content: center; padding: 9px 18px; font-size: 13px; }
+.rail-body .btn-ghost   { width: 100%; justify-content: center; padding: 9px 18px; font-size: 13px; }
+
+/* ── Result box ── */
+.result-wrap { display: none; }
+.result-wrap.show { display: block; }
+.result-box { border-radius: 7px; overflow: hidden; border: 1px solid; }
+.result-box.ok  { border-color: var(--low-border); }
+.result-box.err { border-color: var(--critical-border); }
+.result-head {
+  padding: 12px 16px; display: flex; align-items: center; gap: 10px;
+  font-size: 13px; font-weight: 600;
+}
+.result-head.ok  { background: var(--low-bg);     color: var(--low); }
+.result-head.err { background: var(--critical-bg); color: var(--critical); }
+.result-body-inner { background: var(--panel); padding: 14px 16px; }
+.kv-list { display: grid; grid-template-columns: auto 1fr; gap: 6px 16px; font-size: 12px; }
+.kv-list .k { color: var(--text-3); white-space: nowrap; }
+.kv-list .v { font-weight: 500; }
+.result-actions { display: flex; gap: 8px; margin-top: 12px; }
+.result-actions .btn { width: auto; font-size: 12px; padding: 6px 14px; }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- Sidebar -->
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-logo">
+      <div class="logo-icon">🔥</div>
+      <div class="logo-text-wrap">
+        <div class="logo-text">OBJ-3</div>
+        <div class="logo-sub">Wildfire Intelligence</div>
+      </div>
+    </div>
+    <nav class="nav">
+      <div class="nav-label">Navigation</div>
+      <a href="/"><span class="nav-icon">📋</span><span class="nav-text">Reports</span></a>
+      <a href="/generate" class="active"><span class="nav-icon">➕</span><span class="nav-text">Generate</span></a>
+    </nav>
+    <div class="sidebar-footer">Generate Report</div>
+  </aside>
+
+  <!-- Main -->
+  <div class="main">
+    <header class="topbar">
+      <button class="sidebar-toggle" onclick="toggleSidebar()" title="Toggle sidebar">☰</button>
+      <span class="topbar-title">Generate Report</span>
+      <span style="font-size:12px;color:var(--text-3)">Enter current conditions — the AI selects the appropriate report type automatically</span>
+    </header>
+
+    <div class="content">
+      <form id="form" enctype="multipart/form-data">
+      <div class="form-layout">
+
+        <!-- Left column -->
+        <div>
+
+          <!-- Presets -->
+          <div class="card">
+            <div class="card-header">
+              <span class="ch-icon">⚡</span>
+              <span class="ch-title">Quick Fill</span>
+            </div>
+            <div class="card-body" style="padding:14px 18px">
+              <div class="preset-bar">
+                <button type="button" class="preset-btn" onclick="preset('low')">
+                  <span style="color:var(--low)">●</span> Quiet / Low Risk
+                </button>
+                <button type="button" class="preset-btn" onclick="preset('high')">
+                  <span style="color:var(--high)">●</span> Active / High Risk
+                </button>
+                <button type="button" class="preset-btn" onclick="preset('emergency')">
+                  <span style="color:var(--critical)">●</span> Emergency / Active Fire
+                </button>
+                <button type="button" class="preset-btn" onclick="preset('clear')" style="margin-left:auto">
+                  ✕ Clear
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Risk Level -->
+          <div class="card">
+            <div class="card-header">
+              <span class="ch-icon">🎯</span>
+              <span class="ch-title">Risk Level</span>
+            </div>
+            <div class="card-body">
+              <div class="risk-grid">
+                <label class="risk-opt" data-risk="LOW">
+                  <input type="radio" name="risk_level" value="LOW">
+                  <div class="risk-label">
+                    <div class="rl-dot"></div>
+                    <div class="rl-name">LOW</div>
+                    <div class="rl-desc">Normal conditions</div>
+                  </div>
+                </label>
+                <label class="risk-opt" data-risk="MODERATE">
+                  <input type="radio" name="risk_level" value="MODERATE">
+                  <div class="risk-label">
+                    <div class="rl-dot"></div>
+                    <div class="rl-name">MODERATE</div>
+                    <div class="rl-desc">Elevated watch</div>
+                  </div>
+                </label>
+                <label class="risk-opt" data-risk="HIGH">
+                  <input type="radio" name="risk_level" value="HIGH" checked>
+                  <div class="risk-label">
+                    <div class="rl-dot"></div>
+                    <div class="rl-name">HIGH</div>
+                    <div class="rl-desc">Active threat</div>
+                  </div>
+                </label>
+                <label class="risk-opt" data-risk="CRITICAL">
+                  <input type="radio" name="risk_level" value="CRITICAL">
+                  <div class="risk-label">
+                    <div class="rl-dot"></div>
+                    <div class="rl-name">CRITICAL</div>
+                    <div class="rl-desc">Immediate danger</div>
+                  </div>
+                </label>
+              </div>
+            </div>
+          </div>
+
+          <!-- Environmental conditions -->
+          <div class="card">
+            <div class="card-header">
+              <span class="ch-icon">🌡</span>
+              <span class="ch-title">Environmental Conditions</span>
+            </div>
+            <div class="card-body">
+              <div class="telem-grid" style="margin-bottom:14px">
+                <div class="telem-card">
+                  <div class="telem-label">Temperature Max</div>
+                  <div class="telem-input-wrap">
+                    <input type="number" name="temperature_max" id="temperature_max" placeholder="104" step="0.1">
+                    <span class="telem-unit">°F</span>
+                  </div>
+                </div>
+                <div class="telem-card">
+                  <div class="telem-label">Wind Speed</div>
+                  <div class="telem-input-wrap">
+                    <input type="number" name="wind_speed_mph" id="wind_speed_mph" placeholder="25" step="0.1">
+                    <span class="telem-unit">mph</span>
+                  </div>
+                </div>
+                <div class="telem-card">
+                  <div class="telem-label">Relative Humidity</div>
+                  <div class="telem-input-wrap">
+                    <input type="number" name="relative_humidity" id="relative_humidity" placeholder="12" min="0" max="100" step="0.1">
+                    <span class="telem-unit">%</span>
+                  </div>
+                </div>
+                <div class="telem-card">
+                  <div class="telem-label">Soil Moisture</div>
+                  <div class="telem-input-wrap">
+                    <input type="number" name="soil_moisture" id="soil_moisture" placeholder="0.05" min="0" max="1" step="0.01">
+                    <span class="telem-unit">0–1</span>
+                  </div>
+                </div>
+              </div>
+              <div class="field">
+                <label>FIRMS Hotspot Count</label>
+                <input type="number" name="firms_hotspot_count" id="firms_hotspot_count" value="0" min="0">
+              </div>
+            </div>
+          </div>
+
+          <!-- ML / Spread -->
+          <div class="card">
+            <div class="card-header">
+              <span class="ch-icon">🤖</span>
+              <span class="ch-title">ML Outputs & Spread</span>
+            </div>
+            <div class="card-body">
+              <div class="field">
+                <label>Propagator / Spread Summary</label>
+                <textarea name="propagator_summary" id="propagator_summary" rows="2"
+                  placeholder="e.g. Fire spreading NE at 3 mph, ~250 acres, fueled by chaparral…"></textarea>
+              </div>
+              <div class="field">
+                <label>XGBoost Top Cells <span class="opt">(JSON array — optional)</span></label>
+                <textarea name="xgboost_cells_json" id="xgboost_cells_json" rows="2"
+                  placeholder='[{"h3_index":"8928308280fffff","probability":0.91,"lat":34.1,"lon":-118.3}]'
+                  style="font-family:'JetBrains Mono',monospace;font-size:12px"></textarea>
+              </div>
+              <div class="field">
+                <label>OBJ-2 Spread Simulation <span class="opt">(JSON — optional, paste simulation output)</span></label>
+                <textarea name="obj2_simulation_json" id="obj2_simulation_json" rows="3"
+                  placeholder='{"ignition_cell":"822997fffffffff","spread_speed_kmh":2.27,"crown_fire_status":"passive_crown","byram_intensity_kwm":1446.1,...}'
+                  style="font-family:'JetBrains Mono',monospace;font-size:12px"></textarea>
+              </div>
+            </div>
+          </div>
+
+          <!-- Operator notes & files -->
+          <div class="card">
+            <div class="card-header">
+              <span class="ch-icon">👤</span>
+              <span class="ch-title">Operator Input & Files</span>
+            </div>
+            <div class="card-body">
+              <div class="field">
+                <label>Operator Notes</label>
+                <textarea name="operator_notes" id="operator_notes" rows="3"
+                  placeholder="Ground observations, evacuation status, crew locations, resource gaps…"></textarea>
+              </div>
+              <div class="field">
+                <label>Upload Files
+                  <span class="opt"> — images · PDFs · GeoJSON · field reports · shapefiles</span>
+                </label>
+                <div class="drop-zone" id="dz" onclick="document.getElementById('fi').click()">
+                  <div class="dz-icon">📎</div>
+                  <div class="dz-title">Drop files here or click to browse</div>
+                  <div class="dz-hint">Images → vision analysis (Gemini) or metadata note (Ollama) · PDFs/text → full extraction</div>
+                </div>
+                <input type="file" id="fi" name="files" multiple style="display:none" onchange="addFiles(this.files)">
+                <div class="file-list" id="fl"></div>
+              </div>
+            </div>
+          </div>
+
+        </div><!-- end left col -->
+
+        <!-- Right rail -->
+        <div>
+          <div class="rail-card">
+            <div class="rail-header">Report Settings</div>
+            <div class="rail-body">
+              <div class="field">
+                <label>Report Type</label>
+                <select name="report_type_override">
+                  <option value="auto">🔄 Auto-detect</option>
+                  <option value="daily">📅 Daily</option>
+                  <option value="high_risk">⚠️ High Risk Alert</option>
+                  <option value="incident">🔥 Incident Report</option>
+                  <option value="final">📝 Final Report</option>
+                </select>
+              </div>
+              <div class="field">
+                <label>LLM Backend</label>
+                <select name="backend_override">
+                  <option value="">Config default</option>
+                  <option value="ollama">Ollama (local · fast)</option>
+                  <option value="gemini_dev">Gemini Dev (vision · cloud)</option>
+                </select>
+              </div>
+
+              <div style="height:1px;background:var(--border);margin:16px 0"></div>
+
+              <!-- Re-run with Local Data toggle -->
+              <div style="margin-bottom:12px">
+                <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;font-weight:600">
+                  <input type="checkbox" id="rerunToggle" onchange="toggleRerun(this.checked)" style="width:16px;height:16px">
+                  Re-run with Local Observations
+                </label>
+                <div style="font-size:11px;color:var(--muted);margin-top:2px">
+                  Models re-run with your measurements. Other data filled from latest pipeline run.
+                </div>
+              </div>
+
+              <div id="rerunPanel" style="display:none;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px;margin-bottom:14px">
+                <div style="font-size:12px;font-weight:600;margin-bottom:10px;color:var(--warning)">⚡ Local Observation Override</div>
+                <div class="field">
+                  <label>Grid ID <span style="color:var(--critical)">*</span></label>
+                  <input type="text" id="rerun_grid_id" placeholder="e.g. 852830bffffffff">
+                </div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+                  <div class="field">
+                    <label>Temperature (°F)</label>
+                    <input type="number" id="rerun_temp_f" placeholder="e.g. 105" step="0.1">
+                  </div>
+                  <div class="field">
+                    <label>Wind Speed (mph)</label>
+                    <input type="number" id="rerun_wind_mph" placeholder="e.g. 35" step="0.1">
+                  </div>
+                  <div class="field">
+                    <label>Relative Humidity (%)</label>
+                    <input type="number" id="rerun_rh" placeholder="e.g. 12" step="0.1">
+                  </div>
+                  <div class="field">
+                    <label>Soil Moisture (m³/m³)</label>
+                    <input type="number" id="rerun_soil" placeholder="e.g. 0.08" step="0.001">
+                  </div>
+                </div>
+                <div class="field">
+                  <label>Fire Weather Index</label>
+                  <input type="number" id="rerun_fwi" placeholder="e.g. 28.5" step="0.1">
+                </div>
+              </div>
+
+              <button type="button" class="btn btn-primary" id="submitBtn" onclick="handleSubmit()">
+                <span id="si">🚀</span>
+                <span id="st">Generate Report</span>
+              </button>
+              <div style="height:8px"></div>
+              <a href="/" class="btn btn-ghost">← Back to Reports</a>
+            </div>
+
+            <!-- Result -->
+            <div class="result-wrap" id="resultWrap">
+              <div style="height:1px;background:var(--border)"></div>
+              <div style="padding:14px 16px">
+                <div class="result-box" id="resultBox">
+                  <div class="result-head" id="resultHead"></div>
+                  <div class="result-body-inner">
+                    <div class="kv-list" id="resultKV"></div>
+                    <div class="result-actions" id="resultActs"></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+          </div>
+        </div>
+
+      </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── Sidebar toggle ──
+function toggleSidebar() {
+  const sb = document.getElementById('sidebar');
+  sb.classList.toggle('collapsed');
+  localStorage.setItem('sidebar-collapsed', sb.classList.contains('collapsed'));
+}
+if (localStorage.getItem('sidebar-collapsed') === 'true') {
+  document.getElementById('sidebar').classList.add('collapsed');
+}
+
+// ── Presets ──
+const P = {
+  low:      { risk:'LOW',      firms:0,  temp:72,  wind:8,  rh:65, sm:0.28, prop:'', notes:'Conditions within normal range. No active fires.' },
+  high:     { risk:'HIGH',     firms:4,  temp:101, wind:22, rh:14, sm:0.06, prop:'4 hotspots, peak FRP 85 MW near LA County.', notes:'Dry brush. Pre-position resources recommended.' },
+  emergency:{ risk:'CRITICAL', firms:15, temp:109, wind:38, rh:6,  sm:0.03, prop:'15 hotspots, peak FRP 300 MW, spreading NE at 3.5mph, ~420 acres.', notes:'EVACUATIONS: zones A, B, C. Air support en-route. ICP established.' },
+};
+function preset(k) {
+  if (k==='clear') { document.getElementById('form').reset(); setRisk('HIGH'); files=[]; renderFiles(); return; }
+  const p = P[k]; if (!p) return;
+  setRisk(p.risk);
+  set('firms_hotspot_count',p.firms); set('temperature_max',p.temp);
+  set('wind_speed_mph',p.wind); set('relative_humidity',p.rh);
+  set('soil_moisture',p.sm); set('propagator_summary',p.prop);
+  set('operator_notes',p.notes);
+}
+function set(id, v) { document.getElementById(id).value = v; }
+function setRisk(v) {
+  document.querySelectorAll('input[name=risk_level]').forEach(r => r.checked = r.value===v);
+}
+
+// ── File handling ──
+let files = [];
+const dz = document.getElementById('dz');
+dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('over'); });
+dz.addEventListener('dragleave', () => dz.classList.remove('over'));
+dz.addEventListener('drop', e => { e.preventDefault(); dz.classList.remove('over'); addFiles(e.dataTransfer.files); });
+function addFiles(fl) { for (const f of fl) files.push(f); renderFiles(); syncInput(); }
+function removeFile(i) { files.splice(i,1); renderFiles(); syncInput(); }
+function syncInput() {
+  const dt = new DataTransfer();
+  files.forEach(f => dt.items.add(f));
+  document.getElementById('fi').files = dt.files;
+}
+function renderFiles() {
+  const el = document.getElementById('fl');
+  if (!files.length) { el.innerHTML=''; return; }
+  el.innerHTML = files.map((f,i) => {
+    const isImg = f.type.startsWith('image/');
+    const isPdf = f.type==='application/pdf' || f.name.endsWith('.pdf');
+    const isGeo = f.name.endsWith('.geojson') || f.name.endsWith('.shp');
+    const [cls, lbl] = isImg ? ['ft-img','IMG'] : isPdf ? ['ft-pdf','PDF'] : isGeo ? ['ft-geo','GEO'] : ['ft-txt','TXT'];
+    const sz = f.size>1048576 ? (f.size/1048576).toFixed(1)+'MB' : Math.round(f.size/1024)+'KB';
+    return `<div class="file-row">
+      <span class="file-type ${cls}">${lbl}</span>
+      <span class="file-name" title="${f.name}">${f.name}</span>
+      <span class="file-size">${sz}</span>
+      <button type="button" class="file-del" onclick="removeFile(${i})">✕</button>
+    </div>`;
+  }).join('');
+}
+
+// ── Rerun panel toggle ──
+function toggleRerun(enabled) {
+  document.getElementById('rerunPanel').style.display = enabled ? 'block' : 'none';
+  document.getElementById('st').textContent = enabled ? 'Re-run with Local Data' : 'Generate Report';
+}
+
+// ── Submit (handles both /api/generate and /api/rerun) ──
+async function handleSubmit() {
+  const btn = document.getElementById('submitBtn');
+  const si = document.getElementById('si');
+  const st = document.getElementById('st');
+  btn.disabled = true;
+  si.innerHTML = '<span class="spinner"></span>';
+  const origLabel = st.textContent;
+  st.textContent = 'Generating…';
+
+  document.getElementById('resultWrap').classList.remove('show');
+
+  const isRerun = document.getElementById('rerunToggle').checked;
+
+  try {
+    let res, d;
+    if (isRerun) {
+      const fd = new FormData();
+      const gridId = document.getElementById('rerun_grid_id').value.trim();
+      if (!gridId) { showResult({ success:false, error:'Grid ID is required for local re-run.' }); return; }
+      fd.append('grid_id', gridId);
+      fd.append('region', document.querySelector('[name=region]')?.value || 'california');
+      const tempF   = document.getElementById('rerun_temp_f').value;
+      const windMph = document.getElementById('rerun_wind_mph').value;
+      const rh      = document.getElementById('rerun_rh').value;
+      const soil    = document.getElementById('rerun_soil').value;
+      const fwi     = document.getElementById('rerun_fwi').value;
+      if (tempF)   fd.append('temperature_f', tempF);
+      if (windMph) fd.append('wind_speed_mph', windMph);
+      if (rh)      fd.append('relative_humidity', rh);
+      if (soil)    fd.append('soil_moisture', soil);
+      if (fwi)     fd.append('fire_weather_index', fwi);
+      const notes = document.getElementById('operator_notes')?.value;
+      if (notes)   fd.append('operator_notes', notes);
+      res = await fetch('/api/rerun', { method:'POST', body:fd });
+    } else {
+      const form = document.getElementById('form');
+      const fd = new FormData(form);
+      fd.delete('files');
+      files.forEach(f => fd.append('files', f));
+      res = await fetch('/api/generate', { method:'POST', body:fd });
+    }
+    d = await res.json();
+    showResult(d);
+  } catch(err) {
+    showResult({ success:false, error: String(err) });
+  } finally {
+    btn.disabled = false;
+    si.textContent = '🚀';
+    st.textContent = origLabel;
+  }
+}
+
+function showResult(d) {
+  const wrap = document.getElementById('resultWrap');
+  const box  = document.getElementById('resultBox');
+  const head = document.getElementById('resultHead');
+  const kv   = document.getElementById('resultKV');
+  const acts = document.getElementById('resultActs');
+
+  if (d.success) {
+    box.className  = 'result-box ok';
+    head.className = 'result-head ok';
+    head.innerHTML = `<span>✅</span><span>${(d.report_type||'').toUpperCase()}</span>`;
+    const conf = d.confidence != null ? Math.round(d.confidence*100)+'%' : '—';
+    kv.innerHTML = kvRow([
+      ['Incident', d.incident_id],
+      ['Confidence', conf],
+      ['Latency', Math.round(d.latency_ms/1000)+'s'],
+      ['Review', d.human_review_required ? '⚠ Required' : '✓ Auto'],
+      ['Files', (d.files_processed||0)+' processed'],
+      ['Backend', d.backend_used],
+    ]);
+    const viewUrl = d.rendered_path
+      ? `/api/report-file?path=${encodeURIComponent(d.rendered_path)}`
+      : `/api/reports/${d.json_path ? d.json_path.split('/').pop().replace('.json','') : d.incident_id}/render?format=html`;
+    acts.innerHTML =
+      `<a class="btn btn-primary" href="${viewUrl}" target="_blank">👁 View</a>` +
+      `<a class="btn btn-ghost" href="/">📋 All</a>`;
+  } else {
+    box.className  = 'result-box err';
+    head.className = 'result-head err';
+    head.innerHTML = `<span>❌</span><span>Failed</span>`;
+    kv.innerHTML = `<div style="grid-column:1/-1;color:var(--critical);font-size:12px;word-break:break-word">${d.error||d.detail||'Unknown error'}</div>`;
+    acts.innerHTML = '';
+  }
+  wrap.classList.add('show');
+  setTimeout(() => document.getElementById('resultBox').scrollIntoView({ behavior:'smooth', block:'nearest' }), 50);
+}
+
+function kvRow(pairs) {
+  return pairs.map(([k,v]) => `<span class="k">${k}</span><span class="v">${v??'—'}</span>`).join('');
+}
+</script>
+</body>
+</html>

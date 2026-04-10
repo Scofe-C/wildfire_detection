@@ -78,6 +78,74 @@ class ResourceDeployed(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# ICS-209 aligned nested types
+# ---------------------------------------------------------------------------
+
+class WeatherObservation(BaseModel):
+    """Structured weather conditions at the incident — ICS-209 Block 35."""
+
+    temperature_f: float | None = None
+    relative_humidity_pct: float | None = None
+    wind_speed_mph: float | None = None
+    wind_direction: str | None = None
+    fuel_moisture_1hr: float | None = None
+
+
+class FireBehavior(BaseModel):
+    """Observed fire behavior — ICS-209 Block 28 fire-specific fields."""
+
+    rate_of_spread: str | None = None
+    flame_length_ft: float | None = None
+    spotting_distance: str | None = None
+    fire_type: Literal["SURFACE", "CROWN", "GROUND", "MIXED"] | None = None
+
+
+class EvacuationZone(BaseModel):
+    """Evacuation zone with status — aligned with CAL FIRE 4-tier system."""
+
+    zone_name: str
+    status: Literal["ORDER", "WARNING", "LIFTED", "NORMAL"]
+    population_affected: int | None = None
+
+
+class ProjectedActivity(BaseModel):
+    """Tiered time-horizon projections — ICS-209 Block 36/38."""
+
+    hours_12: str | None = None
+    hours_24: str | None = None
+    hours_48: str | None = None
+    hours_72: str | None = None
+
+
+class Casualties(BaseModel):
+    """Civilian and responder casualties — ICS-209 Block 30-33."""
+
+    civilian_fatalities: int = Field(default=0, ge=0)
+    civilian_injuries: int = Field(default=0, ge=0)
+    responder_fatalities: int = Field(default=0, ge=0)
+    responder_injuries: int = Field(default=0, ge=0)
+
+
+class StructureSummary(BaseModel):
+    """Structures impacted by type — ICS-209 Block 30."""
+
+    residential_destroyed: int = Field(default=0, ge=0)
+    residential_damaged: int = Field(default=0, ge=0)
+    commercial_destroyed: int = Field(default=0, ge=0)
+    commercial_damaged: int = Field(default=0, ge=0)
+    infrastructure_notes: str | None = None
+
+
+class EvacuationEvent(BaseModel):
+    """A single evacuation event in the incident history."""
+
+    timestamp: str
+    zone_name: str
+    action: Literal["ORDER_ISSUED", "WARNING_ISSUED", "LIFTED", "EXPANDED"]
+    population_affected: int | None = None
+
+
+# ---------------------------------------------------------------------------
 # Base report — all report types inherit from this.
 # ---------------------------------------------------------------------------
 
@@ -103,6 +171,9 @@ class BaseReport(BaseModel):
     disagreement_flag: bool = False
     disclaimer: str
     data_sources_used: list[str]
+    # B4: data quality — stamped deterministically by reporter.py, not by the LLM.
+    data_quality_score: float = Field(default=0.0, ge=0.0, le=1.0)
+    data_completeness: dict[str, bool] | None = None
 
     @field_validator("disclaimer")
     @classmethod

@@ -1,0 +1,39 @@
+# ── Monitoring Pipeline Setup ──────────────────────────────────────────────────
+#
+# How it works:
+#   1. Training orchestrator calls save_baseline() after step 9 (bias gate)
+#      → writes {baseline_gcs_prefix}/{run_id}/feature_baseline.json
+#      → writes {baseline_gcs_prefix}/{run_id}/prediction_baseline.json
+#   2. Cloud Scheduler triggers POST /monitor on Cloud Run every 6h
+#      → monitor_runner resolves "latest" baseline by listing GCS blobs
+#      → runs PSI drift detection + prediction distribution shift
+#   3. If CRITICAL: Slack alert + auto-retrain (if enabled)
+#
+# Required GCP setup:
+#   - GCS_BUCKET_NAME env var (or gcs_bucket in model_config.yaml)
+#   - Inference outputs written to {inference_gcs_prefix}/ as Parquet
+#   - "data_drift" in model_config.yaml → notifications.alert_on list
+#   - SLACK_WEBHOOK_URL env var for alerts
+#
+# To enable auto-retrain:
+#   1. Set retraining.auto_trigger: true below
+#   2. Set GITHUB_TOKEN env var in Cloud Run (needs workflow_dispatch scope)
+#   3. Ensure baseline_gcs_prefix has at least one saved baseline
+# ──────────────────────────────────────────────────────────────────────────────
+
+monitoring:
+  psi_warning_threshold: 0.1
+  psi_critical_threshold: 0.25
+  prediction_mean_shift_threshold: 0.1
+  critical_rate_multiplier: 2.0
+  check_interval_hours: 6
+  # GCS paths for baselines (written by orchestrator after step 9)
+  baseline_gcs_prefix: "model-artifacts/baselines"
+  inference_gcs_prefix: "inference-outputs"
+
+retraining:
+  auto_trigger: false   # Set true once baselines are being saved and monitoring is verified
+  github_repo: "Scofe-C/wildfire_detection"
+  workflow_file: "model_ci.yml"
+  cooldown_hours: 24
+  github_token_secret: "GITHUB_TOKEN"

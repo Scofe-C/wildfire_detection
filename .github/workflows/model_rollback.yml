@@ -1,0 +1,85 @@
+name: Model Rollback
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "run_id of the model to roll back to (the 'run_id' label on the Vertex AI model)"
+        required: true
+        type: string
+      reason:
+        description: "Reason for rollback"
+        required: false
+        default: "Manual rollback"
+
+env:
+  PYTHON_VERSION: "3.11"
+
+jobs:
+  rollback:
+    name: "Rollback to model version ${{ inputs.version }}"
+    runs-on: ubuntu-latest
+    environment: production   # Requires reviewer approval
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        working-directory: model-pipeline
+        run: pip install -r requirements.txt
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Promote model version to Production in Vertex AI
+        working-directory: model-pipeline
+        env:
+          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+        run: |
+          python -c "
+          import os, sys
+          from google.cloud import aiplatform
+
+          project_id   = os.environ['GCP_PROJECT_ID']
+          display_name = 'wildfire-ignition'
+          target_run_id = '${{ inputs.version }}'   # version input is the run_id label
+
+          aiplatform.init(project=project_id, location='us-central1')
+
+          # Demote current production → archived
+          prod_models = aiplatform.Model.list(
+              filter=f'display_name=\"{display_name}\" AND labels.env=\"production\"',
+          )
+          for m in prod_models:
+              labels = dict(m.labels)
+              labels['env'] = 'archived'
+              m.update(labels=labels)
+              print(f'Archived: {m.resource_name}')
+
+          # Promote target run_id → production
+          target = aiplatform.Model.list(
+              filter=f'display_name=\"{display_name}\" AND labels.run_id=\"{target_run_id}\"',
+              order_by='create_time desc',
+          )
+          if not target:
+              print(f'ERROR: No model found with run_id={target_run_id}', file=sys.stderr)
+              sys.exit(1)
+          labels = dict(target[0].labels)
+          labels['env'] = 'production'
+          target[0].update(labels=labels)
+          print(f'Rolled back to run_id={target_run_id} — now Production: {target[0].resource_name}')
+          "
+
+      - name: Notify Slack
+        if: always()
+        run: |
+          STATUS="${{ job.status }}"
+          curl -X POST -H 'Content-type: application/json' \
+            --data "{\"text\": \"Model rollback to v${{ inputs.version }} ${STATUS}. Reason: ${{ inputs.reason }}\"}" \
+            ${{ secrets.SLACK_WEBHOOK_URL }}

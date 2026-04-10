@@ -49,6 +49,23 @@
 {% endfor %}
 {% endif %}
 
+{% if weather_observations %}
+## Weather Observations
+
+{% if weather_observations.temperature_f is not none %}- **Temperature**: {{ "%.0f"|format(weather_observations.temperature_f) }}°F
+{% endif %}{% if weather_observations.relative_humidity_pct is not none %}- **Relative Humidity**: {{ "%.0f"|format(weather_observations.relative_humidity_pct) }}%
+{% endif %}{% if weather_observations.wind_speed_mph is not none %}- **Wind Speed**: {{ "%.0f"|format(weather_observations.wind_speed_mph) }} mph{% if weather_observations.wind_direction %} ({{ weather_observations.wind_direction }}){% endif %}
+
+{% endif %}{% if weather_observations.fuel_moisture_1hr is not none %}- **1-Hr Fuel Moisture**: {{ "%.0f"|format(weather_observations.fuel_moisture_1hr) }}%
+{% endif %}
+{% endif %}
+
+{% if evacuation_readiness %}
+## Evacuation Readiness
+
+{{ evacuation_readiness }}
+{% endif %}
+
 ## Escalation Trigger
 
 {{ escalation_trigger }}

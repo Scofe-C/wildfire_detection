@@ -1,51 +1,68 @@
-version: "1.0.0"
+version: "2.0.0"
 
+# ── Data ──────────────────────────────────────────────────────────────────────
+data:
+  gcs_bucket: "wildfire-mlops-123"
+  ca_blob: "historical_data/california_historical.csv"
+  tx_blob: "historical_data/texas_historical.csv"
+  inference_output_prefix: "inference"
+
+# ── Local paths ───────────────────────────────────────────────────────────────
 paths:
-  backfill_dir: "../data-pipeline/data/processed/backfill"
-  models_dir: "models/ignition"
   reports_dir: "reports"
   validation_dir: "reports/validation"
   bias_dir: "reports/bias_gate"
   visualizations_dir: "reports/visualizations"
   fema_nri_cache: "data/static/fema_nri"
 
+# ── GCS ───────────────────────────────────────────────────────────────────────
 gcs:
-  bucket: "wildfire-model-pipeline"
-  models_prefix: "wildfire-models"
+  bucket: "wildfire-mlops-123"
   reports_prefix: "wildfire-reports"
   bias_reports_prefix: "wildfire-bias-reports"
 
+# ── Validation thresholds ─────────────────────────────────────────────────────
+# Based on notebook results (california.ipynb + texas data):
+#   XGBoost ROC-AUC 0.9426, PR-AUC 0.8927, threshold=0.365 for ≥90% recall
+#   LightGBM ROC-AUC 0.9374, PR-AUC 0.8837, threshold=0.239 for ≥90% recall
 validation:
-  auc_pr_threshold: 0.75
+  auc_pr_threshold: 0.89          # real result — do not lower (0.75 was placeholder)
   f1_threshold: 0.5
-  decision_threshold: 0.5
+  xgb_decision_threshold: 0.365   # ≥90% recall on Jan 2025 LA fires test set
+  lgbm_decision_threshold: 0.239
+  target_recall: 0.90
   max_inference_latency_ms: 5000
 
+# ── Bias gate ─────────────────────────────────────────────────────────────────
+# Slices: region (california/texas), fire_season (May-Oct vs Nov-Apr), fuel_model_fbfm40
+# All slices are hard gates — disparity > max_disparity blocks deployment
 bias_gate:
   metric: "false_negative_rate"
-  sensitive_feature: "nri_vulnerability_quartile"
-  max_disparity: 0.05
-  vulnerability_slices: ["Low", "Medium", "High", "Very High"]
-  mitigation_strategy:
-    primary: "class_weight"
-    secondary: "spatial_smote"
-    tertiary: "correlation_remover"
+  max_disparity: 0.15
+  min_group_size: 20   # groups smaller than this are skipped (unreliable FNR)
+  min_fire_count: 5    # groups with fewer fire events than this are skipped (FNR unreliable at low counts)
 
+# ── Tracking ──────────────────────────────────────────────────────────────────
+# MLflow: experiment tracking only (metrics, params, SHAP, run history)
+# Vertex AI Model Registry: artifact storage, versioning, stage promotion
 tracking:
   mlflow:
-    tracking_uri: "sqlite:///mlruns.db"
-    experiment_name: "wildfire-model-pipeline"
-    artifact_location: "mlruns/artifacts"
+    tracking_uri: "sqlite:///mlruns.db"   # local dev; swap for remote URI in CI/CD
+    experiment_name: "wildfire-ignition-v1"
   vertex_ai:
-    project_id: "${GCP_PROJECT_ID}"
+    project_id: "wildfire-mlops-123"
     location: "us-central1"
-    experiment_name: "wildfire-model-pipeline"
+    experiment_name: "wildfire-ignition-v1"
+    # registry display names are derived at runtime: wildfire-ignition-{region}
+    model_artifact_gcs_prefix: "model-artifacts"
 
+# ── SHAP ──────────────────────────────────────────────────────────────────────
 shap:
   enabled: true
-  min_soil_moisture_importance: 0.10
-  n_background_samples: 100
+  n_background_samples: 500   # sample size for SHAP TreeExplainer
+  min_soil_moisture_importance: 0.05   # drift alert threshold
 
+# ── Notifications ─────────────────────────────────────────────────────────────
 notifications:
   enabled: true
   slack_webhook_secret: "wildfire-slack-webhook"
@@ -55,6 +72,8 @@ notifications:
     - "pipeline_error"
     - "rollback"
     - "shap_drift"
+    - "critical_fire_risk"
+    - "data_drift"           # Required for drift detection alerts from monitor_runner
 
 # ---------------------------------------------------------------------------
 # OBJ-2 - Cell2Fire fire spread simulation

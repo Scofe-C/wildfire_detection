@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Fire Monitor — Control Dashboard</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0f1117; color: #e1e4e8; }
+  .container { max-width: 1100px; margin: 0 auto; padding: 24px; }
+  h1 { font-size: 20px; font-weight: 700; margin-bottom: 20px; display: flex; align-items: center; gap: 10px; }
+  h2 { font-size: 14px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: #8b949e; margin-bottom: 10px; }
+
+  /* Status bar */
+  .status-bar { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 24px; }
+  .stat-card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; }
+  .stat-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: #8b949e; margin-bottom: 4px; }
+  .stat-value { font-size: 24px; font-weight: 700; }
+  .stat-sub { font-size: 11px; color: #8b949e; margin-top: 4px; }
+
+  .mode-quiet { color: #3fb950; border-left: 4px solid #3fb950; }
+  .mode-active { color: #d29922; border-left: 4px solid #d29922; }
+  .mode-emergency { color: #f85149; border-left: 4px solid #f85149; }
+
+  /* Grid layout */
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 20px; }
+  .card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; }
+
+  /* Mode control */
+  .mode-btns { display: flex; gap: 8px; margin-bottom: 12px; }
+  .mode-btn { padding: 8px 20px; border: 2px solid #30363d; border-radius: 6px; background: #0d1117;
+    color: #e1e4e8; cursor: pointer; font-size: 13px; font-weight: 600; transition: all 0.15s; }
+  .mode-btn:hover { border-color: #58a6ff; }
+  .mode-btn.active-quiet { border-color: #3fb950; background: rgba(63,185,80,0.1); color: #3fb950; }
+  .mode-btn.active-active { border-color: #d29922; background: rgba(210,153,34,0.1); color: #d29922; }
+  .mode-btn.active-emergency { border-color: #f85149; background: rgba(248,81,73,0.1); color: #f85149; }
+  .false-alarm-btn { padding: 8px 16px; border: 2px solid #f85149; border-radius: 6px; background: rgba(248,81,73,0.1);
+    color: #f85149; cursor: pointer; font-size: 12px; font-weight: 600; }
+  .false-alarm-btn:hover { background: rgba(248,81,73,0.2); }
+
+  /* Form */
+  .field { margin-bottom: 10px; }
+  .field label { display: block; font-size: 11px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.05em; color: #8b949e; margin-bottom: 4px; }
+  input, select, textarea { width: 100%; padding: 7px 10px; border: 1px solid #30363d; border-radius: 5px;
+    background: #0d1117; color: #e1e4e8; font-size: 13px; font-family: inherit; }
+  input:focus, select:focus, textarea:focus { outline: none; border-color: #58a6ff; }
+  textarea { min-height: 60px; resize: vertical; }
+  .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .submit-btn { width: 100%; padding: 9px; border: none; border-radius: 6px; background: #238636;
+    color: #fff; font-size: 13px; font-weight: 600; cursor: pointer; margin-top: 8px; }
+  .submit-btn:hover { background: #2ea043; }
+
+  /* Table */
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th { text-align: left; padding: 8px 10px; font-size: 11px; text-transform: uppercase;
+    letter-spacing: 0.05em; color: #8b949e; border-bottom: 2px solid #30363d; background: #0d1117; }
+  td { padding: 8px 10px; border-bottom: 1px solid #21262d; }
+  tr:hover td { background: #161b22; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; }
+  .b-ok { background: rgba(63,185,80,0.15); color: #3fb950; }
+  .b-fail { background: rgba(248,81,73,0.15); color: #f85149; }
+  .b-skip { background: rgba(139,148,158,0.15); color: #8b949e; }
+
+  .toast { position: fixed; bottom: 20px; right: 20px; padding: 12px 20px; border-radius: 8px;
+    background: #238636; color: #fff; font-size: 13px; display: none; z-index: 100; }
+  .toast.show { display: block; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>&#128293; Fire Monitor Dashboard</h1>
+
+  <!-- Status bar -->
+  <div class="status-bar">
+    <div class="stat-card" id="modeCard">
+      <div class="stat-label">Current Mode</div>
+      <div class="stat-value" id="modeVal">--</div>
+      <div class="stat-sub" id="modeSub"></div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Cycle Count</div>
+      <div class="stat-value" id="cycleVal">0</div>
+      <div class="stat-sub" id="cycleSub">--</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Fire Detections</div>
+      <div class="stat-value" id="fireVal">0</div>
+      <div class="stat-sub" id="fireSub">last cycle</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Next Cycle</div>
+      <div class="stat-value" id="nextVal">--</div>
+      <div class="stat-sub" id="nextSub"></div>
+    </div>
+  </div>
+
+  <div class="grid-2">
+    <!-- Mode Control -->
+    <div class="card">
+      <h2>Mode Control</h2>
+      <div class="mode-btns">
+        <button class="mode-btn" onclick="setMode('quiet')">Quiet</button>
+        <button class="mode-btn" onclick="setMode('active')">Active</button>
+        <button class="mode-btn" onclick="setMode('emergency')">Emergency</button>
+      </div>
+      <button class="false-alarm-btn" onclick="falseAlarm()">Mark False Alarm</button>
+    </div>
+
+    <!-- Field Telemetry -->
+    <div class="card">
+      <h2>Submit Field Observation</h2>
+      <div class="field">
+        <label>Source Type</label>
+        <select id="ft_source"><option>drone</option><option>firefighter</option><option>ics209</option></select>
+      </div>
+      <div class="field-row">
+        <div class="field"><label>Latitude</label><input type="number" id="ft_lat" value="34.12" step="0.01"></div>
+        <div class="field"><label>Longitude</label><input type="number" id="ft_lon" value="-118.32" step="0.01"></div>
+      </div>
+      <div class="field-row">
+        <div class="field"><label>Confidence (0-100)</label><input type="number" id="ft_conf" value="85" min="0" max="100"></div>
+        <div class="field"><label>FRP (MW)</label><input type="number" id="ft_frp" value="120" step="0.1"></div>
+      </div>
+      <div class="field"><label>Notes</label><textarea id="ft_notes" placeholder="Field observations..."></textarea></div>
+      <button class="submit-btn" onclick="submitTelemetry()">Submit Observation</button>
+    </div>
+  </div>
+
+  <!-- Cycle History -->
+  <div class="card" style="margin-bottom:20px">
+    <h2>Cycle History</h2>
+    <table><thead><tr><th>#</th><th>Mode</th><th>Res</th><th>FIRMS</th><th>Weather</th><th>Fusion</th><th>Report</th><th>Time</th></tr></thead>
+    <tbody id="cycleTable"><tr><td colspan="8" style="color:#8b949e;text-align:center">Waiting for first cycle...</td></tr></tbody></table>
+  </div>
+
+  <!-- Field Telemetry Log -->
+  <div class="card">
+    <h2>Field Observations</h2>
+    <table><thead><tr><th>Time</th><th>Source</th><th>Lat</th><th>Lon</th><th>Conf</th><th>FRP</th></tr></thead>
+    <tbody id="ftTable"><tr><td colspan="6" style="color:#8b949e;text-align:center">No observations submitted</td></tr></tbody></table>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const API = '';
+
+function toast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 3000);
+}
+
+async function setMode(mode) {
+  const reason = prompt(`Reason for switching to ${mode.toUpperCase()}:`, 'manual override');
+  if (reason === null) return;
+  await fetch(`${API}/mode`, {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({mode, reason})});
+  toast(`Mode override: ${mode.toUpperCase()}`);
+  refresh();
+}
+
+async function falseAlarm() {
+  const reason = prompt('Describe why this is a false alarm:', 'industrial source / prescribed burn');
+  if (reason === null) return;
+  await fetch(`${API}/false-alarm`, {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({reason})});
+  toast('False alarm declared — mode will switch to QUIET');
+  refresh();
+}
+
+async function submitTelemetry() {
+  const body = {
+    source_type: document.getElementById('ft_source').value,
+    latitude: parseFloat(document.getElementById('ft_lat').value),
+    longitude: parseFloat(document.getElementById('ft_lon').value),
+    confidence: parseInt(document.getElementById('ft_conf').value),
+    frp: parseFloat(document.getElementById('ft_frp').value) || null,
+    report_text: document.getElementById('ft_notes').value || null,
+  };
+  await fetch(`${API}/field-telemetry`, {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(body)});
+  toast('Observation submitted');
+  document.getElementById('ft_notes').value = '';
+  refresh();
+}
+
+function badge(s) {
+  if (s === 'OK') return '<span class="badge b-ok">OK</span>';
+  if (s === 'FAIL') return '<span class="badge b-fail">FAIL</span>';
+  return '<span class="badge b-skip">SKIP</span>';
+}
+
+function fmtTime(iso) {
+  if (!iso) return '--';
+  return new Date(iso).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'});
+}
+
+async function refresh() {
+  try {
+    const s = await fetch(`${API}/status`).then(r=>r.json());
+    const mc = document.getElementById('modeCard');
+    mc.className = `stat-card mode-${s.mode}`;
+    document.getElementById('modeVal').textContent = s.mode.toUpperCase();
+    document.getElementById('modeSub').textContent = s.running ? 'running' : 'stopped';
+    document.getElementById('cycleVal').textContent = s.cycle_count;
+    document.getElementById('cycleSub').textContent = s.last_cycle_at ? `Last: ${fmtTime(s.last_cycle_at)}` : '--';
+    document.getElementById('fireVal').textContent = s.fire_cells_detected.length;
+    document.getElementById('nextVal').textContent = s.next_cycle_at ? fmtTime(s.next_cycle_at) : '--';
+
+    // Highlight active mode button
+    document.querySelectorAll('.mode-btn').forEach(b => b.className = 'mode-btn');
+    document.querySelectorAll('.mode-btn').forEach(b => {
+      if (b.textContent.toLowerCase() === s.mode) b.classList.add(`active-${s.mode}`);
+    });
+
+    // Cycles
+    const cycles = await fetch(`${API}/cycles`).then(r=>r.json());
+    const ct = document.getElementById('cycleTable');
+    if (cycles.length) {
+      ct.innerHTML = cycles.slice().reverse().map(c => {
+        const steps = c.steps || {};
+        const firmsOk = Object.keys(steps).filter(k=>k.startsWith('firms_')).some(k=>steps[k].status==='OK');
+        const weatherOk = Object.keys(steps).filter(k=>k.startsWith('weather_')).some(k=>steps[k].status==='OK');
+        return `<tr>
+          <td>${c.cycle}</td>
+          <td><span class="badge b-${c.mode==='emergency'?'fail':c.mode==='active'?'ok':'skip'}">${c.mode.toUpperCase()}</span></td>
+          <td>${c.resolution_km}km</td>
+          <td>${badge(firmsOk?'OK':'FAIL')}</td>
+          <td>${badge(weatherOk?'OK':'FAIL')}</td>
+          <td>${badge((steps.fusion||{}).status||'SKIP')}</td>
+          <td>${badge((steps.obj3_report||{}).status||'SKIP')}</td>
+          <td>${c.total_time_s||'?'}s</td>
+        </tr>`;
+      }).join('');
+    }
+
+    // Field telemetry
+    const ft = await fetch(`${API}/field-telemetry`).then(r=>r.json());
+    const ftT = document.getElementById('ftTable');
+    if (ft.length) {
+      ftT.innerHTML = ft.slice().reverse().slice(0,20).map(o => `<tr>
+        <td>${fmtTime(o.timestamp)}</td>
+        <td>${o.source_type}</td>
+        <td>${o.latitude}</td>
+        <td>${o.longitude}</td>
+        <td>${o.confidence}</td>
+        <td>${o.frp||'--'}</td>
+      </tr>`).join('');
+    }
+  } catch(e) { console.error('Refresh error:', e); }
+}
+
+refresh();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>

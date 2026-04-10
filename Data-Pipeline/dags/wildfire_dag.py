@@ -64,7 +64,7 @@ SCHEDULE_INTERVAL = "0 */6 * * *"  # Fallback cron; watchdog_sensor_dag override
 # Resolution tiers (watchdog escalation):
 #   quiet mode:  64 km (H3 res 2) — coarse default scan, ~200 cells CA+TX
 #   fire mode:   22 km (H3 res 5) — fire-confirmed detailed scan, ~800-1000 cells CA
-DEFAULT_RESOLUTION_KM = 64  # Watchdog escalates to 22 on confirmed fire
+DEFAULT_RESOLUTION_KM = 22  # Matches schema_config.yaml default_resolution_km
 
 # Region definitions — mirrors schema_config.yaml geographic_scope
 # Defined here so the DAG can build TaskGroups without reading the config at
@@ -201,11 +201,45 @@ def task_ingest_weather(region: str, **context):
     params         = context["params"]
     resolution_km  = params.get("resolution_km", DEFAULT_RESOLUTION_KM)
     lookback_hours = params.get("weather_lookback_hours", 24)
+    trigger_source = params.get("trigger_source", "cron")
+    fire_cells     = params.get("fire_cells", None)
+    h3_ring_max    = params.get("h3_ring_max", 5)
 
-    # Always fetch weather for the full regional grid.
-    # Resolution escalation (64km → 22km) handles precision; no focal subsetting needed.
+    # At 22km (H3 res 5), full grid = ~800-1000 cells per region.
+    # On watchdog triggers: only fetch fire-detected region + focal cells.
+    # On cron: fetch only the active region (not the entire grid).
     full_grid = generate_full_grid(resolution_km)
     grid = full_grid[full_grid["region"] == region].copy()
+
+    # If watchdog trigger has fire_cells, filter to fire-active region only
+    # to avoid unnecessary API calls for the other region.
+    is_watchdog = trigger_source in ("watchdog_emergency", "watchdog_active")
+    if is_watchdog and fire_cells:
+        fire_regions = full_grid[
+            full_grid["grid_id"].isin(fire_cells)
+        ]["region"].unique().tolist()
+        if fire_regions and region not in fire_regions:
+            # This region has no detected fire — skip expensive weather fetch
+            # The fuse step will forward-fill from previous cron data.
+            logger.info(
+                "[%s] No fire detected in this region (fire in %s). "
+                "Skipping weather fetch — will forward-fill from last cron run.",
+                region, fire_regions,
+            )
+            # Write empty CSV so downstream tasks don't fail on missing XCom
+            out_dir = RAW_DIR / "weather"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            empty_path = out_dir / f"weather_raw_{region}_skip.csv"
+            import pandas as _pd
+            _pd.DataFrame(columns=["grid_id", "timestamp"]).to_csv(
+                empty_path, index=False,
+            )
+            context["ti"].xcom_push(
+                key=f"weather_raw_path_{region}", value=str(empty_path),
+            )
+            logger.info(f"[{region}] Weather skip (no fire) → {empty_path}")
+            return
+
     grid_centroids = grid[["grid_id", "latitude", "longitude"]]
 
     output_path = fetch_weather_data(
@@ -213,6 +247,9 @@ def task_ingest_weather(region: str, **context):
         execution_date=execution_date,
         lookback_hours=lookback_hours,
         output_dir=str(RAW_DIR / "weather"),
+        trigger_source=trigger_source,
+        fire_cells=fire_cells,
+        h3_ring_max=h3_ring_max,
         region=region,
     )
 
@@ -319,6 +356,34 @@ def task_ingest_hrrr(region: str, **context):
         logger.warning(f"[{region}] HRRR collection failed (non-blocking): {e}")
 
 
+def task_ingest_field_telemetry(**context):
+    """Ingest pending field telemetry (drone/firefighter/ICS-209) observations.
+
+    Reads JSON files from ``data/raw/field_telemetry/``, validates, converts
+    to DataFrame, and pushes via XCom for the fusion step. Non-blocking.
+    """
+    try:
+        from scripts.ingestion.ingest_field_telemetry import (
+            batch_field_telemetry_to_dataframe,
+            load_pending_field_telemetry,
+        )
+
+        input_dir = DATA_DIR / "raw" / "field_telemetry"
+        payloads = load_pending_field_telemetry(input_dir)
+
+        if payloads:
+            df = batch_field_telemetry_to_dataframe(payloads)
+            output_path = PROCESSED_DIR / "field_telemetry" / "field_telemetry_latest.parquet"
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            df.to_parquet(output_path, index=False)
+            context["ti"].xcom_push(key="field_telemetry_path", value=str(output_path))
+            logger.info("Field telemetry: %d observations processed → %s", len(df), output_path)
+        else:
+            logger.info("No pending field telemetry observations")
+    except Exception as e:
+        logger.warning("Field telemetry ingestion failed (non-blocking): %s", e)
+
+
 # ---------------------------------------------------------------------------
 # Fusion and downstream tasks (shared — wait for all regions)
 # ---------------------------------------------------------------------------
@@ -353,6 +418,16 @@ def task_fuse_features(**context):
     )
     static_df   = pd.read_parquet(static_path) if static_path else pd.DataFrame()
 
+    # --- Load field telemetry (if any) ---
+    field_telemetry_path = context["ti"].xcom_pull(
+        task_ids="ingest_field_telemetry", key="field_telemetry_path",
+    )
+    field_telemetry_df = (
+        pd.read_parquet(field_telemetry_path)
+        if field_telemetry_path and Path(field_telemetry_path).exists()
+        else None
+    )
+
     # --- Forward-fill: load previous window's fused output ---
     prev_fused_path = str(PROCESSED_DIR / "fused" / "fused_features_previous.parquet")
 
@@ -363,6 +438,7 @@ def task_fuse_features(**context):
         execution_date=pd.Timestamp(str(execution_date)),
         resolution_km=resolution_km,
         previous_fused_path=prev_fused_path,
+        field_telemetry=field_telemetry_df,
     )
 
     # --- Circuit breaker: fail loudly on >80% weather nulls (Item 6) ---
@@ -694,7 +770,17 @@ with DAG(
         region_task_groups[region_key] = tg
 
     # ------------------------------------------------------------------
-    # Fusion — waits for ALL region TaskGroups + shared static branch
+    # Field telemetry ingestion (runs in parallel with region TaskGroups)
+    # ------------------------------------------------------------------
+    ingest_field = PythonOperator(
+        task_id="ingest_field_telemetry",
+        python_callable=task_ingest_field_telemetry,
+        provide_context=True,
+        trigger_rule="all_done",  # Non-blocking — runs even if regions fail
+    )
+
+    # ------------------------------------------------------------------
+    # Fusion — waits for ALL region TaskGroups + shared static + field telemetry
     # trigger_rule='none_failed' handles the static ShortCircuit skip gracefully
     # ------------------------------------------------------------------
     fuse = PythonOperator(
@@ -706,6 +792,7 @@ with DAG(
 
     # Connect all branches into fusion
     load_static_layers >> fuse
+    ingest_field >> fuse
     for tg in region_task_groups.values():
         tg >> fuse
 
@@ -745,11 +832,11 @@ with DAG(
             echo "DVC pointer updated: dvc/processed_{{ params.resolution_km }}km.dvc"
 
             # Track plain fused features (OBJ-2 input)
+            # data/processed/fused is owned by dvc.yaml fuse_features stage —
+            # use dvc commit instead of dvc add to avoid overlap error.
             if [ -d "data/processed/fused/{{ params.resolution_km }}km" ]; then
-                dvc add "data/processed/fused/{{ params.resolution_km }}km" -f
-                cp "data/processed/fused/{{ params.resolution_km }}km.dvc" \
-                   "dvc/fused_{{ params.resolution_km }}km.dvc"
-                echo "DVC pointer updated: dvc/fused_{{ params.resolution_km }}km.dvc"
+                dvc commit data/processed/fused -f
+                echo "DVC commit complete: data/processed/fused"
             else
                 echo "Fused {{ params.resolution_km }}km dir not yet populated — skipping"
             fi

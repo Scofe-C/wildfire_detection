@@ -23,10 +23,11 @@ import numpy as np
 import pandas as pd
 
 from src.models.base import BaseModel
-from .exceptions import Cell2FireError, Cell2FireNotInstalledError, load_obj2_config
-from .weather import format_weather_csv
-from .raster import clip_raster_to_aoi, parse_burn_probability
+
 from .evaluation import compute_dice_coefficient, find_best_threshold
+from .exceptions import Cell2FireError, load_obj2_config
+from .raster import clip_raster_to_aoi, parse_burn_probability
+from .weather import format_weather_csv
 
 logger = logging.getLogger(__name__)
 
@@ -235,11 +236,12 @@ class Cell2FireSpread(BaseModel):
         dict with buffered_iou, directional_accuracy, area_ratio,
                     gate_passed, dice_coefficient (legacy), auc_pr, f1
         """
-        from src.validation.metrics import compute_all_metrics
         import geopandas as gpd
         import h3
         from shapely.geometry import Point
         from shapely.ops import unary_union
+
+        from src.validation.metrics import compute_all_metrics
 
         predictions = self.predict(X)
         y_prob = predictions["probability"].values
@@ -284,7 +286,7 @@ class Cell2FireSpread(BaseModel):
                     actual_gdf = gpd.GeoDataFrame(
                         geometry=[
                             Point(lon, lat).buffer(0.005)
-                            for lat, lon in zip(lats, lons)
+                            for lat, lon in zip(lats, lons, strict=False)
                         ],
                         crs="EPSG:4326",
                     )
@@ -466,8 +468,8 @@ class Cell2FireSpread(BaseModel):
         dem_path: str | Path,
     ) -> pd.DataFrame:
         """Map 2D burn probability grid back to input DataFrame rows."""
-        import rasterio
         import h3
+        import rasterio
 
         burn_threshold = 0.5
 

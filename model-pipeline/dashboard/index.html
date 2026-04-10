@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OBJ-3 — Wildfire Intelligence</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/style.css">
+<style>
+/* ── Summary strip ── */
+.summary-strip {
+  display: grid; grid-template-columns: repeat(4, 1fr);
+  gap: 14px; margin-bottom: 24px;
+}
+.summary-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--border);
+  border-radius: var(--radius);
+  padding: 18px 20px;
+  box-shadow: var(--shadow);
+  transition: box-shadow 0.2s, transform 0.2s;
+}
+.summary-card:hover { box-shadow: var(--shadow-lg); transform: translateY(-1px); }
+.summary-card.accent-critical { border-left-color: var(--critical); }
+.summary-card.accent-high     { border-left-color: var(--high); }
+.summary-card.accent-low      { border-left-color: var(--low); }
+.summary-label { font-size: 11px; font-weight: 600; text-transform: uppercase;
+                 letter-spacing: 0.06em; color: var(--text-3); margin-bottom: 6px; }
+.summary-value { font-size: 26px; font-weight: 700; color: var(--text); line-height: 1; }
+.summary-sub   { font-size: 11px; color: var(--text-3); margin-top: 5px; }
+
+/* ── Section header ── */
+.section-header {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 14px;
+}
+.section-header h2 { font-size: 14px; font-weight: 600; }
+
+/* ── Table ── */
+.table-wrap {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  box-shadow: var(--shadow);
+}
+.reports-table { width: 100%; border-collapse: collapse; }
+.reports-table th {
+  padding: 11px 16px;
+  text-align: left;
+  font-size: 11px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--text-3);
+  background: var(--panel);
+  border-bottom: 2px solid var(--border);
+}
+.reports-table td {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+.reports-table tbody tr:last-child td { border-bottom: none; }
+.reports-table tbody tr:hover td { background: var(--panel); }
+
+/* ── Confidence bar ── */
+.conf-bar { display: flex; align-items: center; gap: 8px; }
+.conf-track { width: 80px; height: 6px; background: var(--card); border-radius: 3px; overflow: hidden; }
+.conf-fill  { height: 100%; border-radius: 3px; }
+.conf-label { font-size: 12px; font-family: 'JetBrains Mono', monospace; color: var(--text-2); }
+
+/* ── Empty state ── */
+.empty-state { text-align: center; padding: 64px 24px; color: var(--text-3); }
+.empty-state .empty-icon { font-size: 36px; margin-bottom: 12px; display: block; opacity: 0.5; }
+.empty-state p { font-size: 13px; }
+.empty-state a { color: var(--accent); text-decoration: none; }
+.empty-state a:hover { text-decoration: underline; }
+
+/* ── Modal ── */
+.modal-backdrop {
+  display: none; position: fixed; inset: 0;
+  background: rgba(0,0,0,0.40); z-index: 200;
+  align-items: center; justify-content: center;
+}
+.modal-backdrop.open { display: flex; }
+.modal {
+  background: #fff; color: #333;
+  width: 92%; max-width: 960px; max-height: 92vh;
+  border-radius: 12px; overflow: hidden;
+  display: flex; flex-direction: column;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.22);
+}
+.modal-bar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 18px; background: var(--panel); border-bottom: 1px solid var(--border);
+}
+.modal-bar span { font-size: 13px; font-weight: 600; color: var(--text); }
+.modal-close {
+  background: none; border: none; color: var(--text-3);
+  font-size: 18px; cursor: pointer; line-height: 1;
+  padding: 2px 6px; border-radius: 4px;
+  transition: background 0.15s, color 0.15s;
+}
+.modal-close:hover { background: var(--card); color: var(--text); }
+.modal-body { flex: 1; overflow: hidden; }
+.modal-body iframe { width: 100%; height: 100%; min-height: 75vh; border: none; }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- Sidebar -->
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-logo">
+      <div class="logo-icon">🔥</div>
+      <div class="logo-text-wrap">
+        <div class="logo-text">OBJ-3</div>
+        <div class="logo-sub">Wildfire Intelligence</div>
+      </div>
+    </div>
+    <nav class="nav">
+      <div class="nav-label">Navigation</div>
+      <a href="/" class="active">
+        <span class="nav-icon">📋</span><span class="nav-text">Reports</span>
+      </a>
+      <a href="/generate">
+        <span class="nav-icon">➕</span><span class="nav-text">Generate</span>
+      </a>
+    </nav>
+    <div class="sidebar-footer" id="sidebarFooter">—</div>
+  </aside>
+
+  <!-- Main -->
+  <div class="main">
+
+    <!-- Topbar -->
+    <header class="topbar">
+      <button class="sidebar-toggle" onclick="toggleSidebar()" title="Toggle sidebar">☰</button>
+      <span class="topbar-title">Incident Reports</span>
+      <div id="statusPills" style="display:flex;gap:8px;align-items:center"></div>
+      <div style="display:flex;gap:8px;margin-left:8px">
+        <button class="btn btn-ghost btn-sm" onclick="loadAll()">↺ Refresh</button>
+        <a href="/generate" class="btn btn-primary btn-sm">➕ New Report</a>
+      </div>
+    </header>
+
+    <div class="content">
+
+      <!-- Summary strip -->
+      <div class="summary-strip">
+        <div class="summary-card">
+          <div class="summary-label">Total Reports</div>
+          <div class="summary-value" id="sTotal">—</div>
+          <div class="summary-sub">all time</div>
+        </div>
+        <div class="summary-card accent-critical">
+          <div class="summary-label" style="color:var(--critical)">Pending Review</div>
+          <div class="summary-value" id="sPending" style="color:var(--critical)">—</div>
+          <div class="summary-sub">require human approval</div>
+        </div>
+        <div class="summary-card accent-high">
+          <div class="summary-label" style="color:var(--high)">Active Incidents</div>
+          <div class="summary-value" id="sIncidents" style="color:var(--high)">—</div>
+          <div class="summary-sub">incident reports</div>
+        </div>
+        <div class="summary-card accent-low">
+          <div class="summary-label" style="color:var(--low)">Auto-Approved</div>
+          <div class="summary-value" id="sApproved" style="color:var(--low)">—</div>
+          <div class="summary-sub">no review needed</div>
+        </div>
+      </div>
+
+      <!-- Reports table -->
+      <div class="section-header">
+        <h2>Recent Reports</h2>
+        <span style="font-size:12px;color:var(--text-3)" id="tableCount"></span>
+      </div>
+      <div id="reportsContainer">
+        <div class="table-wrap">
+          <div class="empty-state"><span class="empty-icon">⏳</span><p>Loading…</p></div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<!-- Report viewer modal -->
+<div class="modal-backdrop" id="modal">
+  <div class="modal">
+    <div class="modal-bar">
+      <span id="modalTitle">Report</span>
+      <button class="modal-close" onclick="closeModal()">✕</button>
+    </div>
+    <div class="modal-body">
+      <iframe id="modalFrame" src="about:blank"></iframe>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── Sidebar toggle ──
+function toggleSidebar() {
+  const sb = document.getElementById('sidebar');
+  sb.classList.toggle('collapsed');
+  localStorage.setItem('sidebar-collapsed', sb.classList.contains('collapsed'));
+}
+if (localStorage.getItem('sidebar-collapsed') === 'true') {
+  document.getElementById('sidebar').classList.add('collapsed');
+}
+
+// ── Status ──
+async function loadStatus() {
+  try {
+    const s = await fetch('/api/status').then(r => r.json());
+    const pills = document.getElementById('statusPills');
+    const backOk = s.reporter_loaded;
+    const corpus  = s.corpus_chunks > 0;
+    pills.innerHTML = `
+      <div class="status-pill">
+        <span class="dot ${backOk ? 'dot-green' : 'dot-red'}"></span>
+        <span>${s.backend}</span>
+        ${s.ollama ? `<span style="color:var(--text-3);font-size:11px">${s.ollama.model}</span>` : ''}
+      </div>
+      <div class="status-pill">
+        <span class="dot ${corpus ? 'dot-green' : 'dot-yellow'}"></span>
+        <span>${s.corpus_chunks} corpus chunks</span>
+      </div>`;
+    document.getElementById('sidebarFooter').textContent =
+      `Backend: ${s.backend} · ${new Date(s.timestamp).toLocaleTimeString()}`;
+  } catch { }
+}
+
+// ── Reports ──
+function confColor(c) {
+  if (c >= 0.8) return 'var(--low)';
+  if (c >= 0.6) return 'var(--moderate)';
+  return 'var(--critical)';
+}
+function riskBadge(r) {
+  const m = {CRITICAL:'critical',HIGH:'high',MODERATE:'moderate',LOW:'low'};
+  return `<span class="badge badge-${m[r]||'low'}">${r||'?'}</span>`;
+}
+function typeBadge(t) {
+  const icons = {incident:'🔥',high_risk:'⚠',daily:'📅',final:'📝'};
+  return `<span class="badge badge-${t||'daily'}">${icons[t]||''} ${(t||'').replace('_',' ').toUpperCase()}</span>`;
+}
+function reviewBadge(s) {
+  return s === 'PENDING_REVIEW'
+    ? '<span class="badge badge-review">⚠ PENDING</span>'
+    : '<span class="badge badge-approved">✓ APPROVED</span>';
+}
+function fmtDate(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  return isNaN(d) ? iso : d.toLocaleString([], {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});
+}
+
+async function loadAll() {
+  try {
+    const reports = await fetch('/api/reports?limit=100').then(r => r.json());
+    document.getElementById('sTotal').textContent    = reports.length;
+    document.getElementById('sPending').textContent  = reports.filter(r => r.review_status === 'PENDING_REVIEW').length;
+    document.getElementById('sIncidents').textContent= reports.filter(r => r.report_type === 'incident').length;
+    document.getElementById('sApproved').textContent = reports.filter(r => r.review_status === 'AUTO_APPROVED').length;
+    document.getElementById('tableCount').textContent = `${reports.length} report${reports.length!==1?'s':''}`;
+
+    const el = document.getElementById('reportsContainer');
+    if (!reports.length) {
+      el.innerHTML = `<div class="table-wrap"><div class="empty-state">
+        <span class="empty-icon">📭</span>
+        <p>No reports yet. <a href="/generate">Generate the first one →</a></p>
+      </div></div>`;
+      return;
+    }
+
+    el.innerHTML = `<div class="table-wrap"><table class="reports-table">
+      <thead><tr>
+        <th>Date / Time</th><th>Type</th><th>Risk</th>
+        <th>Incident ID</th><th>Confidence</th><th>Review</th><th>Actions</th>
+      </tr></thead>
+      <tbody>${reports.map(r => {
+        const conf = r.confidence;
+        const confHtml = conf != null ? `
+          <div class="conf-bar">
+            <div class="conf-track"><div class="conf-fill" style="width:${Math.round(conf*100)}%;background:${confColor(conf)}"></div></div>
+            <span class="conf-label">${Math.round(conf*100)}%</span>
+          </div>` : '<span style="color:var(--text-3)">—</span>';
+        return `<tr>
+          <td style="color:var(--text-2);white-space:nowrap">${fmtDate(r.generated_at)}</td>
+          <td>${typeBadge(r.report_type)}</td>
+          <td>${riskBadge(r.risk_level)}</td>
+          <td><span class="mono">${r.incident_id||'—'}</span></td>
+          <td>${confHtml}</td>
+          <td>${reviewBadge(r.review_status)}</td>
+          <td style="white-space:nowrap;display:flex;gap:6px">
+            ${r.rendered_path
+              ? `<button class="btn btn-ghost btn-sm" onclick="viewReport('${r.rendered_path}','${r.id}')">👁 View</button>`
+              : `<button class="btn btn-ghost btn-sm" onclick="viewRendered('${r.id}','${r.report_type}')">👁 View</button>`}
+            <a class="btn btn-ghost btn-sm" href="/api/reports/${r.id}" target="_blank">⬇ JSON</a>
+          </td>
+        </tr>`;
+      }).join('')}</tbody>
+    </table></div>`;
+  } catch(e) {
+    document.getElementById('reportsContainer').innerHTML =
+      `<div class="table-wrap"><div class="empty-state"><span class="empty-icon">⚠</span><p>${e}</p></div></div>`;
+  }
+}
+
+function viewReport(path, id) {
+  document.getElementById('modalTitle').textContent = id;
+  document.getElementById('modalFrame').src = `/api/report-file?path=${encodeURIComponent(path)}`;
+  document.getElementById('modal').classList.add('open');
+}
+function viewRendered(id, reportType) {
+  const fmt = (reportType === 'incident' || reportType === 'final') ? 'html' : 'html';
+  document.getElementById('modalTitle').textContent = id;
+  document.getElementById('modalFrame').src = `/api/reports/${id}/render?format=${fmt}`;
+  document.getElementById('modal').classList.add('open');
+}
+function closeModal() {
+  document.getElementById('modal').classList.remove('open');
+  document.getElementById('modalFrame').src = 'about:blank';
+}
+
+loadStatus();
+loadAll();
+setInterval(loadStatus, 30000);
+</script>
+</body>
+</html>

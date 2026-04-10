@@ -247,7 +247,7 @@ class TestCell2FireSpreadInterface:
 
         model = Cell2FireSpread()
         with patch(
-            "src.models.obj2_spread.cell2fire_spread._load_obj2_config",
+            "src.models.obj2_spread.cell2fire_spread.load_obj2_config",
             return_value=model_cfg["obj2"],
         ):
             model.load_model(config_file)
@@ -262,7 +262,7 @@ class TestCell2FireSpreadInterface:
         )
         model = Cell2FireSpread()
         with pytest.raises((FileNotFoundError, Cell2FireError)), patch(
-            "src.models.obj2_spread.cell2fire_spread._load_obj2_config",
+            "src.models.obj2_spread.cell2fire_spread.load_obj2_config",
             return_value={
                 "cell2fire": {
                     "binary_path": "Cell2Fire",

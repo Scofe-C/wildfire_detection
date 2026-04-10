@@ -48,13 +48,23 @@ def get_template(report_type: str, fmt: str) -> str:
         raise ValueError(f"No template for report_type={report_type!r}, format={fmt!r}") from None
 
 
+_JINJA_ENV_CACHE: dict[tuple[str, bool], jinja2.Environment] = {}
+
+
 def _get_jinja_env(template_dir: Path, autoescape: bool = False) -> jinja2.Environment:
-    """Create a Jinja2 environment with the given template directory."""
-    return jinja2.Environment(
-        loader=jinja2.FileSystemLoader(str(template_dir)),
-        autoescape=autoescape,
-        undefined=jinja2.StrictUndefined,  # raises on missing vars — intentional
-    )
+    """Return a cached Jinja2 environment for the given template directory.
+
+    Templates are static files that do not change at runtime, so caching
+    the Environment avoids re-parsing templates on every render call.
+    """
+    key = (str(template_dir), autoescape)
+    if key not in _JINJA_ENV_CACHE:
+        _JINJA_ENV_CACHE[key] = jinja2.Environment(
+            loader=jinja2.FileSystemLoader(str(template_dir)),
+            autoescape=autoescape,
+            undefined=jinja2.StrictUndefined,
+        )
+    return _JINJA_ENV_CACHE[key]
 
 
 def render_markdown(

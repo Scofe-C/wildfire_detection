@@ -13,14 +13,21 @@ ollama:
   max_retries: 2
 
 # --- Gemini Developer API (Phase 2: free-tier API key) ---
+# Free tier: 10 RPM, 250 RPD for 2.5-flash; preview models have lower limits
+# API key read from env var GEMINI_API_KEY
 gemini_dev:
   model: "gemini-2.5-flash"
-  # API key read from env var GEMINI_API_KEY
+  # Alternative models (free tier):
+  #   "gemini-2.5-flash"              — stable, 10 RPM / 250 RPD (recommended)
+  #   "gemini-2.5-flash-lite"         — stable, 15 RPM / 1000 RPD (faster, lighter)
+  #   "gemini-3-flash-preview"        — preview, lower limits (latest generation)
+  #   "gemini-3.1-flash-lite-preview" — preview, lower limits
+  # Paid only: "gemini-2.5-pro", "gemini-3.1-pro-preview"
 
 # --- Vertex AI (Phase 3: GCP project) ---
 vertex_ai:
   model: "gemini-2.5-flash"
-  project_id: ""
+  project_id: "wildfire-detection-486319"
   location: "us-central1"
   corpus_cache_ttl_seconds: 3600
 
@@ -37,11 +44,21 @@ reporting:
   confidence_threshold: 0.70
   min_grounding_sources: 3
   output_dir: "reports/disaster_reports"
-  gcs_bucket: ""
+  gcs_bucket: "wildfire-model-pipeline"
+  default_render_format: "json"   # "json" (save JSON only) | "auto" (JSON + rendered HTML/MD)
   max_ml_block_chars: 20000       # Cloud backends
   max_data_block_chars: 20000     # Cloud backends
   ollama_max_ml_block_chars: 6000    # Local models — keep total context < 32K tokens
   ollama_max_data_block_chars: 6000  # Local models
+  parse_max_retries: 3               # Max retries on JSON parse failure
+  parse_retry_base_delay: 1.0        # Base delay (seconds) — exponential backoff: delay = base * 2^attempt
+
+# --- Incident Tracker (EMERGENCY sub-state transitions) ---
+incident_tracker:
+  interim_hours: 2         # ACTIVE_FIRE → INTERIM after no hotspots for 2h
+  post_fire_hours: 12      # INTERIM → POST_FIRE after no hotspots for 12h
+  final_hours: 48          # POST_FIRE → FINAL after no hotspots for 48h
+  gc_max_age_days: 30      # Archived incidents older than this are garbage-collected
 
 # --- Admin Toggle (human input channel) ---
 admin_toggle:

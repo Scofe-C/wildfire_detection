@@ -127,8 +127,8 @@ class GeminiDisasterReporter(BaseModel):
         with open(config_path, encoding="utf-8") as fh:
             self._config = yaml.safe_load(fh) or {}
 
-        # Resolve paths relative to config file location
-        base_dir = config_path.resolve().parent.parent  # model-pipeline/
+        # Resolve paths relative to project root (this file is at src/models/obj3_gemini/)
+        base_dir = Path(__file__).resolve().parents[3]  # model-pipeline/
         self._template_dir = base_dir / "templates"
         self._output_dir = base_dir / self._config.get(
             "reporting", {}
@@ -231,24 +231,40 @@ class GeminiDisasterReporter(BaseModel):
 
         latency = (time.perf_counter() - t0) * 1000
 
-        # Parse JSON → Pydantic
+        # Parse JSON → Pydantic with configurable retry + exponential backoff
+        max_retries = self._config.get("reporting", {}).get("parse_max_retries", 3)
+        base_delay = self._config.get("reporting", {}).get("parse_retry_base_delay", 1.0)
+
         try:
             raw_json = _preprocess_report_json(raw_json, context_bundle)
             parsed = schema_cls.model_validate_json(raw_json)
         except Exception as exc:
-            logger.warning("JSON parse failed, retrying: %s", exc)
-            # Retry once
-            try:
-                raw_json = self._adapter.generate(context_bundle, schema_dict)
-                raw_json = _preprocess_report_json(raw_json, context_bundle)
-                parsed = schema_cls.model_validate_json(raw_json)
-            except Exception as retry_exc:
+            import random  # noqa: PLC0415
+
+            parsed = None
+            last_error = exc
+            for attempt in range(1, max_retries + 1):
+                delay = base_delay * (2 ** (attempt - 1)) + random.uniform(0, 0.5)
+                logger.warning(
+                    "JSON parse failed (attempt %d/%d), retrying in %.1fs: %s",
+                    attempt, max_retries, delay, last_error,
+                )
+                time.sleep(delay)
+                try:
+                    raw_json = self._adapter.generate(context_bundle, schema_dict)
+                    raw_json = _preprocess_report_json(raw_json, context_bundle)
+                    parsed = schema_cls.model_validate_json(raw_json)
+                    break  # Success
+                except Exception as retry_exc:
+                    last_error = retry_exc
+
+            if parsed is None:
                 return ReportResult(
                     raw_json=raw_json,
                     parsed_report=None,
                     report_type=context_bundle.report_type,
                     incident_id=context_bundle.incident_id,
-                    error=f"Parse failed after retry: {retry_exc}",
+                    error=f"Parse failed after {max_retries} retries: {last_error}",
                     latency_ms=latency,
                 )
 
@@ -312,6 +328,8 @@ class GeminiDisasterReporter(BaseModel):
             "grounding_search_count": parsed.grounding_search_count,
             "report_type": parsed.report_type,
             "latency_ms": report_result.latency_ms,
+            "data_quality_score": parsed.data_quality_score,
+            "data_completeness": parsed.data_completeness,
         }
 
     # -- High-level convenience method -----------------------------------------
@@ -323,6 +341,7 @@ class GeminiDisasterReporter(BaseModel):
         uploaded_files: list[Any] | None = None,
         mode: OperationalMode | None = None,
         sub_state: EmergencySubState | None = None,
+        render_format: str | None = None,
     ) -> GeneratedReport:
         """Full report generation pipeline: resolve → build → generate →
         validate → render → save.
@@ -340,6 +359,12 @@ class GeminiDisasterReporter(BaseModel):
             raise RuntimeError("Call load_model() before generate_report().")
 
         human_inputs = human_inputs or []
+
+        # Resolve render_format from config if not explicitly provided
+        if render_format is None:
+            render_format = self._config.get("reporting", {}).get(
+                "default_render_format", "json"
+            )
 
         # 1–2: Resolve mode
         disagreement_flag = False
@@ -386,16 +411,20 @@ class GeminiDisasterReporter(BaseModel):
             result.parsed_report.review_status = (
                 "PENDING_REVIEW" if hrr else "AUTO_APPROVED"
             )
+            # Stamp data_completeness from pipeline_result
+            result.parsed_report.data_completeness = pipeline_result.get(
+                "data_completeness"
+            )
             # Re-serialize so the saved JSON reflects deterministic stamps
             result.raw_json = result.parsed_report.model_dump_json(indent=2)
 
         # 7: Validate
         validation = self.validate(result, disagreement_flag=disagreement_flag)
 
-        # 8: Render
+        # 8: Render (skip when render_format is "json" for efficiency)
         rendered_content = ""
         fmt = "md"
-        if result.parsed_report is not None:
+        if result.parsed_report is not None and render_format != "json":
             if report_type in ("incident", "final"):
                 rendered_content = render_html(result.parsed_report, self._template_dir)
                 fmt = "html"
@@ -448,9 +477,12 @@ class GeminiDisasterReporter(BaseModel):
         # 10: GCS sync
         gcs_bucket = self._config.get("reporting", {}).get("gcs_bucket", "")
         gcs_paths: list[str] = []
-        if gcs_bucket and json_path and rendered_path:
+        if gcs_bucket and json_path:
+            sync_files = [json_path]
+            if rendered_path:
+                sync_files.append(rendered_path)
             gcs_paths = sync_to_gcs(
-                [json_path, rendered_path],
+                sync_files,
                 gcs_bucket,
                 gcs_prefix=report_type + "/",
             )
@@ -578,10 +610,12 @@ def _preprocess_report_json(raw_json: str, context_bundle: ContextBundle) -> str
       ``review_status`` and ``priority`` in nested recommendation lists.
     """
     import json as _json  # noqa: PLC0415
-    from datetime import UTC, datetime as _dt  # noqa: PLC0415
+    from datetime import UTC  # noqa: PLC0415
+    from datetime import datetime as _dt
 
     _UPPERCASE_FIELDS = {
         "incident_status", "risk_level", "operating_mode", "review_status",
+        "incident_complexity",
     }
     _RECOMMENDATION_LIST_FIELDS = (
         "recommendations", "preventive_recommendations", "resource_requirements",
@@ -622,12 +656,12 @@ def _preprocess_report_json(raw_json: str, context_bundle: ContextBundle) -> str
                 sanitized = "".join(c for c in s if c.isprintable()).strip()
                 if sanitized:
                     cleaned_sources.append(sanitized)
-        data["data_sources_used"] = cleaned_sources or ["XGBoost", "FIRMS", "OWM", "FEMA NRI"]
+        data["data_sources_used"] = cleaned_sources or ["XGBoost", "FIRMS", "Open-Meteo", "FEMA NRI"]
     else:
-        data["data_sources_used"] = ["XGBoost", "FIRMS", "OWM", "FEMA NRI"]
+        data["data_sources_used"] = ["XGBoost", "FIRMS", "Open-Meteo", "FEMA NRI"]
 
     # --- Normalise: uppercase all known enum fields ---
-    for field in _UPPERCASE_FIELDS:
+    for field in _UPPERCASE_FIELDS:  # noqa: F402
         if field in data and isinstance(data[field], str):
             data[field] = data[field].upper()
 
@@ -638,6 +672,20 @@ def _preprocess_report_json(raw_json: str, context_bundle: ContextBundle) -> str
             for item in items:
                 if isinstance(item, dict) and isinstance(item.get("priority"), str):
                     item["priority"] = item["priority"].upper()
+
+    # --- Normalise: uppercase enum fields in nested objects ---
+    # evacuation_status[].status
+    for zone in data.get("evacuation_status") or []:
+        if isinstance(zone, dict) and isinstance(zone.get("status"), str):
+            zone["status"] = zone["status"].upper()
+    # fire_behavior.fire_type
+    fb = data.get("fire_behavior")
+    if isinstance(fb, dict) and isinstance(fb.get("fire_type"), str):
+        fb["fire_type"] = fb["fire_type"].upper()
+    # evacuation_history[].action
+    for evt in data.get("evacuation_history") or []:
+        if isinstance(evt, dict) and isinstance(evt.get("action"), str):
+            evt["action"] = evt["action"].upper()
 
     # --- Normalise: scores that must be 0.0–1.0 but model outputs 0–100 ---
     # vulnerability_score in vulnerable_populations
@@ -656,6 +704,23 @@ def _preprocess_report_json(raw_json: str, context_bundle: ContextBundle) -> str
     rc = data.get("report_confidence")
     if isinstance(rc, (int, float)) and rc > 1.0:
         data["report_confidence"] = round(rc / 100.0, 4)
+
+    # --- Stamp: data_quality_score (fraction of data sections populated) ---
+    quality_signals = [
+        bool(data.get("top_risk_cells") or data.get("xgboost_top_cells")),
+        bool(data.get("weather_observations") or data.get("weather_summary")),
+        (data.get("grounding_search_count") or 0) >= 3,
+        bool(
+            data.get("immediate_actions")
+            or data.get("preventive_recommendations")
+            or data.get("summary")
+        ),
+    ]
+    data["data_quality_score"] = round(sum(quality_signals) / len(quality_signals), 2)
+
+    # Stamp data_completeness from context bundle (not LLM-generated)
+    # This is set later by generate_report() from pipeline_result if available
+    data.setdefault("data_completeness", None)
 
     return _json.dumps(data)
 

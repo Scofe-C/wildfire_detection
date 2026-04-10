@@ -214,7 +214,7 @@ def main() -> None:
         print("Tip: pipe output to a file for easier review:")
         print("  python scripts/audit_corpus_pages.py > full_audit.txt\n")
 
-        for doc_id, rel_path in PDF_REGISTRY.items():
+        for _doc_id, rel_path in PDF_REGISTRY.items():
             pdf_path = args.project_root / rel_path
             audit_pdf(pdf_path, max_chars=args.chars)
 

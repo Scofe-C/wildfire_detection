@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import subprocess
+import time
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
@@ -73,17 +74,18 @@ def save_report(
     dt: datetime,
     fmt: str,
     output_dir: Path,
-) -> tuple[Path, Path]:
-    """Write ``.json`` and ``.md`` / ``.html`` files side by side.
+) -> tuple[Path, Path | None]:
+    """Write ``.json`` and optionally ``.md`` / ``.html`` files side by side.
 
     Creates subdirectory (e.g. ``daily/``) if it doesn't exist.
+    When ``rendered_content`` is empty, only the JSON file is written.
 
     Parameters
     ----------
     report_json:
         Serialised JSON string.
     rendered_content:
-        Rendered Markdown or HTML string.
+        Rendered Markdown or HTML string. Empty string skips rendered file.
     report_type:
         One of ``"daily"``, ``"high_risk"``, ``"incident"``, ``"final"``.
     incident_id:
@@ -97,20 +99,26 @@ def save_report(
 
     Returns
     -------
-    tuple[Path, Path]
-        ``(json_path, rendered_path)``
+    tuple[Path, Path | None]
+        ``(json_path, rendered_path)`` — ``rendered_path`` is ``None``
+        when no rendered content was provided (JSON-only mode).
     """
     subdir = output_dir / report_type
     subdir.mkdir(parents=True, exist_ok=True)
 
     stem = make_filename(report_type, dt)
     json_path = subdir / f"{stem}.json"
-    rendered_path = subdir / f"{stem}.{fmt}"
 
     json_path.write_text(report_json, encoding="utf-8")
-    rendered_path.write_text(rendered_content, encoding="utf-8")
 
-    logger.info("Saved report: %s + %s", json_path.name, rendered_path.name)
+    rendered_path: Path | None = None
+    if rendered_content:
+        rendered_path = subdir / f"{stem}.{fmt}"
+        rendered_path.write_text(rendered_content, encoding="utf-8")
+        logger.info("Saved report: %s + %s", json_path.name, rendered_path.name)
+    else:
+        logger.info("Saved report (JSON only): %s", json_path.name)
+
     return json_path, rendered_path
 
 
@@ -220,3 +228,79 @@ def list_reports(
         ))
 
     return results
+
+
+# ---------------------------------------------------------------------------
+# Cleanup
+# ---------------------------------------------------------------------------
+
+def cleanup_old_reports(
+    output_dir: Path,
+    max_age_days: int = 90,
+    keep_finals: bool = True,
+) -> list[Path]:
+    """Delete report files (JSON + rendered) older than ``max_age_days``.
+
+    Optionally preserves ``final/`` subdirectory reports for compliance.
+
+    Parameters
+    ----------
+    output_dir:
+        Root output directory (e.g. ``reports/disaster_reports``).
+    max_age_days:
+        Maximum age in days. Files older than this are deleted.
+    keep_finals:
+        If True, never delete files in the ``final/`` subdirectory.
+
+    Returns
+    -------
+    list[Path]
+        Paths of deleted files.
+    """
+    if not output_dir.is_dir():
+        return []
+
+    cutoff = time.time() - (max_age_days * 86400)
+    deleted: list[Path] = []
+
+    for json_file in output_dir.rglob("*.json"):
+        if "review_manifest" in json_file.name or "incident_state" in json_file.name:
+            continue
+        if keep_finals and "final" in json_file.parent.name:
+            continue
+
+        if json_file.stat().st_mtime < cutoff:
+            # Delete JSON and any companion rendered file
+            for ext in (".md", ".html"):
+                companion = json_file.with_suffix(ext)
+                if companion.exists():
+                    companion.unlink()
+                    deleted.append(companion)
+            json_file.unlink()
+            deleted.append(json_file)
+
+    if deleted:
+        logger.info("Cleanup: deleted %d old report files (max_age=%dd)", len(deleted), max_age_days)
+    return deleted
+
+
+def delete_report(report_id: str, output_dir: Path) -> list[Path]:
+    """Delete a single report (JSON + rendered) by its ID (filename stem).
+
+    Returns list of deleted paths, or empty if not found.
+    """
+    deleted: list[Path] = []
+    matches = list(output_dir.rglob(f"{report_id}.json"))
+    if not matches:
+        return deleted
+
+    json_path = matches[0]
+    for ext in (".json", ".md", ".html"):
+        target = json_path.with_suffix(ext)
+        if target.exists():
+            target.unlink()
+            deleted.append(target)
+
+    if deleted:
+        logger.info("Deleted report %s (%d files)", report_id, len(deleted))
+    return deleted

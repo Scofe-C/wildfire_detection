@@ -18,12 +18,20 @@
         .timeline-event .ts { color: #3498db; font-weight: bold; }
         .disclaimer { background: #fff3cd; padding: 12px; border: 1px solid #ffc107; border-radius: 4px; margin-top: 30px; font-style: italic; }
         .review-banner { background: #f8d7da; border: 2px solid #c0392b; border-radius: 6px; padding: 16px; margin: 20px 0; }
+        .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin: 15px 0; }
+        .stat-card { background: #eaf2f8; padding: 15px; border-radius: 6px; text-align: center; }
+        .stat-card .label { font-size: 0.85em; color: #666; margin-bottom: 4px; }
+        .stat-card .value { font-size: 1.5em; font-weight: bold; color: #2c3e50; }
+        .evac-order_issued { background: #e74c3c; color: white; padding: 2px 8px; border-radius: 3px; font-weight: bold; }
+        .evac-warning_issued { background: #f39c12; color: white; padding: 2px 8px; border-radius: 3px; font-weight: bold; }
+        .evac-lifted { background: #27ae60; color: white; padding: 2px 8px; border-radius: 3px; }
+        .evac-expanded { background: #8e44ad; color: white; padding: 2px 8px; border-radius: 3px; }
         @media print { body { max-width: 100%; } }
     </style>
 </head>
 <body>
 
-<h1>📋 Final Report: {{ incident_name }}</h1>
+<h1>Final Report: {{ incident_name }}</h1>
 
 <div class="meta">
     <span><strong>Report ID:</strong> {{ incident_id }}</span>
@@ -36,11 +44,33 @@
 
 {% if review_status == "PENDING_REVIEW" %}
 <div style="background: #f8d7da; border: 2px solid #c0392b; border-radius: 6px; padding: 16px; margin: 20px 0; font-size: 1.1em;">
-    <strong>⚠️ PENDING HUMAN REVIEW</strong> — This report has not been approved by a human reviewer.
+    <strong>PENDING HUMAN REVIEW</strong> — This report has not been approved by a human reviewer.
     {% if disagreement_flag %}<br>Reason: Model disagreement detected (satellite hotspots conflict with risk assessment).{% endif %}
     <br>Do not use for operational decisions until reviewed.
 </div>
 {% endif %}
+
+<h2>Incident Summary</h2>
+<div class="stats-grid">
+    {% if total_area_burned_acres %}
+    <div class="stat-card">
+        <div class="label">Total Area Burned</div>
+        <div class="value">{{ "{:,.0f}".format(total_area_burned_acres) }} ac</div>
+    </div>
+    {% endif %}
+    {% if percent_contained_final is not none %}
+    <div class="stat-card">
+        <div class="label">Final Containment</div>
+        <div class="value">{{ "%.0f"|format(percent_contained_final) }}%</div>
+    </div>
+    {% endif %}
+    {% if total_cost %}
+    <div class="stat-card">
+        <div class="label">Total Cost</div>
+        <div class="value">${{ "{:,.0f}".format(total_cost) }}</div>
+    </div>
+    {% endif %}
+</div>
 
 <h2>Incident Timeline</h2>
 <div class="timeline">
@@ -52,9 +82,16 @@
 {% endfor %}
 </div>
 
-{% if total_area_burned_acres %}
-<h2>Total Area Burned</h2>
-<p>{{ total_area_burned_acres }} acres</p>
+{% if containment_timeline %}
+<h2>Containment Progression</h2>
+<div class="timeline">
+{% for evt in containment_timeline %}
+    <div class="timeline-event">
+        <span class="ts">{{ evt.timestamp }}</span>
+        <p>{{ evt.event }}{% if evt.source %} <em>({{ evt.source }})</em>{% endif %}</p>
+    </div>
+{% endfor %}
+</div>
 {% endif %}
 
 <h2>Resources Deployed</h2>
@@ -74,17 +111,70 @@
     </tbody>
 </table>
 
+{% if structures_summary %}
+<h2>Structures Impact</h2>
+<table>
+    <thead>
+        <tr><th></th><th>Destroyed</th><th>Damaged</th></tr>
+    </thead>
+    <tbody>
+        <tr><th>Residential</th><td>{{ structures_summary.residential_destroyed }}</td><td>{{ structures_summary.residential_damaged }}</td></tr>
+        <tr><th>Commercial</th><td>{{ structures_summary.commercial_destroyed }}</td><td>{{ structures_summary.commercial_damaged }}</td></tr>
+    </tbody>
+</table>
+{% if structures_summary.infrastructure_notes %}
+<p><strong>Infrastructure Notes:</strong> {{ structures_summary.infrastructure_notes }}</p>
+{% endif %}
+{% endif %}
+
 <h2>Losses Summary</h2>
 <table>
-    <tr><th>Structures at Risk</th><td>{{ losses_summary.structures_at_risk }}</td></tr>
-    <tr><th>Population at Risk</th><td>{{ losses_summary.population_at_risk }}</td></tr>
+    <tr><th>Structures at Risk</th><td>{{ "{:,}".format(losses_summary.structures_at_risk) }}</td></tr>
+    <tr><th>Population at Risk</th><td>{{ "{:,}".format(losses_summary.population_at_risk) }}</td></tr>
     {% if losses_summary.infrastructure_notes %}
     <tr><th>Infrastructure</th><td>{{ losses_summary.infrastructure_notes }}</td></tr>
     {% endif %}
     {% if losses_summary.estimated_cost_usd %}
-    <tr><th>Estimated Cost</th><td>${{ "%.2f"|format(losses_summary.estimated_cost_usd) }}</td></tr>
+    <tr><th>Estimated Cost</th><td>${{ "{:,.0f}".format(losses_summary.estimated_cost_usd) }}</td></tr>
     {% endif %}
 </table>
+
+{% if casualties_summary %}
+<h2>Casualties</h2>
+<table>
+    <thead>
+        <tr><th></th><th>Fatalities</th><th>Injuries</th></tr>
+    </thead>
+    <tbody>
+        <tr><th>Civilian</th><td>{{ casualties_summary.civilian_fatalities }}</td><td>{{ casualties_summary.civilian_injuries }}</td></tr>
+        <tr><th>Responder</th><td>{{ casualties_summary.responder_fatalities }}</td><td>{{ casualties_summary.responder_injuries }}</td></tr>
+    </tbody>
+</table>
+{% endif %}
+
+{% if evacuation_history %}
+<h2>Evacuation History</h2>
+<table>
+    <thead>
+        <tr><th>Time</th><th>Zone</th><th>Action</th><th>Population</th></tr>
+    </thead>
+    <tbody>
+    {% for evt in evacuation_history %}
+        <tr>
+            <td>{{ evt.timestamp }}</td>
+            <td>{{ evt.zone_name }}</td>
+            <td><span class="evac-{{ evt.action|lower }}">{{ evt.action }}</span></td>
+            <td>{{ evt.population_affected if evt.population_affected else "—" }}</td>
+        </tr>
+    {% endfor %}
+    </tbody>
+</table>
+{% endif %}
+
+{% if weather_progression %}
+<h2>Weather Progression</h2>
+<p>{{ weather_progression }}</p>
+{% endif %}
 
 <h2>Response Effectiveness</h2>
 <p>{{ response_effectiveness }}</p>

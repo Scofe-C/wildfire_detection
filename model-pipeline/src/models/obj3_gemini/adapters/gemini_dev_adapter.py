@@ -3,6 +3,9 @@
 Uses the ``google-genai`` SDK with an API key from env var
 ``GEMINI_API_KEY``.  No context caching — corpus is injected inline.
 
+On 429 RESOURCE_EXHAUSTED, automatically falls back to a lighter model
+(default: gemini-2.5-flash-lite, 1000 RPD free tier).
+
 Free-tier limits (Gemini 2.5 Flash):
   - 10 requests per minute (RPM)
   - 500 requests per day (RPD)
@@ -31,11 +34,15 @@ class GeminiDevAdapter(LLMAdapter):
     and export ``GEMINI_API_KEY`` env var before use.
     """
 
+    # Fallback model when primary hits 429 rate limit
+    _FALLBACK_MODEL = "gemini-2.5-flash-lite"
+
     def __init__(self, config: dict[str, Any]) -> None:
         gemini_cfg = config.get("gemini_dev", {})
         self._model_name: str = gemini_cfg.get("model", "gemini-2.5-flash")
         self._api_key: str = os.environ.get("GEMINI_API_KEY", "")
         self._client: Any = None  # lazy-init genai.Client
+        self._using_fallback: bool = False
 
     def _ensure_client(self) -> None:
         """Lazy-initialise the Google Gen AI client."""
@@ -101,23 +108,45 @@ class GeminiDevAdapter(LLMAdapter):
         # Prepend the combined text as the first content part
         content_parts.insert(0, "\n\n".join(user_text_parts))
 
+        active_model = self._model_name
+        gen_config = types.GenerateContentConfig(
+            system_instruction=system_instruction,
+            response_mime_type="application/json",
+            response_json_schema=schema,
+            temperature=0.0,
+            automatic_function_calling=types.AutomaticFunctionCallingConfig(
+                disable=True,
+            ),
+        )
+
         try:
             response = self._client.models.generate_content(
-                model=self._model_name,
+                model=active_model,
                 contents=content_parts,
-                config=types.GenerateContentConfig(
-                    system_instruction=system_instruction,
-                    response_mime_type="application/json",
-                    response_json_schema=schema,
-                    temperature=0.0,
-                    automatic_function_calling=types.AutomaticFunctionCallingConfig(
-                        disable=True,
-                    ),
-                ),
+                config=gen_config,
             )
             raw = response.text
         except Exception as exc:
-            raise LLMGenerationError(f"Gemini Dev API error: {exc}") from exc
+            # Auto-fallback on 429 rate limit
+            if "429" in str(exc) and not self._using_fallback and active_model != self._FALLBACK_MODEL:
+                logger.warning(
+                    "Rate-limited on %s — falling back to %s",
+                    active_model, self._FALLBACK_MODEL,
+                )
+                self._using_fallback = True
+                try:
+                    response = self._client.models.generate_content(
+                        model=self._FALLBACK_MODEL,
+                        contents=content_parts,
+                        config=gen_config,
+                    )
+                    raw = response.text
+                except Exception as fallback_exc:
+                    raise LLMGenerationError(
+                        f"Gemini Dev API error (fallback {self._FALLBACK_MODEL}): {fallback_exc}"
+                    ) from fallback_exc
+            else:
+                raise LLMGenerationError(f"Gemini Dev API error: {exc}") from exc
 
         if not raw or not raw.strip():
             raise LLMGenerationError("Gemini Dev returned empty response")

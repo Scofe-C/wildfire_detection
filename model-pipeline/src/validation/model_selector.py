@@ -42,7 +42,7 @@ def validate_model(
     config_path: str | Path | None = None,
 ) -> tuple[dict[str, Any], bool]:
     config = _load_config(config_path)
-    threshold = config["validation"]["decision_threshold"]
+    threshold = config["validation"].get("xgb_decision_threshold", 0.365)
     auc_pr_threshold = config["validation"]["auc_pr_threshold"]
 
     metrics = compute_all_metrics(y_true, y_prob, threshold=threshold)
@@ -78,6 +78,77 @@ def save_validation_report(result: ValidationResult, output_dir: str | Path) -> 
 
     logger.info("Validation report saved: %s", report_path)
     return report_path
+
+
+def select_best_model(
+    candidates: dict[str, Any],
+    y_test: "np.ndarray",
+    X_test: "pd.DataFrame | None" = None,
+    config_path: str | Path | None = None,
+) -> tuple[Any, str, dict[str, Any]]:
+    """Compare multiple trained models on the test set and return the winner.
+
+    Parameters
+    ----------
+    candidates : dict mapping model_name → model instance OR (model, X_test) tuple.
+        When a tuple is provided, the per-model X_test is used (needed when
+        XGBoost and LightGBM have differently preprocessed test sets).
+        When a plain model is provided, the shared X_test parameter is used.
+    y_test : true labels.
+    X_test : shared preprocessed test features (used when candidates are plain models).
+    config_path : path to model_config.yaml (None = auto-detect).
+
+    Returns
+    -------
+    (winner_model, winner_name, comparison_dict)
+        winner_model  — model instance with highest AUC-PR above threshold
+        winner_name   — its key in candidates dict
+        comparison_dict — metrics for all candidates (for MLflow logging)
+
+    Raises
+    ------
+    RuntimeError if ALL candidates fail the AUC-PR threshold — caller must trigger rollback.
+    """
+    import pandas as pd
+
+    config = _load_config(config_path)
+    threshold = config["validation"]["auc_pr_threshold"]
+
+    comparison: dict[str, Any] = {}
+    best_name: str | None = None
+    best_auc_pr: float = -1.0
+    best_model: Any = None
+
+    for name, entry in candidates.items():
+        # entry is either a plain model or a (model, X_test) tuple
+        if isinstance(entry, tuple):
+            model, X_test_model = entry
+        else:
+            model, X_test_model = entry, X_test
+        try:
+            y_prob = model.predict_proba(X_test_model)
+            metrics, passed = validate_model(np.asarray(y_test), y_prob, config_path)
+            comparison[name] = {"metrics": metrics, "passed": passed}
+            logger.info(
+                "Model '%s' — AUC-PR: %.4f, passed: %s", name, metrics["auc_pr"], passed
+            )
+            if passed and metrics["auc_pr"] > best_auc_pr:
+                best_auc_pr = metrics["auc_pr"]
+                best_name = name
+                best_model = model
+        except Exception as e:
+            logger.error("Model '%s' evaluation failed: %s", name, e)
+            comparison[name] = {"metrics": {}, "passed": False, "error": str(e)}
+
+    if best_model is None:
+        raise RuntimeError(
+            f"All candidate models failed AUC-PR threshold ({threshold}). "
+            f"Results: { {n: c.get('metrics', {}).get('auc_pr', 'N/A') for n, c in comparison.items()} }. "
+            "Trigger rollback to previous production version."
+        )
+
+    logger.info("Winner: '%s' (AUC-PR=%.4f)", best_name, best_auc_pr)
+    return best_model, best_name, comparison
 
 
 def main() -> None:

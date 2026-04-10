@@ -7,7 +7,6 @@ or real GeoTIFF files during CI.
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -16,7 +15,6 @@ import pytest
 
 from src.models.obj2_spread.cell2fire_spread import Cell2FireSpread
 from src.models.obj2_spread.exceptions import Cell2FireError
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -90,9 +88,8 @@ class TestLoadModel:
         with patch(
             "src.models.obj2_spread.cell2fire_spread.load_obj2_config",
             return_value={"cell2fire": {"binary_path": "Cell2Fire", "default_params": {}}}
-        ):
-            with pytest.raises(FileNotFoundError):
-                model.load_model(tmp_path / "nonexistent.json")
+        ), pytest.raises(FileNotFoundError):
+            model.load_model(tmp_path / "nonexistent.json")
 
     def test_raises_on_wrong_extension(self, tmp_path, mock_obj2_config):
         model = Cell2FireSpread()
@@ -101,18 +98,16 @@ class TestLoadModel:
         with patch(
             "src.models.obj2_spread.cell2fire_spread.load_obj2_config",
             return_value=mock_obj2_config,
-        ):
-            with pytest.raises(Cell2FireError, match="Expected .json"):
-                model.load_model(bad_file)
+        ), pytest.raises(Cell2FireError, match="Expected .json"):
+            model.load_model(bad_file)
 
     def test_loads_successfully(self, sim_config, mock_obj2_config):
         model = Cell2FireSpread()
         with patch(
             "src.models.obj2_spread.cell2fire_spread.load_obj2_config",
             return_value=mock_obj2_config,
-        ):
-            with patch("shutil.which", return_value="/usr/local/bin/Cell2Fire"):
-                model.load_model(sim_config)
+        ), patch("shutil.which", return_value="/usr/local/bin/Cell2Fire"):
+            model.load_model(sim_config)
         assert model._is_loaded is True
 
     def test_sim_params_overridden_by_config(self, sim_config, mock_obj2_config):
@@ -120,9 +115,8 @@ class TestLoadModel:
         with patch(
             "src.models.obj2_spread.cell2fire_spread.load_obj2_config",
             return_value=mock_obj2_config,
-        ):
-            with patch("shutil.which", return_value="/usr/local/bin/Cell2Fire"):
-                model.load_model(sim_config)
+        ), patch("shutil.which", return_value="/usr/local/bin/Cell2Fire"):
+            model.load_model(sim_config)
         # Config sets n_simulations=10, should override default
         assert model._sim_params["n_simulations"] == 10
 
@@ -163,9 +157,8 @@ class TestPredict:
         with patch(
             "src.models.obj2_spread.cell2fire_spread.load_obj2_config",
             return_value=mock_obj2_config,
-        ):
-            with patch("shutil.which", return_value="/usr/local/bin/Cell2Fire"):
-                model.load_model(sim_config)
+        ), patch("shutil.which", return_value="/usr/local/bin/Cell2Fire"):
+            model.load_model(sim_config)
 
     def test_raises_if_not_loaded(self, sample_feature_df):
         model = Cell2FireSpread()

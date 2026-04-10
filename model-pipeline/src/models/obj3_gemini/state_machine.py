@@ -11,10 +11,9 @@ based on elapsed time since last hotspot detection.
 from __future__ import annotations
 
 import enum
-import json
 import logging
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -216,10 +215,12 @@ class AdminToggle:
 # ---------------------------------------------------------------------------
 
 # Default thresholds for sub-state transitions (in hours).
-# Tag: # TODO: calibrate from production data
+# Based on CALFIRE typical small-fire lifecycle: 2h initial suppression,
+# 12h mop-up, 48h monitoring. Override via reporting_config.yaml.
 _DEFAULT_INTERIM_HOURS = 2       # ACTIVE_FIRE → INTERIM after no hotspots for 2h
 _DEFAULT_POST_FIRE_HOURS = 12    # INTERIM → POST_FIRE after no hotspots for 12h
 _DEFAULT_FINAL_HOURS = 48        # POST_FIRE → FINAL after no hotspots for 48h
+_DEFAULT_GC_MAX_AGE_DAYS = 30    # Archived incidents older than this are garbage-collected
 
 
 class IncidentTracker:
@@ -257,6 +258,7 @@ class IncidentTracker:
         self._interim_hours = cfg.get("interim_hours", _DEFAULT_INTERIM_HOURS)
         self._post_fire_hours = cfg.get("post_fire_hours", _DEFAULT_POST_FIRE_HOURS)
         self._final_hours = cfg.get("final_hours", _DEFAULT_FINAL_HOURS)
+        self._gc_max_age_days = cfg.get("gc_max_age_days", _DEFAULT_GC_MAX_AGE_DAYS)
         self._incidents: dict[str, dict[str, Any]] = self._load()
 
     # -- Public API --
@@ -387,12 +389,43 @@ class IncidentTracker:
             self._save()
 
     def archive_incident(self, incident_id: str) -> None:
-        """Mark an incident as archived (after FINAL report is produced)."""
+        """Mark an incident as archived (after FINAL report is produced).
+
+        Also runs garbage collection to remove old archived incidents.
+        """
         if incident_id in self._incidents:
             self._incidents[incident_id]["archived"] = True
             self._incidents[incident_id]["archived_at"] = datetime.now(tz=UTC).isoformat()
+            self._gc_archived_incidents()
             self._save()
             logger.info("Incident %s archived", incident_id)
+
+    def _gc_archived_incidents(self) -> None:
+        """Remove archived incidents older than ``gc_max_age_days``."""
+        now = datetime.now(tz=UTC)
+        to_remove: list[str] = []
+        for iid, data in self._incidents.items():
+            if not data.get("archived"):
+                continue
+            archived_at = data.get("archived_at")
+            if not archived_at:
+                continue
+            try:
+                archived_dt = datetime.fromisoformat(archived_at)
+                age_days = (now - archived_dt).days
+                if age_days > self._gc_max_age_days:
+                    to_remove.append(iid)
+            except (ValueError, TypeError):
+                continue
+
+        for iid in to_remove:
+            del self._incidents[iid]
+
+        if to_remove:
+            logger.info(
+                "GC: removed %d archived incidents older than %d days",
+                len(to_remove), self._gc_max_age_days,
+            )
 
     # -- Private helpers --
 

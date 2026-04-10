@@ -54,8 +54,9 @@ BACKEND_CAPS: dict[str, dict[str, Any]] = {
 def extract_pdf_text(content: bytes, max_chars: int) -> str:
     """Extract plain text from a PDF using pypdf (best-effort)."""
     try:
-        import pypdf  # noqa: PLC0415
         import io  # noqa: PLC0415
+
+        import pypdf  # noqa: PLC0415
         reader = pypdf.PdfReader(io.BytesIO(content))
         pages = []
         total = 0

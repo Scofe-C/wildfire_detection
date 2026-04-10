@@ -20,37 +20,96 @@
         .actions li { margin-bottom: 8px; }
         .disclaimer { background: #fff3cd; padding: 12px; border: 1px solid #ffc107; border-radius: 4px; margin-top: 30px; font-style: italic; }
         .review-banner { background: #f8d7da; border: 2px solid #c0392b; border-radius: 6px; padding: 16px; margin: 20px 0; }
+        .weather-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; margin: 10px 0; }
+        .weather-item { background: #eaf2f8; padding: 10px; border-radius: 4px; text-align: center; }
+        .weather-item .label { font-size: 0.85em; color: #666; }
+        .weather-item .value { font-size: 1.3em; font-weight: bold; color: #2c3e50; }
+        .evac-order { background: #e74c3c; color: white; padding: 2px 8px; border-radius: 3px; font-weight: bold; }
+        .evac-warning { background: #f39c12; color: white; padding: 2px 8px; border-radius: 3px; font-weight: bold; }
+        .evac-lifted { background: #27ae60; color: white; padding: 2px 8px; border-radius: 3px; }
+        .evac-normal { background: #95a5a6; color: white; padding: 2px 8px; border-radius: 3px; }
+        .projection-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 10px 0; }
+        .projection-cell { background: #fef9e7; border: 1px solid #f9e79f; padding: 10px; border-radius: 4px; }
+        .projection-cell .horizon { font-weight: bold; color: #d35400; margin-bottom: 5px; }
         @media print { body { max-width: 100%; } }
     </style>
 </head>
 <body>
 
-<h1>🔥 Incident Report: {{ incident_name }}</h1>
+<h1>Incident Report: {{ incident_name }}</h1>
 
 <div class="meta">
     <span><strong>Report ID:</strong> {{ incident_id }}</span>
     <span><strong>Generated:</strong> {{ generated_at }}</span>
     <span><strong>Status:</strong> <span class="status-{{ incident_status|lower }}">{{ incident_status }}</span></span>
     <span><strong>Risk Level:</strong> {{ risk_level }}</span>
+    {% if incident_complexity %}<span><strong>Complexity:</strong> {{ incident_complexity }}</span>{% endif %}
+    {% if percent_contained is not none %}<span><strong>Contained:</strong> {{ "%.0f"|format(percent_contained) }}%</span>{% endif %}
     <span><strong>Confidence:</strong> {{ "%.0f"|format(report_confidence * 100) }}%</span>
     <span><strong>Review Status:</strong> {{ review_status }}</span>
 </div>
 
 {% if review_status == "PENDING_REVIEW" %}
 <div style="background: #f8d7da; border: 2px solid #c0392b; border-radius: 6px; padding: 16px; margin: 20px 0; font-size: 1.1em;">
-    <strong>⚠️ PENDING HUMAN REVIEW</strong> — This report has not been approved by a human reviewer.
+    <strong>PENDING HUMAN REVIEW</strong> — This report has not been approved by a human reviewer.
     {% if disagreement_flag %}<br>Reason: Model disagreement detected (satellite hotspots conflict with risk assessment).{% endif %}
     <br>Do not use for operational decisions until reviewed.
 </div>
 {% endif %}
 
-<h2>Executive Summary</h2>
-<p><strong>Operating Mode:</strong> {{ operating_mode }} | <strong>Human Review Required:</strong> {{ human_review_required }}</p>
-
 <h2>Situation Status</h2>
 <p>{{ spread_summary }}</p>
 {% if estimated_area_acres %}
-<p><strong>Estimated Area:</strong> {{ estimated_area_acres }} acres</p>
+<p><strong>Estimated Area:</strong> {{ "%.1f"|format(estimated_area_acres) }} acres</p>
+{% endif %}
+{% if cost_to_date %}
+<p><strong>Cost to Date:</strong> ${{ "{:,.0f}".format(cost_to_date) }}</p>
+{% endif %}
+
+{% if weather_observations %}
+<h2>Weather Observations</h2>
+<div class="weather-grid">
+    {% if weather_observations.temperature_f is not none %}
+    <div class="weather-item">
+        <div class="label">Temperature</div>
+        <div class="value">{{ "%.0f"|format(weather_observations.temperature_f) }}&deg;F</div>
+    </div>
+    {% endif %}
+    {% if weather_observations.relative_humidity_pct is not none %}
+    <div class="weather-item">
+        <div class="label">Relative Humidity</div>
+        <div class="value">{{ "%.0f"|format(weather_observations.relative_humidity_pct) }}%</div>
+    </div>
+    {% endif %}
+    {% if weather_observations.wind_speed_mph is not none %}
+    <div class="weather-item">
+        <div class="label">Wind Speed</div>
+        <div class="value">{{ "%.0f"|format(weather_observations.wind_speed_mph) }} mph</div>
+    </div>
+    {% endif %}
+    {% if weather_observations.wind_direction %}
+    <div class="weather-item">
+        <div class="label">Wind Direction</div>
+        <div class="value">{{ weather_observations.wind_direction }}</div>
+    </div>
+    {% endif %}
+    {% if weather_observations.fuel_moisture_1hr is not none %}
+    <div class="weather-item">
+        <div class="label">1-Hr Fuel Moisture</div>
+        <div class="value">{{ "%.0f"|format(weather_observations.fuel_moisture_1hr) }}%</div>
+    </div>
+    {% endif %}
+</div>
+{% endif %}
+
+{% if fire_behavior %}
+<h2>Fire Behavior</h2>
+<table>
+    {% if fire_behavior.fire_type %}<tr><th>Fire Type</th><td>{{ fire_behavior.fire_type }}</td></tr>{% endif %}
+    {% if fire_behavior.rate_of_spread %}<tr><th>Rate of Spread</th><td>{{ fire_behavior.rate_of_spread }}</td></tr>{% endif %}
+    {% if fire_behavior.flame_length_ft is not none %}<tr><th>Flame Length</th><td>{{ "%.1f"|format(fire_behavior.flame_length_ft) }} ft</td></tr>{% endif %}
+    {% if fire_behavior.spotting_distance %}<tr><th>Spotting Distance</th><td>{{ fire_behavior.spotting_distance }}</td></tr>{% endif %}
+</table>
 {% endif %}
 
 <h2>Affected Communities</h2>
@@ -59,6 +118,63 @@
     <li>{{ community }}</li>
 {% endfor %}
 </ul>
+
+{% if evacuation_status %}
+<h2>Evacuation Status</h2>
+<table>
+    <thead>
+        <tr><th>Zone</th><th>Status</th><th>Population Affected</th></tr>
+    </thead>
+    <tbody>
+    {% for zone in evacuation_status %}
+        <tr>
+            <td>{{ zone.zone_name }}</td>
+            <td><span class="evac-{{ zone.status|lower }}">{{ zone.status }}</span></td>
+            <td>{{ zone.population_affected if zone.population_affected else "—" }}</td>
+        </tr>
+    {% endfor %}
+    </tbody>
+</table>
+{% endif %}
+
+{% if closures %}
+<h2>Road & Area Closures</h2>
+<ul>
+{% for closure in closures %}
+    <li>{{ closure }}</li>
+{% endfor %}
+</ul>
+{% endif %}
+
+{% if projected_activity %}
+<h2>Projected Activity</h2>
+<div class="projection-grid">
+    {% if projected_activity.hours_12 %}
+    <div class="projection-cell">
+        <div class="horizon">12 Hours</div>
+        <div>{{ projected_activity.hours_12 }}</div>
+    </div>
+    {% endif %}
+    {% if projected_activity.hours_24 %}
+    <div class="projection-cell">
+        <div class="horizon">24 Hours</div>
+        <div>{{ projected_activity.hours_24 }}</div>
+    </div>
+    {% endif %}
+    {% if projected_activity.hours_48 %}
+    <div class="projection-cell">
+        <div class="horizon">48 Hours</div>
+        <div>{{ projected_activity.hours_48 }}</div>
+    </div>
+    {% endif %}
+    {% if projected_activity.hours_72 %}
+    <div class="projection-cell">
+        <div class="horizon">72 Hours</div>
+        <div>{{ projected_activity.hours_72 }}</div>
+    </div>
+    {% endif %}
+</div>
+{% endif %}
 
 <h2>Resource Requirements</h2>
 <table>
@@ -80,14 +196,27 @@
 <h2>Projected Losses</h2>
 <table>
     <tr><th>Structures at Risk</th><td>{{ projected_losses.structures_at_risk }}</td></tr>
-    <tr><th>Population at Risk</th><td>{{ projected_losses.population_at_risk }}</td></tr>
+    <tr><th>Population at Risk</th><td>{{ "{:,}".format(projected_losses.population_at_risk) }}</td></tr>
     {% if projected_losses.infrastructure_notes %}
     <tr><th>Infrastructure</th><td>{{ projected_losses.infrastructure_notes }}</td></tr>
     {% endif %}
     {% if projected_losses.estimated_cost_usd %}
-    <tr><th>Estimated Cost</th><td>${{ "%.2f"|format(projected_losses.estimated_cost_usd) }}</td></tr>
+    <tr><th>Estimated Cost</th><td>${{ "{:,.0f}".format(projected_losses.estimated_cost_usd) }}</td></tr>
     {% endif %}
 </table>
+
+{% if casualties %}
+<h2>Casualties</h2>
+<table>
+    <thead>
+        <tr><th></th><th>Fatalities</th><th>Injuries</th></tr>
+    </thead>
+    <tbody>
+        <tr><th>Civilian</th><td>{{ casualties.civilian_fatalities }}</td><td>{{ casualties.civilian_injuries }}</td></tr>
+        <tr><th>Responder</th><td>{{ casualties.responder_fatalities }}</td><td>{{ casualties.responder_injuries }}</td></tr>
+    </tbody>
+</table>
+{% endif %}
 
 <h2>Vulnerable Populations</h2>
 <table>
@@ -112,6 +241,24 @@
     <li>{{ action }}</li>
 {% endfor %}
 </ol>
+
+{% if strategic_objectives %}
+<h2>Strategic Objectives</h2>
+<ol>
+{% for obj in strategic_objectives %}
+    <li>{{ obj }}</li>
+{% endfor %}
+</ol>
+{% endif %}
+
+{% if planned_next_actions %}
+<h2>Planned Actions — Next Operational Period</h2>
+<ol>
+{% for action in planned_next_actions %}
+    <li>{{ action }}</li>
+{% endfor %}
+</ol>
+{% endif %}
 
 {% if operator_notes_incorporated %}
 <h2>Operator Notes</h2>

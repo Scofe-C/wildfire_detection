@@ -201,6 +201,21 @@ async def get_report(report_id: str) -> JSONResponse:
     return JSONResponse(json.loads(matches[0].read_text(encoding="utf-8")))
 
 
+@app.delete("/api/reports/{report_id}")
+async def delete_report_endpoint(report_id: str) -> JSONResponse:
+    """Delete a report and its companion files by ID."""
+    from src.reports.report_manager import delete_report  # noqa
+
+    reports_dir = _ROOT / "reports" / "disaster_reports"
+    deleted = delete_report(report_id, reports_dir)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"Report {report_id} not found")
+    return JSONResponse({
+        "deleted": [str(p.relative_to(_ROOT)) for p in deleted],
+        "count": len(deleted),
+    })
+
+
 @app.get("/api/report-file")
 async def serve_report_file(path: str) -> FileResponse:
     """Serve a report HTML or MD file from disk.
@@ -225,6 +240,58 @@ async def serve_report_file(path: str) -> FileResponse:
     return FileResponse(str(full), media_type=media)
 
 
+@app.get("/api/reports/{report_id}/render")
+async def render_report_on_demand(report_id: str, format: str = "auto") -> HTMLResponse:
+    """Render a saved JSON report to HTML or Markdown on demand.
+
+    This enables JSON-only storage while still allowing readable report views.
+    The rendered output is NOT saved to disk — it is computed on the fly.
+
+    Parameters
+    ----------
+    report_id:
+        Report filename stem (e.g. ``IncidentReport_20260330_0338``).
+    format:
+        ``"html"``, ``"md"``, or ``"auto"`` (picks based on report type).
+    """
+    from src.models.obj3_gemini.renderer import render_html, render_markdown, markdown_to_html  # noqa
+    from src.models.obj3_gemini.schemas import SCHEMA_MAP  # noqa
+
+    reports_dir = _ROOT / "reports" / "disaster_reports"
+    matches = list(reports_dir.rglob(f"{report_id}.json"))
+    if not matches:
+        raise HTTPException(status_code=404, detail=f"Report {report_id} not found")
+
+    data = json.loads(matches[0].read_text(encoding="utf-8"))
+    report_type = data.get("report_type", "daily")
+
+    schema_cls = SCHEMA_MAP.get(report_type)
+    if schema_cls is None:
+        raise HTTPException(status_code=400, detail=f"Unknown report_type: {report_type}")
+
+    try:
+        parsed = schema_cls.model_validate(data)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"Schema validation failed: {exc}") from exc
+
+    template_dir = _ROOT / "templates"
+
+    # Determine output format
+    if format == "auto":
+        format = "html" if report_type in ("incident", "final") else "md"
+
+    if format == "html":
+        if report_type in ("incident", "final"):
+            content = render_html(parsed, template_dir)
+        else:
+            md_content = render_markdown(parsed, template_dir)
+            content = markdown_to_html(md_content)
+        return HTMLResponse(content)
+    else:
+        md_content = render_markdown(parsed, template_dir)
+        return HTMLResponse(f"<pre style='font-family:monospace;white-space:pre-wrap;padding:24px'>{md_content}</pre>")
+
+
 # ---------------------------------------------------------------------------
 # API — generate report
 # ---------------------------------------------------------------------------
@@ -242,13 +309,14 @@ async def generate_report(
     propagator_summary: str | None = Form(None),
     xgboost_cells_json: str | None = Form(None),
     cell2fire_summary: str | None = Form(None),
+    obj2_simulation_json: str | None = Form(None),
     # Operator input
     operator_notes: str | None = Form(None),
     # Settings
     report_type_override: str = Form("auto"),
     backend_override: str | None = Form(None),
     # Files
-    files: list[UploadFile] = File(default=[]),
+    files: list[UploadFile] = File(default=[]),  # noqa: B008
 ) -> JSONResponse:
     """Generate a disaster report from operator-supplied data and files."""
 
@@ -275,6 +343,12 @@ async def generate_report(
         except json.JSONDecodeError:
             pass
 
+    obj2_sim: dict[str, Any] | None = None
+    if obj2_simulation_json:
+        import contextlib
+        with contextlib.suppress(json.JSONDecodeError):
+            obj2_sim = json.loads(obj2_simulation_json)
+
     pipeline_result: dict[str, Any] = {
         "run_id": f"dashboard-{datetime.now(tz=UTC).strftime('%Y%m%d-%H%M%S')}",
         "is_deployable": True,
@@ -283,15 +357,21 @@ async def generate_report(
         "firms_hotspots": [],
         "xgboost_top_cells": xgboost_top_cells,
         "cell2fire_geojson": cell2fire_summary,
+        "obj2_simulation": obj2_sim,
         "propagator_summary": propagator_summary,
         "telemetry": telemetry or None,
         "fema_nri_tracts": [],
-        "bias_report": {"gate_result": "PASS", "observed_disparity": 0.0},
+        "bias_report": None,          # Dashboard-generated reports have no bias evaluation
         "metrics": {},
-        "source_status": {
-            "FIRMS": {"status": "OK", "detail": "Operator-supplied"},
-            "OWM": {"status": "OK", "detail": "Operator-supplied"},
-            "SMAP": {"status": "UNAVAILABLE", "detail": "Not provided"},
+        "source_status": None,         # Operator-supplied data has no staleness tracking
+        "data_completeness": {
+            "xgboost_predictions": bool(xgboost_top_cells),
+            "obj2_simulation": obj2_sim is not None,
+            "firms_hotspots": firms_hotspot_count > 0,
+            "telemetry": bool(telemetry),
+            "fema_nri": False,
+            "bias_report": False,
+            "source_status": False,
         },
     }
 
@@ -368,7 +448,7 @@ async def generate_report(
         result = await asyncio.to_thread(_run)
     except Exception as exc:
         logger.exception("generate_report failed")
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     rr = result.report_result
     val = result.validation
@@ -393,4 +473,128 @@ async def generate_report(
         ) if (result.html_path or result.markdown_path) else None,
         "files_processed": len(processed_files),
         "backend_used": active_backend,
+    })
+
+
+# ---------------------------------------------------------------------------
+# API — operator re-run with local observations
+# ---------------------------------------------------------------------------
+
+@app.post("/api/rerun")
+async def rerun_with_local_data(
+    grid_id: str = Form(...),
+    region: str = Form("california"),
+    temperature_f: float | None = Form(None),
+    wind_speed_mph: float | None = Form(None),
+    relative_humidity: float | None = Form(None),
+    soil_moisture: float | None = Form(None),
+    fire_weather_index: float | None = Form(None),
+    operator_notes: str | None = Form(None),
+    backend_override: str | None = Form(None),
+) -> JSONResponse:
+    """Re-run OBJ-1 + OBJ-2 with operator-supplied local observations.
+
+    Loads the latest pipeline data for the region from disk/GCS, replaces
+    operator-overridden columns in the target grid cell, re-scores with the
+    production model, then generates an OBJ-3 report with real predictions.
+    """
+    if _reporter is None:
+        raise HTTPException(status_code=503, detail="Reporter not loaded — check server logs")
+
+    import json as _json
+
+    # Build override dict from non-None form fields
+    overrides: dict[str, float] = {}
+    for field_name, value in [
+        ("temperature_f", temperature_f),
+        ("wind_speed_mph", wind_speed_mph),
+        ("relative_humidity", relative_humidity),
+        ("soil_moisture", soil_moisture),
+        ("fire_weather_index", fire_weather_index),
+    ]:
+        if value is not None:
+            overrides[field_name] = value
+
+    # Load latest pipeline data for the region
+    import pandas as pd
+    pipeline_data_path = _ROOT / "historical_data" / f"{region}_merged.parquet"
+    if not pipeline_data_path.exists():
+        # Fallback: look for any parquet with region name
+        candidates = list(_ROOT.rglob(f"*{region}*.parquet"))
+        if not candidates:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No pipeline data found for region '{region}'. Run inference first.",
+            )
+        pipeline_data_path = candidates[0]
+
+    try:
+        df = pd.read_parquet(pipeline_data_path)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load pipeline data: {e}") from e
+
+    # Load production model metadata
+    local_model_dir = _ROOT / "models" / "ignition"
+    pointer = local_model_dir / f"latest_{region}.txt"
+    if not pointer.exists():
+        raise HTTPException(
+            status_code=503,
+            detail=f"No local model pointer for '{region}'. Run training first.",
+        )
+    model_dir = pointer.read_text().strip()
+    try:
+        meta = _json.loads((Path(model_dir) / "model_metadata.json").read_text())
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load model metadata: {e}") from e
+
+    # Re-run with overrides
+    def _run_rerun() -> Any:
+        from src.pipeline.rerun_engine import RerunEngine
+
+        engine = RerunEngine(model_path=model_dir, config=meta)
+        df_overridden = engine.apply_overrides(df, grid_id=grid_id, overrides=overrides)
+        predictions, input_df = engine.run_obj1(df_overridden)
+        obj2_sim = engine.run_obj2(df_overridden, predictions)
+        pipeline_result = engine.build_result(predictions, input_df, obj2_sim, firms=None)
+
+        # Wire operator notes into HumanInput
+        from src.models.obj3_gemini.context_builder import HumanInput
+
+        human_inputs = []
+        if operator_notes:
+            override_summary = ", ".join(f"{k}={v}" for k, v in overrides.items())
+            human_inputs.append(HumanInput(
+                text_notes=(
+                    f"Operator local observations applied to grid_id={grid_id}: "
+                    f"{override_summary}. Notes: {operator_notes}"
+                ),
+                uploaded_files=[],
+                source="operator",
+                submitted_at=datetime.now(tz=UTC).isoformat(),
+            ))
+
+        return _reporter.generate_report(
+            pipeline_result=pipeline_result,
+            human_inputs=human_inputs,
+            uploaded_files=[],
+        )
+
+    try:
+        result = await asyncio.to_thread(_run_rerun)
+    except Exception as exc:
+        logger.exception("rerun failed")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    rr = result.report_result
+    return JSONResponse({
+        "success": rr.error is None,
+        "error": rr.error,
+        "report_type": rr.report_type,
+        "grid_id": grid_id,
+        "region": region,
+        "overrides_applied": overrides,
+        "json_path": str(result.json_path.relative_to(_ROOT)) if result.json_path else None,
+        "rendered_path": str(
+            (result.html_path or result.markdown_path).relative_to(_ROOT)
+        ) if (result.html_path or result.markdown_path) else None,
     })

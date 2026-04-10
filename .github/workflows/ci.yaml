@@ -148,11 +148,12 @@ jobs:
           print(f'dvc.yaml OK — {len(stages)} stages, all dep files present')
           "
 
-      # Full pytest suite with coverage.
+      # Run tests in a named container so artifacts can be copied out after exit.
+      # `if: always()` on the copy step ensures artifacts are captured even on failure.
       # Tests run without GCS or real API keys — all external I/O is mocked.
       - name: Run pytest suite
         run: |
-          docker run --rm \
+          docker run --name ci-test-run \
             -e GCS_BUCKET_NAME=test-bucket \
             -e FIRMS_MAP_KEY=test-key \
             wildfire-pipeline:test \
@@ -160,25 +161,15 @@ jobs:
               --junitxml=/tmp/pytest-results.xml \
               --cov=scripts \
               --cov-report=xml:/tmp/coverage.xml \
-              --cov-report=term-missing
+              --cov-report=term-missing \
+              --cov-fail-under=60
 
-      # Run a named container so we can copy artifacts out after it exits.
-      # `if: always()` ensures artifacts are captured even on test failure.
       - name: Extract test artifacts from container
         if: always()
         run: |
-          docker run --name ci-artifact-run \
-            -e GCS_BUCKET_NAME=test-bucket \
-            -e FIRMS_MAP_KEY=test-key \
-            wildfire-pipeline:test \
-            pytest tests/ -v --tb=short --no-header \
-              --junitxml=/tmp/pytest-results.xml \
-              --cov=scripts \
-              --cov-report=xml:/tmp/coverage.xml \
-            || true
-          docker cp ci-artifact-run:/tmp/pytest-results.xml ./pytest-results.xml 2>/dev/null || true
-          docker cp ci-artifact-run:/tmp/coverage.xml ./coverage.xml 2>/dev/null || true
-          docker rm ci-artifact-run || true
+          docker cp ci-test-run:/tmp/pytest-results.xml ./pytest-results.xml 2>/dev/null || true
+          docker cp ci-test-run:/tmp/coverage.xml ./coverage.xml 2>/dev/null || true
+          docker rm ci-test-run || true
 
       - name: Upload pytest results
         uses: actions/upload-artifact@v4

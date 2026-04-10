@@ -16,6 +16,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY src/ src/
 COPY configs/ configs/
 COPY tests/ tests/
+COPY scripts/ scripts/
 
 RUN mkdir -p data/static/fema_nri models/ignition \
     reports/validation reports/bias_gate reports/visualizations
@@ -24,3 +25,8 @@ HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
     CMD python -c "from src.data.schema import load_schema; load_schema()" || exit 1
 
 CMD ["pytest", "tests/", "-v", "--tb=short"]
+
+# ── Serve target — Cloud Run inference API ────────────────────────────────────
+FROM base AS serve
+RUN pip install --no-cache-dir uvicorn[standard] fastapi
+CMD ["python", "-m", "uvicorn", "src.api.inference_api:app", "--host", "0.0.0.0", "--port", "8080"]
