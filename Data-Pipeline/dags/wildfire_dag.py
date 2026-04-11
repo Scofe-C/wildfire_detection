@@ -200,7 +200,8 @@ def task_ingest_weather(region: str, **context):
     execution_date = context["execution_date"]
     params         = context["params"]
     resolution_km  = params.get("resolution_km", DEFAULT_RESOLUTION_KM)
-    lookback_hours = params.get("weather_lookback_hours", 24)
+    default_lookback = 6 if resolution_km == 22 else 24
+    lookback_hours = params.get("weather_lookback_hours", default_lookback)
     trigger_source = params.get("trigger_source", "cron")
     fire_cells     = params.get("fire_cells", None)
     h3_ring_max    = params.get("h3_ring_max", 5)
@@ -674,7 +675,7 @@ with DAG(
     tags=["wildfire", "mlops", "data-pipeline"],
     params={
         "resolution_km": DEFAULT_RESOLUTION_KM,
-        "weather_lookback_hours": 24,
+        "weather_lookback_hours": 6,   # 6h for 22km (auto); override to 24 for 64km
         # Watchdog trigger params (set by watchdog_sensor_dag on fire detection)
         "trigger_source": "cron",         # "cron" | "watchdog_active" | "watchdog_emergency"
         "fire_cells": [],                 # H3 cell IDs confirmed by watchdog
