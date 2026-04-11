@@ -32,7 +32,7 @@ class ValidationResult:
 def _load_config(config_path: str | Path | None) -> dict:
     if config_path is None:
         config_path = Path(__file__).resolve().parents[2] / "configs" / "model_config.yaml"
-    with open(config_path) as f:
+    with open(config_path, encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 

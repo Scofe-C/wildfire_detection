@@ -60,7 +60,7 @@ def load_schema(config_path: str | Path | None = None) -> FeatureSchema:
     if not config_path.exists():
         raise FileNotFoundError(f"Feature schema not found: {config_path}")
 
-    with open(config_path) as f:
+    with open(config_path, encoding="utf-8") as f:
         raw = yaml.safe_load(f)
 
     features = []

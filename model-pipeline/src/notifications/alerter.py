@@ -24,7 +24,7 @@ COLORS = {
 
 def _load_config() -> dict[str, Any]:
     cfg = Path(__file__).resolve().parents[2] / "configs" / "model_config.yaml"
-    with open(cfg) as f:
+    with open(cfg, encoding="utf-8") as f:
         return yaml.safe_load(f)["notifications"]
 
 

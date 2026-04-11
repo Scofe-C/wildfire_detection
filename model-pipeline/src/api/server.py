@@ -134,7 +134,7 @@ async def status() -> JSONResponse:
 
     # Corpus
     corpus_dir = _ROOT / cfg.get("corpus", {}).get("local_dir", "corpus/")
-    corpus_count = len(list(corpus_dir.glob("processed/*.json"))) if corpus_dir.exists() else 0
+    corpus_count = len(list(corpus_dir.glob("processed/**/*.json"))) if corpus_dir.exists() else 0
 
     return JSONResponse({
         "backend": backend,

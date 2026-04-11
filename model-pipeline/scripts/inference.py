@@ -331,7 +331,7 @@ def main() -> None:
     import lightgbm as _lgb
 
     _cfg_path = _Path(__file__).resolve().parents[1] / "configs" / "model_config.yaml"
-    with open(_cfg_path) as _f:
+    with open(_cfg_path, encoding="utf-8") as _f:
         _cfg = _yaml.safe_load(_f)
 
     # Vertex AI settings — only needed when not in local mode

@@ -3,7 +3,7 @@
 
 # Active LLM backend: "ollama" | "gemini_dev" | "vertex_ai"
 # Override priority: CLI --backend > env var LLM_BACKEND > this value
-llm_backend: "ollama"
+llm_backend: "gemini_dev"
 
 # --- Ollama (Phase 1: local model) ---
 ollama:
@@ -44,8 +44,8 @@ reporting:
   confidence_threshold: 0.70
   min_grounding_sources: 3
   output_dir: "reports/disaster_reports"
-  gcs_bucket: "wildfire-model-pipeline"
-  default_render_format: "json"   # "json" (save JSON only) | "auto" (JSON + rendered HTML/MD)
+  gcs_bucket: ""
+  default_render_format: "auto"   # "json" (save JSON only) | "auto" (JSON + rendered HTML/MD)
   max_ml_block_chars: 20000       # Cloud backends
   max_data_block_chars: 20000     # Cloud backends
   ollama_max_ml_block_chars: 6000    # Local models — keep total context < 32K tokens
