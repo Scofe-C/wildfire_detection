@@ -197,6 +197,7 @@ class VertexRegistry:
     ) -> None:
         """Save model file + model_metadata.json to the GCS artifact directory."""
         from google.cloud import storage
+
         from src.preprocessing.feature_engineering import FEATURES
 
         client = storage.Client()

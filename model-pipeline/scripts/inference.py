@@ -23,7 +23,7 @@ import io
 import json
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
@@ -319,16 +319,18 @@ def main() -> None:
     logging.getLogger().setLevel(getattr(logging, args.log_level))
 
     bucket = args.bucket or os.environ.get("GCS_BUCKET_NAME") or "wildfire-mlops-123"
-    run_timestamp = datetime.now(timezone.utc)
+    run_timestamp = datetime.now(UTC)
 
     logger.info("Inference run starting — %s — regions: %s", run_timestamp.isoformat(), args.regions)
 
     # ── Load config + imports ──────────────────────────────────────────────────
-    import yaml as _yaml
     from pathlib import Path as _Path
-    from src.preprocessing.feature_engineering import full_pipeline
-    import xgboost as _xgb
+
     import lightgbm as _lgb
+    import xgboost as _xgb
+    import yaml as _yaml
+
+    from src.preprocessing.feature_engineering import full_pipeline
 
     _cfg_path = _Path(__file__).resolve().parents[1] / "configs" / "model_config.yaml"
     with open(_cfg_path) as _f:
@@ -355,8 +357,9 @@ def main() -> None:
         if args.local_model_dir:
             # Local dev: load from reports/local_run/latest_{region}.txt pointer
             import json as _json
-            import xgboost as _xgb_load
             from pathlib import Path as _Path
+
+            import xgboost as _xgb_load
             _pointer = _Path(args.local_model_dir) / f"latest_{region}.txt"
             if not _pointer.exists():
                 logger.error("[%s] No local model pointer at %s — run train --local first", region, _pointer)

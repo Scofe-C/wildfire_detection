@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import pandas as pd
 import yaml
 
 from src.validation.metrics import compute_all_metrics
@@ -82,8 +83,8 @@ def save_validation_report(result: ValidationResult, output_dir: str | Path) -> 
 
 def select_best_model(
     candidates: dict[str, Any],
-    y_test: "np.ndarray",
-    X_test: "pd.DataFrame | None" = None,
+    y_test: np.ndarray,
+    X_test: pd.DataFrame | None = None,
     config_path: str | Path | None = None,
 ) -> tuple[Any, str, dict[str, Any]]:
     """Compare multiple trained models on the test set and return the winner.
@@ -109,7 +110,6 @@ def select_best_model(
     ------
     RuntimeError if ALL candidates fail the AUC-PR threshold — caller must trigger rollback.
     """
-    import pandas as pd
 
     config = _load_config(config_path)
     threshold = config["validation"]["auc_pr_threshold"]

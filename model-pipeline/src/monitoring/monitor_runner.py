@@ -9,7 +9,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-import numpy as np
 import yaml
 
 logger = logging.getLogger(__name__)
@@ -40,7 +39,7 @@ def _record_retrain_trigger() -> None:
 def _trigger_github_retrain(repo: str, workflow_file: str, github_token: str) -> bool:
     """POST to GitHub Actions workflow_dispatch API to trigger retraining."""
     url = f"https://api.github.com/repos/{repo}/actions/workflows/{workflow_file}/dispatches"
-    payload = '{"ref":"master","inputs":{"triggered_by":"drift_detection"}}'.encode()
+    payload = b'{"ref":"master","inputs":{"triggered_by":"drift_detection"}}'
     req = urllib.request.Request(
         url,
         data=payload,
