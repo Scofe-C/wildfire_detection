@@ -560,7 +560,9 @@ def _batch_fetch_open_meteo(
                 lat = float(cell["latitude"])
                 lon = float(cell["longitude"])
                 # NWS covers CONUS land only — skip offshore / border points
-                if not (24.5 <= lat <= 49.5 and -125.0 <= lon <= -66.5):
+                is_outside_conus = not (24.5 <= lat <= 49.5 and -125.0 <= lon <= -66.5)
+                is_gulf_water = lat < 30.5 and -97.0 < lon < -80.0
+                if is_outside_conus or is_gulf_water:
                     failed_cells.append(str(cell["grid_id"]))
                     offshore_count += 1
                     continue
@@ -644,16 +646,15 @@ def _fetch_open_meteo_batch(
 
     for attempt in range(max_retries):
         try:
-            with limiter.acquire():
-                resp = requests.get(url, params=params, timeout=timeout)
+            limiter.wait_if_needed()
+            resp = requests.get(url, params=params, timeout=timeout)
 
             if resp.status_code == 200:
+                limiter.record_request()   # reset failure counter on success only
                 return _parse_open_meteo_response(resp.json(), batch)
 
             if resp.status_code == 429:
-                # FIX #2 — record_failure() BEFORE get_backoff_delay() so the
-                # sleep reflects the incremented (current) failure count.
-                limiter.record_failure()
+                limiter.record_failure()   # accumulates: 1->2->3 -> backoff 10s->20s->40s
                 delay = limiter.get_backoff_delay()
                 logger.warning(
                     "Open-Meteo rate limited. Backing off %.1fs "
@@ -778,23 +779,27 @@ def _fetch_nws_fallback(
     timeout = nws_config.get("timeout_seconds", 15)
 
     headers = {"User-Agent": user_agent, "Accept": "application/geo+json"}
+    probe_timeout = 5    # fast probe — fail early on ocean/border 404s
+    fetch_timeout = 10   # actual forecast fetch needs more time
 
     try:
         points_url = f"{base_url}/points/{lat:.4f},{lon:.4f}"
-        resp = requests.get(points_url, headers=headers, timeout=timeout)
+        resp = requests.get(points_url, headers=headers, timeout=probe_timeout)
         if resp.status_code != 200:
-            logger.warning("NWS points lookup failed: HTTP %d", resp.status_code)
+            logger.debug("NWS points lookup failed: HTTP %d for (%.4f, %.4f)",
+                         resp.status_code, lat, lon)
             return None
 
         props = resp.json().get("properties", {})
         forecast_url = props.get("forecastHourly")
         if not forecast_url:
-            logger.warning("NWS: no forecastHourly URL for (%.4f, %.4f)", lat, lon)
+            logger.debug("NWS: no forecastHourly URL for (%.4f, %.4f)", lat, lon)
             return None
 
-        resp = requests.get(forecast_url, headers=headers, timeout=timeout)
+        resp = requests.get(forecast_url, headers=headers, timeout=fetch_timeout)
         if resp.status_code != 200:
-            logger.warning("NWS forecast fetch failed: HTTP %d", resp.status_code)
+            logger.debug("NWS forecast fetch failed: HTTP %d for (%.4f, %.4f)",
+                         resp.status_code, lat, lon)
             return None
 
         periods = resp.json().get("properties", {}).get("periods", [])
@@ -828,8 +833,11 @@ def _fetch_nws_fallback(
         df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
         return df
 
+    except requests.exceptions.Timeout:
+        logger.debug("NWS fallback timed out for (%.4f, %.4f)", lat, lon)
+        return None
     except requests.exceptions.RequestException as exc:
-        logger.warning("NWS fallback failed for (%.4f, %.4f): %s", lat, lon, exc)
+        logger.debug("NWS fallback failed for (%.4f, %.4f): %s", lat, lon, exc)
         return None
 
 
