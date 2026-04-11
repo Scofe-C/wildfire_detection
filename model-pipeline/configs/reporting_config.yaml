@@ -27,7 +27,7 @@ gemini_dev:
 # --- Vertex AI (Phase 3: GCP project) ---
 vertex_ai:
   model: "gemini-2.5-flash"
-  project_id: ""
+  project_id: "wildfire-detection-486319"
   location: "us-central1"
   corpus_cache_ttl_seconds: 3600
 
@@ -44,7 +44,7 @@ reporting:
   confidence_threshold: 0.70
   min_grounding_sources: 3
   output_dir: "reports/disaster_reports"
-  gcs_bucket: ""
+  gcs_bucket: "wildfire-model-pipeline"
   default_render_format: "json"   # "json" (save JSON only) | "auto" (JSON + rendered HTML/MD)
   max_ml_block_chars: 20000       # Cloud backends
   max_data_block_chars: 20000     # Cloud backends

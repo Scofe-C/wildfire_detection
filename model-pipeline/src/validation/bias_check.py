@@ -13,6 +13,7 @@ All three are plain columns already present in the test DataFrame.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any
 
 import numpy as np

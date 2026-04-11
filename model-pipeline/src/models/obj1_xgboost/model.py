@@ -91,6 +91,7 @@ class XGBoostFireRiskModel(BaseModel):
         -------
         best_params : dict of best hyperparameters found.
         """
+        from scipy.stats import randint, uniform
         from sklearn.model_selection import RandomizedSearchCV, TimeSeriesSplit
         from xgboost import XGBClassifier
 

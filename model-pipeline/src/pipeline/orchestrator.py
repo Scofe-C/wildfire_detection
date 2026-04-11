@@ -16,14 +16,12 @@ Implements the full training loop:
 """
 from __future__ import annotations
 
-import contextlib
 import logging
 import time
 import uuid
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 import pandas as pd
@@ -190,7 +188,7 @@ def run_training_pipeline(
     from src.models.obj1_xgboost.model import XGBoostFireRiskModel
     from src.notifications.alerter import SlackAlerter
     from src.preprocessing.feature_engineering import extract_target, full_pipeline
-    from src.tracking.mlflow_logger import MLflowLogger
+    from src.tracking.mlflow_logger import MLflowLogger, compute_input_statistics
     from src.validation.model_selector import select_best_model
     from src.validation.visualizations import generate_all_visualizations
 
@@ -374,8 +372,9 @@ def run_training_pipeline(
             tracker.log_shap(shap_importances)
             # Alert if soil moisture importance drops below threshold (feature drift signal)
             import yaml as _yaml
-            with open(Path(__file__).resolve().parents[2] / "configs" / "model_config.yaml") as _f:
-                _shap_cfg = (_yaml.safe_load(_f) or {}).get("shap", {})
+            _shap_cfg = (_yaml.safe_load(open(
+                Path(__file__).resolve().parents[2] / "configs" / "model_config.yaml"
+            )) or {}).get("shap", {})
             _min_soil_importance = _shap_cfg.get("min_soil_moisture_importance", 0.05)
             _soil_importance = shap_importances.get("soil_moisture_0_to_7cm", 1.0)
             if _soil_importance < _min_soil_importance:
@@ -452,7 +451,6 @@ def run_training_pipeline(
             if config.local_model_dir:
                 # Local dev: save model + metadata to disk, skip Vertex AI
                 import json as _json
-
                 from src.preprocessing.feature_engineering import FEATURES as _FEATURES
                 out_dir = Path(config.local_model_dir) / run_id
                 out_dir.mkdir(parents=True, exist_ok=True)
@@ -505,8 +503,10 @@ def run_training_pipeline(
         result.error = str(e)
         alerter.alert_pipeline_error(run_id, str(e), "orchestrator")
         logger.error("[%s] Pipeline failed: %s", run_id, e, exc_info=True)
-        with contextlib.suppress(Exception):
+        try:
             tracker.end_run(status="FAILED")
+        except Exception:
+            pass
 
     return result
 
@@ -625,5 +625,7 @@ def _trigger_rollback(
     except Exception as e:
         logger.error("Rollback failed: %s", e)
 
-    with contextlib.suppress(Exception):
+    try:
         tracker.end_run(status="FAILED")
+    except Exception:
+        pass

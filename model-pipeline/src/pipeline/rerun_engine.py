@@ -9,6 +9,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 logger = logging.getLogger(__name__)
@@ -140,9 +141,7 @@ class RerunEngine:
         top_row = df.loc[highest_risk_idx]
 
         try:
-            from src.models.obj2_propagator.propagator import (
-                PropagatorSpread,  # type: ignore[import]
-            )
+            from src.models.obj2_propagator.propagator import PropagatorSpread  # type: ignore[import]
 
             sim = PropagatorSpread()
             result = sim.run(
