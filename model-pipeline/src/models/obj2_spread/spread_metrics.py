@@ -32,7 +32,7 @@ _NB_CODES: frozenset[int] = frozenset({
 def analyze_threatened_cells(
     result: dict[str, Any],
     intercell_km: float | None = None,
-    horizon_hours: float = 6.0,
+    horizon_hours: float = 1.0,
 ) -> dict[str, Any]:
     """Extract honest metrics from the 6 threatened neighbors.
 
@@ -41,7 +41,7 @@ def analyze_threatened_cells(
     result       : Output dict from ``PythonFireSpreadSimulator.simulate()``.
     intercell_km : H3 intercell distance in km. Auto-detected from
                    ignition cell resolution if not provided.
-    horizon_hours: Time window for reachability check (default 6h).
+    horizon_hours: Time window for reachability check (default 1h).
 
     Returns
     -------
@@ -52,7 +52,7 @@ def analyze_threatened_cells(
         return {
             "n_total_neighbors": 0,
             "n_burnable_neighbors": 0,
-            "n_reachable_6h": 0,
+            "n_reachable_1h": 0,
             "max_spread_rate_kmh": 0.0,
             "per_neighbor": [],
             "honest_assessment": "No neighbor data available.",
@@ -85,7 +85,7 @@ def analyze_threatened_cells(
             "bearing_deg": nb.get("bearing_deg"),
             "spread_rate_kmh": round(rate, 4),
             "time_to_reach_h": round(time_to_reach_h, 2) if time_to_reach_h != float("inf") else None,
-            "reachable_in_6h": reachable,
+            "reachable_in_1h": reachable,
             "crown_status": crown,
             "byram_intensity_kwm": nb.get("byram_intensity_kwm", 0.0),
             "fuel_model": fuel,
@@ -97,7 +97,7 @@ def analyze_threatened_cells(
             nonzero_rates.append(rate)
 
     n_burnable = sum(1 for n in per_neighbor if not n["is_non_burnable"])
-    n_reachable = sum(1 for n in per_neighbor if n["reachable_in_6h"])
+    n_reachable = sum(1 for n in per_neighbor if n["reachable_in_1h"])
     max_rate = max(rates) if rates else 0.0
     min_nonzero = min(nonzero_rates) if nonzero_rates else 0.0
 
@@ -147,7 +147,7 @@ def analyze_threatened_cells(
     return {
         "n_total_neighbors": len(neighbors),
         "n_burnable_neighbors": n_burnable,
-        "n_reachable_6h": n_reachable,
+        "n_reachable_1h": n_reachable,
         "max_spread_rate_kmh": round(max_rate, 4),
         "min_nonzero_rate_kmh": round(min_nonzero, 4),
         "spread_cone_deg": round(spread_cone_deg, 1),
@@ -261,7 +261,7 @@ def compute_propagation_honesty(
         fastest_h = float("inf")
         slowest_h = float("inf")
 
-    can_propagate = fastest_h <= 6.0
+    can_propagate = fastest_h <= 1.0
     resolution_limited = intercell_km > 50.0
 
     if can_propagate:
@@ -277,7 +277,7 @@ def compute_propagation_honesty(
         )
     else:
         assessment = (
-            f"Fire CANNOT reach any neighbor within 6h. "
+            f"Fire CANNOT reach any neighbor within 1h. "
             f"At max rate {max_rate:.2f} km/h across {intercell_km:.0f} km, "
             f"earliest arrival is {fastest_h:.1f}h."
         )

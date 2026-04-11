@@ -467,7 +467,7 @@ def simulate_spread_timeseries(
     df: pd.DataFrame,
     ignition_id: str,
     ignition_prob: float,
-    hours: float = 6.0,
+    hours: float = 1.0,
     timestep_h: float = 1.0,
     sim: "PythonFireSpreadSimulator | None" = None,
 ) -> dict:
@@ -851,7 +851,7 @@ def _log_realtime_metrics(tracker: Any, rt_results: dict):
             if ta:
                 tracker.log_metrics({
                     f"rt_{res_km}km_n_burnable":     float(ta.get("n_burnable_neighbors", 0)),
-                    f"rt_{res_km}km_n_reachable_6h": float(ta.get("n_reachable_6h", 0)),
+                    f"rt_{res_km}km_n_reachable_1h": float(ta.get("n_reachable_1h", 0)),
                     f"rt_{res_km}km_max_rate":       _safe_float(ta.get("max_spread_rate_kmh", 0.0)),
                     f"rt_{res_km}km_input_quality":  _safe_float(
                         data.get("input_quality", {}).get("quality_score", 0.0)
@@ -1084,38 +1084,36 @@ def _print_realtime(results: dict):
             continue
 
         r = data["result"]
+        mc = data.get("monte_carlo", {})
+
+        # ── Hybrid output (det_weight=0.4, mc_weight=0.6 on p90) ─────
+        DET_W, MC_W = 0.4, 0.6
+        det_speed = r['spread_speed_kmh']
+        mc_p90    = mc.get('spread_speed_kmh_p90', det_speed)
+        h_speed   = DET_W * det_speed + MC_W * mc_p90
+        h_dir     = mc.get('dominant_direction_deg', r['spread_direction_deg'])
+
         print(f"  ignition cell : {r['ignition_cell']}")
-        print(f"  direction     : {r['spread_direction_deg']:.1f} deg")
-        print(f"  speed         : {r['spread_speed_kmh']:.3f} km/h")
+        print(f"  approach      : HYBRID (40% deterministic + 60% MC p90)")
+        print(f"  direction     : {h_dir:.1f} deg")
+        print(f"  speed         : {h_speed:.4f} km/h")
         print(f"  moisture      : {r['dead_fuel_moisture_pct']:.1f}%")
         print(f"  intensity     : {r['byram_intensity_kwm']:.1f} kW/m")
         print(f"  crown         : {r['crown_fire_status']}")
-        print()
-
-        sanity = data["sanity"]
-        for c in sanity["checks"]:
-            icon = "[PASS]" if c["passed"] else "[FAIL]"
-            print(f"  {icon}  {c['check']}: {c['detail']}")
-
-        status = "ALL SANITY CHECKS PASSED" if sanity["all_passed"] else "SOME SANITY CHECKS FAILED"
-        print(f"\n  {status}")
+        if mc:
+            print(f"  crown prob    : {mc.get('crown_fire_probability', 0):.1%}")
+            print(f"  speed CI p90  : {mc_p90:.4f} km/h (severe-scenario ceiling)")
 
         # ── Threatened cells analysis ────────────────────────────────────
         ta = data.get("threatened_analysis", {})
         if ta:
             print(f"\n  Threatened neighbor analysis:")
             print(f"    burnable neighbors  : {ta.get('n_burnable_neighbors', '?')}/{ta.get('n_total_neighbors', '?')}")
-            print(f"    reachable in 6h     : {ta.get('n_reachable_6h', 0)}")
+            print(f"    reachable in 1h     : {ta.get('n_reachable_1h', 0)}")
             print(f"    max spread rate     : {ta.get('max_spread_rate_kmh', 0):.3f} km/h")
             t2n = ta.get('time_to_nearest_neighbor_h')
             print(f"    time to nearest     : {t2n:.1f}h" if t2n else "    time to nearest     : N/A")
             print(f"    spread cone         : {ta.get('spread_cone_deg', 0):.0f} deg")
-
-        # ── Propagation honesty ──────────────────────────────────────────
-        ph = data.get("propagation_honesty", {})
-        if ph:
-            print(f"\n  Propagation honesty:")
-            print(f"    {ph.get('honest_assessment', '')}")
 
         # ── Input quality ────────────────────────────────────────────────
         iq = data.get("input_quality", {})
@@ -1139,26 +1137,14 @@ def _print_realtime(results: dict):
             else:
                 print("    (fire did not spread beyond ignition cell)")
 
-        # ── Monte Carlo N=100 ────────────────────────────────────────────
-        mc = data.get("monte_carlo")
+        # ── Monte Carlo neighbour burn probabilities ─────────────────────
         if mc:
-            print(f"\n  Monte Carlo  (N={mc['n_simulations']}, horizon={mc['horizon_hours']:.0f}h):")
-            print(f"    speed p50 / p90 / p95  : "
-                  f"{mc['spread_speed_kmh_p50']:.4f} / "
-                  f"{mc['spread_speed_kmh_p90']:.4f} / "
-                  f"{mc['spread_speed_kmh_p95']:.4f} km/h")
-            print(f"    spread direction       : "
-                  f"{mc['dominant_direction_deg']:.1f}° ± {mc['direction_uncertainty_deg']:.1f}°")
-            print(f"    crown fire probability : {mc['crown_fire_probability']:.1%}")
-            print(f"    max neighbour burn prob: {mc['max_neighbor_burn_probability']:.1%}")
-            # Show per-neighbour burn probabilities sorted descending
             nb_probs = mc.get("neighbor_burn_probabilities", {})
             if nb_probs:
+                print(f"\n  Neighbour burn probabilities (MC N={mc['n_simulations']}, horizon={mc.get('horizon_hours', 1):.0f}h):")
                 sorted_nb = sorted(nb_probs.items(), key=lambda x: x[1], reverse=True)
-                print(f"    neighbour burn probabilities:")
                 for cell_id, prob in sorted_nb:
-                    bar = "█" * int(prob * 20)
-                    print(f"      {cell_id}  {prob:.1%}  {bar}")
+                    print(f"    {cell_id}  {prob:.1%}")
 
     print("=" * 70 + "\n")
 
@@ -1300,9 +1286,11 @@ def main(
 
             if res_km == 22:
                 df = _load_22km()
+            elif res_km == 64:
+                df = _load_64km()
             else:
-                logger.warning("Resolution %dkm not supported — team lead requires 22km only", res_km)
-                rt_results[str(res_km)] = {"error": f"Resolution {res_km}km not supported. Use 22km."}
+                logger.warning("Resolution %dkm not supported — use 22 or 64", res_km)
+                rt_results[str(res_km)] = {"error": f"Resolution {res_km}km not supported. Use 22 or 64."}
                 continue
 
             if df is None:
@@ -1366,7 +1354,7 @@ def main(
                 mc_result = sim.simulate_monte_carlo(
                     df, ign_id, ign_prob,
                     n_simulations=100,
-                    horizon_hours=24.0,   # 24h window → threshold ~1.04 km/h
+                    horizon_hours=1.0,    # 1h window → threshold = intercell_km/1h
                 )
 
                 rt_entry = {
