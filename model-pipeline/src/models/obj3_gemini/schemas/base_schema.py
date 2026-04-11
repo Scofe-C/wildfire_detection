@@ -31,6 +31,13 @@ class Recommendation(BaseModel):
     title: str
     description: str
     priority: Literal["LOW", "MEDIUM", "HIGH", "CRITICAL"]
+    rationale: str = Field(
+        description=(
+            "Data-driven justification: cite specific values from the ML pipeline "
+            "(H3 cells, probabilities, wind speed, FRP), environmental telemetry, "
+            "or corpus doctrine that motivated this recommendation."
+        ),
+    )
 
 
 class VulnerableGroup(BaseModel):

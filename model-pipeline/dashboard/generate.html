@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Generate Report — OBJ-3</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&family=DM+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/static/style.css">
 <style>
 /* ── Form layout ── */
@@ -603,9 +603,8 @@ function showResult(d) {
       ['Files', (d.files_processed||0)+' processed'],
       ['Backend', d.backend_used],
     ]);
-    const viewUrl = d.rendered_path
-      ? `/api/report-file?path=${encodeURIComponent(d.rendered_path)}`
-      : `/api/reports/${d.json_path ? d.json_path.split('/').pop().replace('.json','') : d.incident_id}/render?format=html`;
+    const reportId = d.json_path ? d.json_path.split('/').pop().replace('.json','') : d.incident_id;
+    const viewUrl = `/api/reports/${reportId}/render?format=html`;
     acts.innerHTML =
       `<a class="btn btn-primary" href="${viewUrl}" target="_blank">👁 View</a>` +
       `<a class="btn btn-ghost" href="/">📋 All</a>`;
