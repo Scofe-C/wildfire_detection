@@ -324,11 +324,8 @@ def _rothermel_surface_ros(
     E = 0.715 * math.exp(-3.59e-4 * sigma)
 
     U_safe = max(0.0, U_midflame_ftmin)
-    if U_safe > 0 and beta_op > 0:
-        # U is already in ft/min — Rothermel eq. 47 uses ft/min directly.
-        phi_w = C * U_safe ** B * (beta / beta_op) ** (-E)
-    else:
-        phi_w = 0.0
+    # U is already in ft/min — Rothermel eq. 47 uses ft/min directly.
+    phi_w = C * U_safe ** B * (beta / beta_op) ** (-E) if U_safe > 0 and beta_op > 0 else 0.0
 
     # ── Step 11: Assemble ROS R (Rothermel eq. 52) ────────────────────────
     denominator = rho_b * epsilon * Q_ig
@@ -566,8 +563,8 @@ def _weighted_circular_mean(bearings: list[float], weights: list[float]) -> floa
     total_w = sum(weights)
     if total_w <= 0:
         return 0.0
-    sin_sum = sum(w * math.sin(math.radians(b)) for b, w in zip(bearings, weights))
-    cos_sum = sum(w * math.cos(math.radians(b)) for b, w in zip(bearings, weights))
+    sin_sum = sum(w * math.sin(math.radians(b)) for b, w in zip(bearings, weights, strict=False))
+    cos_sum = sum(w * math.cos(math.radians(b)) for b, w in zip(bearings, weights, strict=False))
     return (math.degrees(math.atan2(sin_sum, cos_sum)) + 360) % 360
 
 
@@ -597,13 +594,24 @@ class PythonFireSpreadSimulator:
     Uses the full Rothermel (1972) surface fire model plus Van Wagner (1977)
     crown fire and Anderson (1983) elliptical shape.
 
+    Two modes
+    ---------
+    simulate()             — single deterministic run (one weather state)
+    simulate_monte_carlo() — N=100 perturbed-weather runs → burn probabilities
+                             (equivalent to Cell2Fire's stochastic output but
+                              without the C++ binary dependency)
+
     Example
     -------
     >>> import pandas as pd
     >>> df = pd.read_parquet("fused_2026-03-31.parquet")
     >>> sim = PythonFireSpreadSimulator()
+    >>> # Deterministic
     >>> result = sim.simulate(df, "822937fffffffff", ignition_prob=0.30)
-    >>> print(result["spread_direction_deg"], result["spread_speed_kmh"])
+    >>> print(result["spread_speed_kmh"])
+    >>> # Probabilistic
+    >>> mc = sim.simulate_monte_carlo(df, "822937fffffffff", ignition_prob=0.30)
+    >>> print(mc["neighbor_burn_probabilities"])
     """
 
     def __init__(
@@ -803,7 +811,7 @@ class PythonFireSpreadSimulator:
             spread_rates.append(ros_kmh)
             bearings_list.append(bear)
 
-            if I_B > max_I_B:
+            if max_I_B < I_B:
                 max_I_B = I_B
                 max_crown_status = crown_status
 
@@ -885,6 +893,493 @@ class PythonFireSpreadSimulator:
             dominant_factor,
         )
         return result
+
+    # ──────────────────────────────────────────────────────────────────────────
+    def simulate_monte_carlo(
+        self,
+        df: pd.DataFrame,
+        ignition_grid_id: str,
+        ignition_prob: float,
+        n_simulations: int = 100,
+        horizon_hours: float = 24.0,
+        rng_seed: int | None = 42,
+    ) -> dict[str, Any]:
+        """Monte Carlo fire spread — N perturbed-weather runs → burn probabilities.
+
+        Equivalent to Cell2Fire's stochastic simulation but fully in Python with
+        no C++ binary dependency.  Each of the N runs uses the same Rothermel +
+        Van Wagner + Anderson physics as ``simulate()``, but with weather inputs
+        randomly perturbed around the observed values using physically motivated
+        distributions.
+
+        Perturbation distributions
+        --------------------------
+        Wind speed      : Log-normal  σ=0.25  (preserves non-negativity;
+                          ~25% coefficient of variation — NOAA WFO guidance)
+        Wind direction  : Wrapped normal  σ=25°  (directional variability)
+        Relative humidity: Normal  σ=8 %  (synoptic uncertainty, clamped 1–99)
+        Temperature     : Normal  σ=2.5°C  (clamped –20 to 60°C)
+        Days since precip: Normal  σ=0.5 d  (clamped 0–30)
+        Slope / fuel / canopy: NOT perturbed (static LANDFIRE layers)
+
+        Burn probability definition
+        ---------------------------
+        A neighbour cell is counted as "burned" in run *i* if the simulated
+        spread rate toward it satisfies:
+
+            speed_i  >=  intercell_distance_km / horizon_hours
+
+        i.e. fire physically reaches the cell within ``horizon_hours`` at that
+        run's spread rate.  Default horizon = 24 h at 22 km (res-5) spacing
+        → threshold ≈ 1.04 km/h.
+
+        Parameters
+        ----------
+        df              : Fused parquet DataFrame with ``grid_id`` column.
+        ignition_grid_id: H3 cell where fire starts.
+        ignition_prob   : OBJ-1 ignition probability (scales ROS).
+        n_simulations   : Number of Monte Carlo runs (default 100).
+        horizon_hours   : Time window for burn-probability threshold (default 24 h).
+        rng_seed        : Numpy RNG seed for reproducibility (None = random).
+
+        Returns
+        -------
+        dict with keys:
+            spread_speed_kmh_mean/p50/p90/p95/max/std
+            dominant_direction_deg, direction_uncertainty_deg
+            crown_fire_probability
+            neighbor_burn_probabilities   — {cell_id: probability}  ← main output
+            max_neighbor_burn_probability
+            spread_speed_kmh_all          — list of N values (for histogram)
+            direction_deg_all             — list of N values (for wind rose)
+            crown_status_all              — list of N strings
+            byram_intensity_kwm_all       — list of N values
+            deterministic_result          — single-run result for comparison
+            perturbation_config           — perturbation parameters used
+        """
+        try:
+            import h3 as h3lib
+        except ImportError as exc:
+            raise ImportError("h3 package required: pip install h3") from exc
+
+        rng = np.random.default_rng(rng_seed)
+        ignition_prob = float(max(0.0, min(1.0, ignition_prob)))
+        warnings_mc: list[str] = []
+
+        # ── Step 1: Extract ignition cell once ────────────────────────────────
+        ignition_rows = df[df["grid_id"] == ignition_grid_id]
+        if ignition_rows.empty:
+            raise ValueError(
+                f"Ignition cell '{ignition_grid_id}' not found in df."
+            )
+        ign = ignition_rows.iloc[0]
+
+        # Base weather (will be perturbed each run)
+        base_wind_kmh  = _safe_float(ign, "wind_speed_10m", 0.0,  warnings_mc) or 0.0
+        base_wind_dir  = _safe_float(ign, "wind_direction_10m", 0.0, warnings_mc) or 0.0
+        base_rh        = _safe_float(ign, "relative_humidity_2m", 50.0, warnings_mc) or 50.0
+        base_temp      = _safe_float(ign, "temperature_2m", 20.0, warnings_mc) or 20.0
+        base_days      = _safe_float(ign, "days_since_last_precipitation", 3.0, warnings_mc) or 3.0
+        base_vpd       = _safe_float(ign, "vpd", 2.0, warnings_mc) or 2.0
+
+        # Static (no perturbation)
+        ign_slope      = _safe_float(ign, "slope_degrees", 0.0, warnings_mc) or 0.0
+        ign_aspect     = _safe_float(ign, "aspect_degrees", 0.0, warnings_mc) or 0.0
+        ign_fuel_code  = _safe_float(ign, "fuel_model_fbfm40", None, warnings_mc)
+        ign_cbh        = _safe_float(ign, "canopy_base_height_m", None, warnings_mc)
+        ign_cbd        = _safe_float(ign, "canopy_bulk_density", None, warnings_mc)
+
+        # ── Step 2: Discover neighbours + pre-cache static data once ──────────
+        neighbour_set = set(h3lib.grid_disk(ignition_grid_id, 1)) - {ignition_grid_id}
+        neighbours    = sorted(neighbour_set)
+        ign_lat, ign_lon = h3lib.cell_to_latlng(ignition_grid_id)
+
+        nb_static: list[dict[str, Any]] = []
+        for nb_id in neighbours:
+            nb_lat, nb_lon = h3lib.cell_to_latlng(nb_id)
+            bear    = _bearing(ign_lat, ign_lon, nb_lat, nb_lon)
+            nb_rows = df[df["grid_id"] == nb_id]
+            if not nb_rows.empty:
+                nb = nb_rows.iloc[0]
+                nb_slope     = _safe_float(nb, "slope_degrees",          ign_slope)     or ign_slope
+                nb_aspect    = _safe_float(nb, "aspect_degrees",         ign_aspect)    or ign_aspect
+                nb_fuel_code = _safe_float(nb, "fuel_model_fbfm40",      ign_fuel_code)
+                nb_cbh       = _safe_float(nb, "canopy_base_height_m",   ign_cbh)
+                nb_cbd       = _safe_float(nb, "canopy_bulk_density",    ign_cbd)
+            else:
+                nb_slope, nb_aspect = ign_slope, ign_aspect
+                nb_fuel_code, nb_cbh, nb_cbd = ign_fuel_code, ign_cbh, ign_cbd
+            nb_static.append({
+                "id": nb_id, "bearing": bear,
+                "slope": nb_slope, "aspect": nb_aspect,
+                "fuel_code": nb_fuel_code, "cbh": nb_cbh, "cbd": nb_cbd,
+            })
+
+        # H3 res-5 intercell distance ≈ 25 km; speed threshold to reach in horizon
+        INTERCELL_KM    = 25.0
+        speed_threshold = INTERCELL_KM / horizon_hours   # km/h
+
+        # ── Step 3: Pre-generate all N perturbed weather samples ──────────────
+        # Wind speed: log-normal — preserves non-negativity, models gustiness
+        base_wind_ms = base_wind_kmh / 3.6
+        wind_ms_samples = np.maximum(
+            0.0,
+            base_wind_ms * np.exp(rng.normal(0.0, 0.25, n_simulations))
+        )
+        # Wind direction: wrapped-normal ±25°
+        wind_dir_samples = (base_wind_dir + rng.normal(0.0, 25.0, n_simulations)) % 360.0
+        # RH: normal ±8 %, clamped [1, 99]
+        rh_samples   = np.clip(rng.normal(base_rh,   8.0, n_simulations),  1.0,  99.0)
+        # Temp: normal ±2.5°C, clamped [-20, 60]
+        temp_samples = np.clip(rng.normal(base_temp, 2.5, n_simulations), -20.0, 60.0)
+        # Days since precip: normal ±0.5 d, clamped [0, 30]
+        days_samples = np.clip(rng.normal(base_days, 0.5, n_simulations),  0.0,  30.0)
+
+        # ── Step 4: N simulation runs ─────────────────────────────────────────
+        all_speeds:      list[float] = []
+        all_directions:  list[float] = []
+        all_crown:       list[str]   = []
+        all_intensities: list[float] = []
+
+        # Accumulate per-neighbour spread rates across all runs
+        nb_spread_runs: dict[str, list[float]] = {nb["id"]: [] for nb in nb_static}
+
+        for i in range(n_simulations):
+            w_ms   = float(wind_ms_samples[i])
+            w_dir  = float(wind_dir_samples[i])
+            rh_i   = float(rh_samples[i])
+            temp_i = float(temp_samples[i])
+            days_i = float(days_samples[i])
+
+            # Fuel moisture for this weather sample
+            Mf_i  = _estimate_dfmc(rh_i, temp_i, days_i)
+            FMC_i = _estimate_fmc(temp_i, base_vpd)   # VPD correlated w/ T/RH
+
+            # Wind unit conversions
+            U_mph_i    = w_ms * 2.23694 * self.wind_reduction_factor
+            U_ftmin_i  = U_mph_i * 88.0
+
+            run_max_speed = 0.0
+            run_dirs:    list[float] = []
+            run_weights: list[float] = []
+            run_max_IB   = 0.0
+            run_crown    = "surface"
+
+            for nb in nb_static:
+                bear     = nb["bearing"]
+                fuel     = _get_fuel_params(nb["fuel_code"])
+                if fuel is None:
+                    nb_spread_runs[nb["id"]].append(0.0)
+                    continue
+
+                rho_b = fuel.w0 / fuel.delta if fuel.delta > 0 else 0.0
+                beta  = rho_b / _RHO_P if rho_b > 0 else 0.0
+                phi_s = _phi_slope(beta, nb["slope"], nb["aspect"], bear)
+
+                # Head-fire ROS (full wind, no slope) — drives crown + Byram
+                head_R, _ = _rothermel_surface_ros(fuel, Mf_i, U_ftmin_i, 0.0)
+                I_B       = _byram_intensity(fuel, Mf_i, head_R)
+
+                # Directional ROS (wind projected onto bearing + slope)
+                downwind_i  = (w_dir + 180.0) % 360.0
+                diff_rad    = math.radians(abs(_angular_diff(bear, downwind_i)))
+                U_proj      = U_ftmin_i * max(0.0, math.cos(diff_rad))
+                dir_R, _    = _rothermel_surface_ros(fuel, Mf_i, U_proj, phi_s)
+
+                # Elliptical shape ROS (head-fire only, no slope)
+                ell_R      = _elliptical_ros(head_R, U_mph_i, bear, w_dir)
+                surface_R  = max(dir_R, ell_R)
+
+                # Crown fire
+                crown_R, crown_status = _crown_fire_assessment(
+                    surface_R, I_B, nb["cbh"], nb["cbd"], FMC=FMC_i
+                )
+
+                ros_kmh = crown_R * _FTMIN_TO_KMH * ignition_prob
+                nb_spread_runs[nb["id"]].append(ros_kmh)
+
+                run_dirs.append(bear)
+                run_weights.append(ros_kmh)
+                if ros_kmh > run_max_speed:
+                    run_max_speed = ros_kmh
+                if I_B > run_max_IB:
+                    run_max_IB = I_B
+                    run_crown  = crown_status
+
+            all_speeds.append(run_max_speed)
+            all_intensities.append(run_max_IB)
+            all_crown.append(run_crown)
+
+            if sum(run_weights) > 0:
+                all_directions.append(
+                    _weighted_circular_mean(run_dirs, run_weights)
+                )
+            else:
+                all_directions.append(0.0)
+
+        # ── Step 5: Aggregate ─────────────────────────────────────────────────
+        speeds_arr = np.array(all_speeds)
+
+        # Burn probability: fraction of runs where fire reaches cell in horizon
+        nb_burn_probs: dict[str, float] = {
+            nb["id"]: float(np.mean(
+                np.array(nb_spread_runs[nb["id"]]) >= speed_threshold
+            ))
+            for nb in nb_static
+        }
+
+        # Crown fire probability
+        crown_prob = sum(1 for c in all_crown if c != "surface") / n_simulations
+
+        # Ensemble dominant direction (circular mean weighted by speed)
+        ens_dir = _weighted_circular_mean(
+            all_directions,
+            [max(s, 1e-9) for s in all_speeds],
+        )
+
+        # Circular standard deviation → direction uncertainty
+        angles_rad = np.radians(all_directions)
+        R_bar      = math.sqrt(np.mean(np.cos(angles_rad))**2 +
+                               np.mean(np.sin(angles_rad))**2)
+        dir_std    = math.degrees(math.sqrt(-2.0 * math.log(max(R_bar, 1e-9))))
+
+        # Run deterministic baseline for comparison (uses un-perturbed weather)
+        det_result = self.simulate(df, ignition_grid_id, ignition_prob)
+
+        logger.info(
+            "MC FireSpread | cell=%s | n=%d | p50=%.4f km/h | p90=%.4f km/h | "
+            "crown_prob=%.1f%% | max_burn_prob=%.2f | dir=%.1f°±%.1f°",
+            ignition_grid_id, n_simulations,
+            float(np.percentile(speeds_arr, 50)),
+            float(np.percentile(speeds_arr, 90)),
+            crown_prob * 100,
+            max(nb_burn_probs.values()) if nb_burn_probs else 0.0,
+            ens_dir, dir_std,
+        )
+
+        return {
+            "model": "python_rothermel_monte_carlo",
+            "n_simulations": n_simulations,
+            "horizon_hours": horizon_hours,
+            "intercell_distance_km": INTERCELL_KM,
+            "burn_speed_threshold_kmh": round(speed_threshold, 4),
+            "ignition_cell": ignition_grid_id,
+            "ignition_probability": round(ignition_prob, 4),
+            # ── Spread speed distribution ──────────────────────────────────
+            "spread_speed_kmh_mean": round(float(np.mean(speeds_arr)),           4),
+            "spread_speed_kmh_p50":  round(float(np.percentile(speeds_arr, 50)), 4),
+            "spread_speed_kmh_p90":  round(float(np.percentile(speeds_arr, 90)), 4),
+            "spread_speed_kmh_p95":  round(float(np.percentile(speeds_arr, 95)), 4),
+            "spread_speed_kmh_max":  round(float(np.max(speeds_arr)),            4),
+            "spread_speed_kmh_std":  round(float(np.std(speeds_arr)),            4),
+            # ── Direction ─────────────────────────────────────────────────
+            "dominant_direction_deg":    round(ens_dir,  1),
+            "direction_uncertainty_deg": round(dir_std,  1),
+            # ── Crown fire ────────────────────────────────────────────────
+            "crown_fire_probability": round(crown_prob, 4),
+            # ── Burn probabilities — Cell2Fire-equivalent output ──────────
+            "neighbor_burn_probabilities": {
+                k: round(v, 4) for k, v in nb_burn_probs.items()
+            },
+            "max_neighbor_burn_probability": round(
+                max(nb_burn_probs.values()) if nb_burn_probs else 0.0, 4
+            ),
+            # ── Full distributions (histogram / wind-rose plotting) ───────
+            "spread_speed_kmh_all":    [round(s, 4) for s in all_speeds],
+            "direction_deg_all":       [round(d, 1) for d in all_directions],
+            "crown_status_all":        all_crown,
+            "byram_intensity_kwm_all": [round(v, 1) for v in all_intensities],
+            # ── Perturbation config ───────────────────────────────────────
+            "perturbation_config": {
+                "wind_speed_lognormal_sigma":    0.25,
+                "wind_direction_normal_sigma_deg": 25.0,
+                "rh_normal_sigma_pct":           8.0,
+                "temperature_normal_sigma_c":    2.5,
+                "days_precip_normal_sigma":      0.5,
+                "rng_seed": rng_seed,
+                "base_weather": {
+                    "wind_speed_kmh":        round(base_wind_kmh, 2),
+                    "wind_direction_deg":    round(base_wind_dir, 1),
+                    "relative_humidity_pct": round(base_rh,       1),
+                    "temperature_c":         round(base_temp,      1),
+                    "days_since_precip":     round(base_days,      1),
+                },
+            },
+            # ── Deterministic baseline (single un-perturbed run) ──────────
+            "deterministic_result": det_result,
+            "warnings": warnings_mc,
+        }
+
+
+    # ──────────────────────────────────────────────────────────────────────────
+    def simulate_hybrid(
+        self,
+        df: pd.DataFrame,
+        ignition_grid_id: str,
+        ignition_prob: float,
+        n_simulations: int = 100,
+        horizon_hours: float = 24.0,
+        det_weight: float = 0.4,
+        rng_seed: int | None = 42,
+    ) -> dict[str, Any]:
+        """Hybrid fire spread — deterministic physics + Monte Carlo uncertainty.
+
+        Combines both modes into a single actionable output:
+
+            hybrid_speed  = det_weight × det_speed  +  (1-det_weight) × MC_mean
+            hybrid_prob   = det_weight × det_score  +  (1-det_weight) × mc_prob
+            risk_level    = LOW / MEDIUM / HIGH / EXTREME  (from hybrid_prob)
+
+        Why hybrid beats either alone
+        ------------------------------
+        Deterministic  : exact Rothermel physics — the "ground truth" answer for
+                         the observed weather.  One scenario, no uncertainty.
+        Monte Carlo    : 100 perturbed-weather runs — captures gusts, direction
+                         shifts, humidity swings.  No single "best" answer.
+        Hybrid         : det anchors the physics (prevents MC from going wild on
+                         bad perturbations); MC pulls det toward realistic
+                         uncertainty.  One number your operators can act on.
+
+        ``det_weight`` controls the blend:
+            0.0 → pure MC mean  (ignore physics, trust noise)
+            0.4 → default blend  (physics-anchored but uncertainty-aware)
+            1.0 → pure deterministic  (no uncertainty, back to single run)
+
+        Burn probability formula per neighbour
+        ---------------------------------------
+        Deterministic contribution (det_score):
+            sigmoid ramp over [0, 2 × threshold] so that:
+                det_speed = 0              → det_score = 0.0
+                det_speed = threshold      → det_score = 0.5
+                det_speed = 2 × threshold  → det_score ~0.88  (soft saturation)
+
+        MC contribution: fraction of N runs where speed >= threshold.
+
+        hybrid_prob  =  det_weight × det_score  +  (1 − det_weight) × mc_prob
+
+        Risk levels (based on max hybrid burn probability across all neighbours):
+            EXTREME  : >= 0.65
+            HIGH     : >= 0.35
+            MEDIUM   : >= 0.10
+            LOW      : <  0.10
+
+        Parameters
+        ----------
+        df              : Fused parquet DataFrame.
+        ignition_grid_id: H3 cell where fire starts.
+        ignition_prob   : OBJ-1 ignition probability (scales ROS).
+        n_simulations   : Monte Carlo runs (default 100).
+        horizon_hours   : Burn-probability time window (default 24 h).
+        det_weight      : Blend weight for deterministic (0–1, default 0.4).
+        rng_seed        : RNG seed for reproducibility.
+        """
+        # ── Step 1: run both modes ────────────────────────────────────────────
+        det = self.simulate(df, ignition_grid_id, ignition_prob)
+        mc  = self.simulate_monte_carlo(
+            df, ignition_grid_id, ignition_prob,
+            n_simulations=n_simulations,
+            horizon_hours=horizon_hours,
+            rng_seed=rng_seed,
+        )
+
+        INTERCELL_KM    = 25.0
+        speed_threshold = INTERCELL_KM / horizon_hours
+
+        # ── Step 2: hybrid spread speed ───────────────────────────────────────
+        det_speed  = det["spread_speed_kmh"]
+        mc_mean    = mc["spread_speed_kmh_mean"]
+        hybrid_speed = det_weight * det_speed + (1.0 - det_weight) * mc_mean
+
+        # ── Step 3: hybrid burn probability per neighbour ────────────────────
+        mc_probs   = mc["neighbor_burn_probabilities"]
+        det_nbs    = {nb["neighbour_id"]: nb["spread_rate_kmh"]
+                      for nb in det.get("neighbour_details", [])}
+
+        hybrid_burn_probs: dict[str, float] = {}
+        for cell_id, mc_prob in mc_probs.items():
+            nb_det_speed = det_nbs.get(cell_id, 0.0)
+
+            # Sigmoid ramp: smooth transition from 0 to 1 around the threshold
+            # det_score = 1 / (1 + exp(-k * (v - v0)))
+            # k=4/threshold gives 50% at threshold, ~88% at 2×threshold
+            if speed_threshold > 0:
+                k = 4.0 / speed_threshold
+                det_score = 1.0 / (1.0 + math.exp(-k * (nb_det_speed - speed_threshold)))
+            else:
+                det_score = 1.0 if nb_det_speed > 0 else 0.0
+
+            hybrid_burn_probs[cell_id] = round(
+                det_weight * det_score + (1.0 - det_weight) * mc_prob, 4
+            )
+
+        max_hybrid_prob = max(hybrid_burn_probs.values()) if hybrid_burn_probs else 0.0
+
+        # ── Step 4: hybrid direction — circular blend ─────────────────────────
+        det_dir = det["spread_direction_deg"]
+        mc_dir  = mc["dominant_direction_deg"]
+        # Blend using unit vectors to handle wrap-around correctly
+        blend_sin = (det_weight * math.sin(math.radians(det_dir)) +
+                     (1.0 - det_weight) * math.sin(math.radians(mc_dir)))
+        blend_cos = (det_weight * math.cos(math.radians(det_dir)) +
+                     (1.0 - det_weight) * math.cos(math.radians(mc_dir)))
+        hybrid_dir = (math.degrees(math.atan2(blend_sin, blend_cos)) + 360) % 360
+
+        # ── Step 5: risk level ────────────────────────────────────────────────
+        if max_hybrid_prob >= 0.65:
+            risk_level = "EXTREME"
+        elif max_hybrid_prob >= 0.35:
+            risk_level = "HIGH"
+        elif max_hybrid_prob >= 0.10:
+            risk_level = "MEDIUM"
+        else:
+            risk_level = "LOW"
+
+        # Crown fire risk: blend det (boolean) with MC probability
+        det_crown = 0.0 if det["crown_fire_status"] == "surface" else 1.0
+        mc_crown  = mc["crown_fire_probability"]
+        hybrid_crown_prob = det_weight * det_crown + (1.0 - det_weight) * mc_crown
+
+        logger.info(
+            "Hybrid FireSpread | cell=%s | speed=%.4f km/h (det=%.4f, mc_mean=%.4f) | "
+            "max_burn_prob=%.2f | risk=%s | crown=%.1f%%",
+            ignition_grid_id,
+            hybrid_speed, det_speed, mc_mean,
+            max_hybrid_prob, risk_level,
+            hybrid_crown_prob * 100,
+        )
+
+        return {
+            "model": "python_rothermel_hybrid",
+            "n_simulations": n_simulations,
+            "horizon_hours": horizon_hours,
+            "det_weight": det_weight,
+            "ignition_cell": ignition_grid_id,
+            "ignition_probability": round(ignition_prob, 4),
+            # ── Hybrid outputs (primary actionable results) ───────────────
+            "hybrid_spread_speed_kmh":    round(hybrid_speed,       4),
+            "hybrid_spread_direction_deg": round(hybrid_dir,        1),
+            "hybrid_crown_fire_probability": round(hybrid_crown_prob, 4),
+            "hybrid_burn_probabilities":  hybrid_burn_probs,
+            "max_hybrid_burn_probability": round(max_hybrid_prob,   4),
+            "risk_level":                 risk_level,
+            # ── Deterministic component ───────────────────────────────────
+            "det_spread_speed_kmh":       round(det_speed,          4),
+            "det_spread_direction_deg":   round(det_dir,            1),
+            "det_crown_fire_status":      det["crown_fire_status"],
+            "det_byram_intensity_kwm":    round(det["byram_intensity_kwm"], 1),
+            "det_dead_fuel_moisture_pct": round(det["dead_fuel_moisture_pct"], 1),
+            # ── MC component ──────────────────────────────────────────────
+            "mc_spread_speed_p50":        mc["spread_speed_kmh_p50"],
+            "mc_spread_speed_p90":        mc["spread_speed_kmh_p90"],
+            "mc_spread_speed_mean":       mc["spread_speed_kmh_mean"],
+            "mc_spread_speed_std":        mc["spread_speed_kmh_std"],
+            "mc_direction_uncertainty_deg": mc["direction_uncertainty_deg"],
+            "mc_crown_fire_probability":  mc["crown_fire_probability"],
+            "mc_burn_probabilities":      mc_probs,
+            # ── Confidence interval (from MC) ─────────────────────────────
+            "speed_ci_low_kmh":   mc.get("spread_speed_kmh_p50"),   # p50 as lower
+            "speed_ci_high_kmh":  mc.get("spread_speed_kmh_p90"),   # p90 as upper
+        }
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

@@ -3,7 +3,7 @@
 
 # Active LLM backend: "ollama" | "gemini_dev" | "vertex_ai"
 # Override priority: CLI --backend > env var LLM_BACKEND > this value
-llm_backend: "ollama"
+llm_backend: "gemini_dev"
 
 # --- Ollama (Phase 1: local model) ---
 ollama:
@@ -27,7 +27,7 @@ gemini_dev:
 # --- Vertex AI (Phase 3: GCP project) ---
 vertex_ai:
   model: "gemini-2.5-flash"
-  project_id: ""
+  project_id: "wildfire-detection-486319"
   location: "us-central1"
   corpus_cache_ttl_seconds: 3600
 
@@ -45,10 +45,20 @@ reporting:
   min_grounding_sources: 3
   output_dir: "reports/disaster_reports"
   gcs_bucket: ""
+  default_render_format: "auto"   # "json" (save JSON only) | "auto" (JSON + rendered HTML/MD)
   max_ml_block_chars: 20000       # Cloud backends
   max_data_block_chars: 20000     # Cloud backends
   ollama_max_ml_block_chars: 6000    # Local models — keep total context < 32K tokens
   ollama_max_data_block_chars: 6000  # Local models
+  parse_max_retries: 3               # Max retries on JSON parse failure
+  parse_retry_base_delay: 1.0        # Base delay (seconds) — exponential backoff: delay = base * 2^attempt
+
+# --- Incident Tracker (EMERGENCY sub-state transitions) ---
+incident_tracker:
+  interim_hours: 2         # ACTIVE_FIRE → INTERIM after no hotspots for 2h
+  post_fire_hours: 12      # INTERIM → POST_FIRE after no hotspots for 12h
+  final_hours: 48          # POST_FIRE → FINAL after no hotspots for 48h
+  gc_max_age_days: 30      # Archived incidents older than this are garbage-collected
 
 # --- Admin Toggle (human input channel) ---
 admin_toggle:

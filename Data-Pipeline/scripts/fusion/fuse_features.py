@@ -191,6 +191,7 @@ def fuse_features(
     resolution_km: int = 64,
     config_path: Optional[str] = None,
     previous_fused_path: Optional[str] = None,
+    field_telemetry: Optional[pd.DataFrame] = None,
 ) -> pd.DataFrame:
     """Merge FIRMS fire, weather, and static terrain features into a unified table.
 
@@ -250,6 +251,43 @@ def fuse_features(
             fused[col] = fused[col].fillna(default)
         else:
             fused[col] = default
+
+    # 2b) field telemetry override — ground truth has priority 1 (highest)
+    #     When field observations confirm fire at a grid cell, override
+    #     satellite-derived fire_detected_binary and boost confidence.
+    if field_telemetry is not None and not field_telemetry.empty:
+        logger.info(
+            "Merging %d field telemetry observations (ground truth priority)",
+            len(field_telemetry),
+        )
+        # Match field observations to nearest grid cell by H3 lookup
+        try:
+            import h3
+            for _, obs in field_telemetry.iterrows():
+                lat, lon = float(obs.get("latitude", 0)), float(obs.get("longitude", 0))
+                if lat == 0 and lon == 0:
+                    continue
+                # Find the H3 cell for this observation
+                h3_res_map = {64: 2, 22: 5, 10: 4, 1: 7}
+                h3_res = h3_res_map.get(resolution_km, 5)
+                cell_id = h3.latlng_to_cell(lat, lon, h3_res)
+                # Override fire detection for this cell
+                mask = fused["grid_id"] == cell_id
+                if mask.any():
+                    fused.loc[mask, "fire_detected_binary"] = 1
+                    if "data_source_priority" not in fused.columns:
+                        fused["data_source_priority"] = 2  # default: satellite
+                    fused.loc[mask, "data_source_priority"] = 1  # ground truth
+                    if obs.get("frp") and "mean_frp" in fused.columns:
+                        # Use field FRP if higher than satellite
+                        current_frp = fused.loc[mask, "mean_frp"].values[0]
+                        if obs["frp"] > current_frp:
+                            fused.loc[mask, "mean_frp"] = obs["frp"]
+                    logger.debug("Field telemetry matched cell %s", cell_id)
+        except ImportError:
+            logger.warning("h3 not installed — field telemetry spatial matching skipped")
+        except Exception as e:
+            logger.warning("Field telemetry merge failed (non-blocking): %s", e)
 
     # 3) weather aggregate + merge (merge weather_agg, not raw weather_features)
     #

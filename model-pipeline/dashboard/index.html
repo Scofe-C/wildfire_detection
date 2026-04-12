@@ -5,38 +5,105 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>OBJ-3 — Wildfire Intelligence</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&family=DM+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/static/style.css">
 <style>
-/* ── Summary strip ── */
-.summary-strip {
-  display: grid; grid-template-columns: repeat(4, 1fr);
-  gap: 14px; margin-bottom: 24px;
+/* ── Content background — subtle dot grid ── */
+.content {
+  background-image: radial-gradient(circle, rgba(168,162,158,0.18) 1px, transparent 1px);
+  background-size: 22px 22px;
 }
-.summary-card {
+
+/* ── Search box ── */
+.search-box {
+  display: flex; align-items: center;
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: 8px; padding: 0 12px; width: 300px;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+.search-box:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(194,65,12,0.08);
+}
+.search-box svg { width: 15px; height: 15px; color: var(--text-3); flex-shrink: 0; }
+.search-box input {
+  border: none; background: none; outline: none;
+  padding: 7px 10px; font-size: 13px; color: var(--text);
+  width: 100%; font-family: 'DM Sans', sans-serif;
+}
+.search-box input::placeholder { color: var(--text-3); }
+
+/* ── Stat cards ── */
+.stats-grid {
+  display: grid; grid-template-columns: repeat(4, 1fr);
+  gap: 16px; margin-bottom: 24px;
+}
+.stat-card {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-left: 4px solid var(--border);
   border-radius: var(--radius);
-  padding: 18px 20px;
+  padding: 20px;
   box-shadow: var(--shadow);
+  display: flex; align-items: center; gap: 16px;
   transition: box-shadow 0.2s, transform 0.2s;
+  animation: fadeSlideUp 0.5s ease both;
 }
-.summary-card:hover { box-shadow: var(--shadow-lg); transform: translateY(-1px); }
-.summary-card.accent-critical { border-left-color: var(--critical); }
-.summary-card.accent-high     { border-left-color: var(--high); }
-.summary-card.accent-low      { border-left-color: var(--low); }
-.summary-label { font-size: 11px; font-weight: 600; text-transform: uppercase;
-                 letter-spacing: 0.06em; color: var(--text-3); margin-bottom: 6px; }
-.summary-value { font-size: 26px; font-weight: 700; color: var(--text); line-height: 1; }
-.summary-sub   { font-size: 11px; color: var(--text-3); margin-top: 5px; }
+.stat-card:nth-child(2) { animation-delay: 60ms; }
+.stat-card:nth-child(3) { animation-delay: 120ms; }
+.stat-card:nth-child(4) { animation-delay: 180ms; }
+.stat-card:hover { box-shadow: var(--shadow-lg); transform: translateY(-2px); }
+.stat-icon {
+  width: 44px; height: 44px; border-radius: 10px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 20px; flex-shrink: 0;
+}
+.stat-icon.total   { background: var(--panel); }
+.stat-icon.pending { background: var(--review-bg); }
+.stat-icon.fires   { background: var(--critical-bg); }
+.stat-icon.quality { background: var(--low-bg); }
+.stat-value {
+  font-family: 'Outfit', sans-serif;
+  font-size: 28px; font-weight: 700; line-height: 1;
+  color: var(--text);
+}
+.stat-label {
+  font-size: 11px; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.06em; color: var(--text-3); margin-top: 4px;
+}
 
-/* ── Section header ── */
-.section-header {
+/* ── Toolbar ── */
+.toolbar {
   display: flex; align-items: center; justify-content: space-between;
-  margin-bottom: 14px;
+  margin-bottom: 16px; gap: 12px;
+  animation: fadeSlideUp 0.5s ease 0.25s both;
 }
-.section-header h2 { font-size: 14px; font-weight: 600; }
+.type-tabs {
+  display: flex; gap: 2px;
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: 9px; padding: 3px;
+}
+.type-tab {
+  padding: 7px 16px; border-radius: 7px;
+  font-size: 12px; font-weight: 600;
+  font-family: 'DM Sans', sans-serif;
+  color: var(--text-3);
+  border: none; background: none; cursor: pointer;
+  transition: all 0.2s;
+}
+.type-tab:hover { color: var(--text-2); }
+.type-tab.active {
+  background: var(--surface); color: var(--text);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+}
+.tab-count {
+  display: inline-block; font-size: 10px; font-weight: 700;
+  background: var(--card); border-radius: 10px;
+  padding: 1px 7px; margin-left: 5px;
+  transition: all 0.2s;
+}
+.type-tab.active .tab-count {
+  background: var(--accent-bg); color: var(--accent);
+}
 
 /* ── Table ── */
 .table-wrap {
@@ -45,72 +112,255 @@
   border-radius: var(--radius);
   overflow: hidden;
   box-shadow: var(--shadow);
+  animation: fadeSlideUp 0.5s ease 0.3s both;
 }
 .reports-table { width: 100%; border-collapse: collapse; }
 .reports-table th {
-  padding: 11px 16px;
-  text-align: left;
+  padding: 12px 16px; text-align: left;
   font-size: 11px; font-weight: 600;
   text-transform: uppercase; letter-spacing: 0.06em;
-  color: var(--text-3);
-  background: var(--panel);
+  color: var(--text-3); background: var(--panel);
   border-bottom: 2px solid var(--border);
+  white-space: nowrap;
 }
+.reports-table th.sortable {
+  cursor: pointer; user-select: none;
+  transition: color 0.15s;
+}
+.reports-table th.sortable:hover { color: var(--accent); }
+.sort-arrow {
+  display: inline-block; font-size: 10px;
+  opacity: 0.3; margin-left: 4px;
+  transition: opacity 0.2s, transform 0.2s;
+}
+.sort-arrow.active { opacity: 1; color: var(--accent); }
+.sort-arrow.desc { transform: scaleY(-1); }
 .reports-table td {
-  padding: 12px 16px;
+  padding: 13px 16px;
   border-bottom: 1px solid var(--border);
   vertical-align: middle;
+  font-size: 13px;
 }
+.reports-table tbody tr {
+  cursor: pointer;
+  transition: background 0.15s;
+  animation: rowEnter 0.35s ease both;
+}
+.reports-table tbody tr:hover td { background: rgba(194,65,12,0.03); }
 .reports-table tbody tr:last-child td { border-bottom: none; }
-.reports-table tbody tr:hover td { background: var(--panel); }
 
 /* ── Confidence bar ── */
 .conf-bar { display: flex; align-items: center; gap: 8px; }
-.conf-track { width: 80px; height: 6px; background: var(--card); border-radius: 3px; overflow: hidden; }
-.conf-fill  { height: 100%; border-radius: 3px; }
-.conf-label { font-size: 12px; font-family: 'JetBrains Mono', monospace; color: var(--text-2); }
+.conf-track {
+  width: 80px; height: 6px;
+  background: var(--card); border-radius: 3px;
+  overflow: hidden;
+}
+.conf-fill { height: 100%; border-radius: 3px; transition: width 0.5s ease; }
+.conf-label {
+  font-size: 12px; font-family: 'JetBrains Mono', monospace;
+  color: var(--text-2); min-width: 32px;
+}
 
-/* ── Empty state ── */
-.empty-state { text-align: center; padding: 64px 24px; color: var(--text-3); }
-.empty-state .empty-icon { font-size: 36px; margin-bottom: 12px; display: block; opacity: 0.5; }
-.empty-state p { font-size: 13px; }
-.empty-state a { color: var(--accent); text-decoration: none; }
+/* ── Action buttons in table ── */
+.row-actions {
+  display: flex; gap: 4px; white-space: nowrap;
+}
+.row-actions .act-btn {
+  background: none; border: 1px solid transparent;
+  border-radius: 5px; padding: 3px 8px;
+  font-size: 11px; color: var(--text-3);
+  cursor: pointer; text-decoration: none;
+  font-family: 'DM Sans', sans-serif;
+  transition: all 0.15s;
+}
+.row-actions .act-btn:hover {
+  color: var(--text); background: var(--panel);
+  border-color: var(--border);
+}
+.row-actions .act-del:hover {
+  color: var(--critical); background: var(--critical-bg);
+  border-color: var(--critical-border);
+}
+
+/* ── Empty & no-match states ── */
+.empty-state {
+  text-align: center; padding: 64px 24px; color: var(--text-3);
+  animation: fadeSlideUp 0.4s ease both;
+}
+.empty-icon { font-size: 40px; margin-bottom: 14px; display: block; opacity: 0.5; }
+.empty-state p { font-size: 14px; margin-bottom: 10px; }
+.empty-state a { color: var(--accent); text-decoration: none; font-weight: 600; }
 .empty-state a:hover { text-decoration: underline; }
 
-/* ── Modal ── */
-.modal-backdrop {
-  display: none; position: fixed; inset: 0;
-  background: rgba(0,0,0,0.40); z-index: 200;
-  align-items: center; justify-content: center;
+.no-match {
+  text-align: center; padding: 48px 24px;
+  color: var(--text-3); font-size: 13px;
 }
-.modal-backdrop.open { display: flex; }
-.modal {
-  background: #fff; color: #333;
-  width: 92%; max-width: 960px; max-height: 92vh;
-  border-radius: 12px; overflow: hidden;
+
+/* ── Viewer panel (slide-in from right) ── */
+.viewer-backdrop {
+  position: fixed; inset: 0;
+  background: rgba(28,25,23,0.25);
+  backdrop-filter: blur(3px);
+  opacity: 0; pointer-events: none;
+  transition: opacity 0.3s;
+  z-index: 100;
+}
+.viewer-backdrop.open { opacity: 1; pointer-events: all; }
+
+.viewer-panel {
+  position: fixed; top: 0; right: 0; bottom: 0;
+  width: 72%; max-width: 1000px;
+  background: var(--surface);
+  box-shadow: -8px 0 40px rgba(28,25,23,0.14);
+  transform: translateX(100%);
+  transition: transform 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+  z-index: 101;
   display: flex; flex-direction: column;
-  box-shadow: 0 20px 60px rgba(0,0,0,0.22);
 }
-.modal-bar {
+.viewer-panel.open { transform: translateX(0); }
+
+.viewer-header {
   display: flex; align-items: center; justify-content: space-between;
-  padding: 12px 18px; background: var(--panel); border-bottom: 1px solid var(--border);
+  padding: 14px 20px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0; gap: 12px;
 }
-.modal-bar span { font-size: 13px; font-weight: 600; color: var(--text); }
-.modal-close {
-  background: none; border: none; color: var(--text-3);
-  font-size: 18px; cursor: pointer; line-height: 1;
-  padding: 2px 6px; border-radius: 4px;
-  transition: background 0.15s, color 0.15s;
+.viewer-meta {
+  display: flex; align-items: center; gap: 8px;
+  flex-wrap: wrap; min-width: 0;
 }
-.modal-close:hover { background: var(--card); color: var(--text); }
-.modal-body { flex: 1; overflow: hidden; }
-.modal-body iframe { width: 100%; height: 100%; min-height: 75vh; border: none; }
+.viewer-meta .viewer-title {
+  font-family: 'Outfit', sans-serif;
+  font-weight: 600; font-size: 14px;
+  color: var(--text);
+}
+.viewer-actions { display: flex; gap: 6px; flex-shrink: 0; }
+.viewer-close {
+  background: none; border: 1px solid var(--border);
+  border-radius: 6px; padding: 5px 12px;
+  font-size: 12px; color: var(--text-2);
+  cursor: pointer; font-family: 'DM Sans', sans-serif;
+  transition: all 0.15s;
+}
+.viewer-close:hover { background: var(--panel); color: var(--text); }
+.viewer-body { flex: 1; overflow: hidden; }
+.viewer-body iframe { width: 100%; height: 100%; border: none; }
+
+/* ── Animations ── */
+@keyframes fadeSlideUp {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes rowEnter {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* ── Viewer tabs ── */
+.viewer-tabs {
+  display: flex; gap: 2px;
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: 7px; padding: 2px;
+}
+.vtab {
+  padding: 5px 14px; border-radius: 5px;
+  font-size: 12px; font-weight: 600;
+  font-family: 'DM Sans', sans-serif;
+  color: var(--text-3); border: none; background: none;
+  cursor: pointer; transition: all 0.15s;
+}
+.vtab:hover { color: var(--text-2); }
+.vtab.active { background: var(--surface); color: var(--text); box-shadow: 0 1px 2px rgba(0,0,0,0.06); }
+.vtab-content { display: none; }
+.vtab-content.active { display: flex; flex-direction: column; flex: 1; overflow: hidden; }
+
+/* ── Edit panel ── */
+.edit-scroll { flex: 1; overflow-y: auto; padding: 24px; }
+.edit-suggestions {
+  background: #fef9ee; border: 1px solid #f5e6c8;
+  border-radius: 8px; padding: 14px 16px; margin-bottom: 20px;
+}
+.suggestions-title {
+  font-size: 12px; font-weight: 700; color: #92400e;
+  margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.04em;
+}
+.suggestion {
+  display: flex; gap: 8px; align-items: flex-start;
+  font-size: 12px; color: #78350f; line-height: 1.5;
+  margin-bottom: 6px;
+}
+.suggestion:last-child { margin-bottom: 0; }
+.suggestion-icon { flex-shrink: 0; font-size: 13px; }
+
+.edit-section {
+  margin-bottom: 20px; padding-bottom: 20px;
+  border-bottom: 1px solid var(--border);
+}
+.edit-section:last-of-type { border-bottom: none; }
+.edit-section-title {
+  font-family: 'Outfit', sans-serif;
+  font-size: 13px; font-weight: 700; color: var(--text);
+  margin-bottom: 12px; text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.edit-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.edit-row-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
+.edit-field { margin-bottom: 10px; }
+.edit-field label {
+  display: block; font-size: 11px; font-weight: 600;
+  color: var(--text-3); margin-bottom: 4px;
+  text-transform: uppercase; letter-spacing: 0.04em;
+}
+.edit-field input, .edit-field select, .edit-field textarea {
+  width: 100%; background: var(--surface); border: 1px solid var(--border);
+  border-radius: 6px; padding: 8px 10px; font-size: 13px;
+  font-family: 'DM Sans', sans-serif; color: var(--text);
+  outline: none; transition: border-color 0.15s;
+}
+.edit-field input:focus, .edit-field select:focus, .edit-field textarea:focus {
+  border-color: var(--accent);
+}
+.edit-field textarea { resize: vertical; min-height: 60px; }
+.edit-field textarea.lines-editor { min-height: 100px; font-size: 12px; line-height: 1.7; }
+
+.edit-footer {
+  padding: 16px 24px; border-top: 1px solid var(--border);
+  display: flex; align-items: center; gap: 10px;
+  background: var(--panel); flex-shrink: 0;
+}
+.edit-status { font-size: 12px; color: var(--low); margin-left: auto; }
+
+/* ── Summary panel ── */
+.summary-scroll { flex: 1; overflow-y: auto; padding: 24px; }
+.summary-section { margin-bottom: 24px; }
+.summary-header {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 10px;
+}
+.summary-header h3 {
+  font-family: 'Outfit', sans-serif;
+  font-size: 14px; font-weight: 700; color: var(--text);
+}
+.summary-text {
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: 8px; padding: 16px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px; line-height: 1.7; color: var(--text);
+  white-space: pre-wrap; word-break: break-word;
+  max-height: 400px; overflow-y: auto;
+}
+.ai-placeholder {
+  color: var(--text-3); font-size: 13px; padding: 8px 0;
+}
 </style>
 </head>
 <body>
 <div class="app">
 
-  <!-- Sidebar -->
+  <!-- ═══ Sidebar ═══ -->
   <aside class="sidebar" id="sidebar">
     <div class="sidebar-logo">
       <div class="logo-icon">🔥</div>
@@ -131,76 +381,246 @@
     <div class="sidebar-footer" id="sidebarFooter">—</div>
   </aside>
 
-  <!-- Main -->
+  <!-- ═══ Main ═══ -->
   <div class="main">
 
     <!-- Topbar -->
     <header class="topbar">
       <button class="sidebar-toggle" onclick="toggleSidebar()" title="Toggle sidebar">☰</button>
-      <span class="topbar-title">Incident Reports</span>
-      <div id="statusPills" style="display:flex;gap:8px;align-items:center"></div>
-      <div style="display:flex;gap:8px;margin-left:8px">
-        <button class="btn btn-ghost btn-sm" onclick="loadAll()">↺ Refresh</button>
-        <a href="/generate" class="btn btn-primary btn-sm">➕ New Report</a>
+      <span class="topbar-title">Reports</span>
+      <div class="search-box">
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+          <circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/>
+        </svg>
+        <input type="text" id="searchInput" placeholder="Search by incident ID, type, risk..." oninput="onSearch(this.value)">
       </div>
+      <div style="flex:1"></div>
+      <div id="statusPills" style="display:flex;gap:8px;align-items:center"></div>
+      <a href="/generate" class="btn btn-primary btn-sm">+ New Report</a>
     </header>
 
     <div class="content">
 
-      <!-- Summary strip -->
-      <div class="summary-strip">
-        <div class="summary-card">
-          <div class="summary-label">Total Reports</div>
-          <div class="summary-value" id="sTotal">—</div>
-          <div class="summary-sub">all time</div>
+      <!-- ── Summary stats ── -->
+      <div class="stats-grid">
+        <div class="stat-card">
+          <div class="stat-icon total">📊</div>
+          <div>
+            <div class="stat-value" id="sTotal">0</div>
+            <div class="stat-label">Total Reports</div>
+          </div>
         </div>
-        <div class="summary-card accent-critical">
-          <div class="summary-label" style="color:var(--critical)">Pending Review</div>
-          <div class="summary-value" id="sPending" style="color:var(--critical)">—</div>
-          <div class="summary-sub">require human approval</div>
+        <div class="stat-card">
+          <div class="stat-icon pending">⚠️</div>
+          <div>
+            <div class="stat-value" id="sPending" style="color:var(--review)">0</div>
+            <div class="stat-label">Pending Review</div>
+          </div>
         </div>
-        <div class="summary-card accent-high">
-          <div class="summary-label" style="color:var(--high)">Active Incidents</div>
-          <div class="summary-value" id="sIncidents" style="color:var(--high)">—</div>
-          <div class="summary-sub">incident reports</div>
+        <div class="stat-card">
+          <div class="stat-icon fires">🔥</div>
+          <div>
+            <div class="stat-value" id="sIncidents" style="color:var(--critical)">0</div>
+            <div class="stat-label">Incidents</div>
+          </div>
         </div>
-        <div class="summary-card accent-low">
-          <div class="summary-label" style="color:var(--low)">Auto-Approved</div>
-          <div class="summary-value" id="sApproved" style="color:var(--low)">—</div>
-          <div class="summary-sub">no review needed</div>
-        </div>
-      </div>
-
-      <!-- Reports table -->
-      <div class="section-header">
-        <h2>Recent Reports</h2>
-        <span style="font-size:12px;color:var(--text-3)" id="tableCount"></span>
-      </div>
-      <div id="reportsContainer">
-        <div class="table-wrap">
-          <div class="empty-state"><span class="empty-icon">⏳</span><p>Loading…</p></div>
+        <div class="stat-card">
+          <div class="stat-icon quality">📈</div>
+          <div>
+            <div class="stat-value" id="sConfidence" style="color:var(--low)">—</div>
+            <div class="stat-label">Avg Confidence</div>
+          </div>
         </div>
       </div>
 
+      <!-- ── Toolbar: tabs + refresh ── -->
+      <div class="toolbar">
+        <div class="type-tabs" id="typeTabs">
+          <button class="type-tab active" data-type="all" onclick="setType('all')">All <span class="tab-count" id="cAll">0</span></button>
+          <button class="type-tab" data-type="daily" onclick="setType('daily')">Daily <span class="tab-count" id="cDaily">0</span></button>
+          <button class="type-tab" data-type="high_risk" onclick="setType('high_risk')">High Risk <span class="tab-count" id="cHigh">0</span></button>
+          <button class="type-tab" data-type="incident" onclick="setType('incident')">Incident <span class="tab-count" id="cIncident">0</span></button>
+          <button class="type-tab" data-type="final" onclick="setType('final')">Final <span class="tab-count" id="cFinal">0</span></button>
+        </div>
+        <button class="btn btn-ghost btn-sm" onclick="loadReports()" id="refreshBtn">↻ Refresh</button>
+      </div>
+
+      <!-- ── Reports table ── -->
+      <div class="table-wrap" id="tableWrap">
+        <table class="reports-table">
+          <thead>
+            <tr>
+              <th class="sortable" onclick="setSort('generated_at')">
+                Date / Time <span class="sort-arrow active" id="sa-generated_at">↓</span>
+              </th>
+              <th>Type</th>
+              <th class="sortable" onclick="setSort('risk_level')">
+                Risk <span class="sort-arrow" id="sa-risk_level">↓</span>
+              </th>
+              <th>Incident ID</th>
+              <th class="sortable" onclick="setSort('confidence')">
+                Confidence <span class="sort-arrow" id="sa-confidence">↓</span>
+              </th>
+              <th>Review</th>
+              <th style="width:1%"></th>
+            </tr>
+          </thead>
+          <tbody id="tbody">
+            <tr><td colspan="7" class="no-match">Loading...</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- ── Empty state (no reports at all) ── -->
+      <div class="empty-state" id="emptyState" style="display:none">
+        <span class="empty-icon">📭</span>
+        <p>No reports yet</p>
+        <a href="/generate">Generate the first report →</a>
+      </div>
+
+    </div><!-- /content -->
+  </div><!-- /main -->
+</div><!-- /app -->
+
+<!-- ═══ Report viewer panel ═══ -->
+<div class="viewer-backdrop" id="viewerBackdrop" onclick="closeViewer()"></div>
+<div class="viewer-panel" id="viewerPanel">
+  <div class="viewer-header">
+    <div class="viewer-meta" id="viewerMeta">
+      <span class="viewer-title">Report</span>
+    </div>
+    <div class="viewer-tabs">
+      <button class="vtab active" data-tab="view" onclick="setViewerTab('view')">Report</button>
+      <button class="vtab" data-tab="edit" onclick="setViewerTab('edit')">Edit</button>
+      <button class="vtab" data-tab="summary" onclick="setViewerTab('summary')">Summary</button>
+    </div>
+    <div class="viewer-actions">
+      <a id="viewerJsonLink" class="btn btn-ghost btn-sm" target="_blank">JSON</a>
+      <button class="viewer-close" onclick="closeViewer()">✕</button>
     </div>
   </div>
-</div>
-
-<!-- Report viewer modal -->
-<div class="modal-backdrop" id="modal">
-  <div class="modal">
-    <div class="modal-bar">
-      <span id="modalTitle">Report</span>
-      <button class="modal-close" onclick="closeModal()">✕</button>
+  <!-- View tab -->
+  <div class="vtab-content active" id="vtabView" style="flex:1;overflow:hidden">
+    <iframe id="viewerFrame" src="about:blank" style="width:100%;height:100%;border:none"></iframe>
+  </div>
+  <!-- Edit tab -->
+  <div class="vtab-content" id="vtabEdit">
+    <div class="edit-scroll" id="editContent">Loading...</div>
+    <div class="edit-footer">
+      <button class="btn btn-primary" onclick="saveEdits()">Save Changes</button>
+      <button class="btn btn-ghost" onclick="saveAndRerun()">Save & Re-generate</button>
+      <span class="edit-status" id="editStatus"></span>
     </div>
-    <div class="modal-body">
-      <iframe id="modalFrame" src="about:blank"></iframe>
+  </div>
+  <!-- Summary tab -->
+  <div class="vtab-content" id="vtabSummary">
+    <div class="summary-scroll">
+      <div class="summary-section">
+        <div class="summary-header">
+          <h3>Quick Brief</h3>
+          <button class="btn btn-ghost btn-sm" onclick="copySummary('quick')">Copy</button>
+        </div>
+        <div class="summary-text" id="quickSummaryText">Loading...</div>
+      </div>
+      <div class="summary-section">
+        <div class="summary-header">
+          <h3>AI Executive Summary</h3>
+          <div style="display:flex;gap:6px">
+            <button class="btn btn-ghost btn-sm" id="aiCopyBtn" onclick="copySummary('ai')" style="display:none">Copy</button>
+            <button class="btn btn-primary btn-sm" id="aiSumBtn" onclick="generateAiSummary()">Generate</button>
+          </div>
+        </div>
+        <div class="summary-text" id="aiSummaryText" style="display:none"></div>
+        <div class="ai-placeholder" id="aiPlaceholder">Click "Generate" to create a concise AI summary for distribution.</div>
+      </div>
     </div>
   </div>
 </div>
 
 <script>
-// ── Sidebar toggle ──
+/* ═══════════════════════════════════════════════════════════════
+   OBJ-3 Dashboard — Interactive Reports
+   ═══════════════════════════════════════════════════════════════ */
+
+// ── State ──
+let allReports = [];
+let activeType = 'all';
+let searchQuery = '';
+let sortCol = 'generated_at';
+let sortDir = 'desc';
+
+const RISK_ORDER = { CRITICAL: 4, HIGH: 3, MODERATE: 2, LOW: 1 };
+const TYPE_ICONS = { incident: '🔥', high_risk: '⚠', daily: '📅', final: '📝' };
+
+let currentReport = null;
+let currentReportId = null;
+
+const EDIT_SECTIONS = {
+  incident: [
+    { title: 'Situation', fields: [
+      { key: 'spread_summary', type: 'textarea', label: 'Spread Summary' },
+      { key: 'estimated_area_acres', type: 'number', label: 'Area (acres)' },
+      { key: 'incident_status', type: 'select', label: 'Status', options: ['ACTIVE','CONTAINED','CONTROLLED','OUT'] },
+      { key: 'percent_contained', type: 'number', label: 'Contained (%)' },
+    ]},
+    { title: 'Weather', nested: 'weather_observations', fields: [
+      { key: 'temperature_f', type: 'number', label: 'Temperature (°F)' },
+      { key: 'relative_humidity_pct', type: 'number', label: 'Humidity (%)' },
+      { key: 'wind_speed_mph', type: 'number', label: 'Wind Speed (mph)' },
+      { key: 'wind_direction', type: 'text', label: 'Wind Direction' },
+      { key: 'fuel_moisture_1hr', type: 'number', label: '1-hr Fuel Moisture (%)' },
+    ]},
+    { title: 'Fire Behavior', nested: 'fire_behavior', fields: [
+      { key: 'rate_of_spread', type: 'text', label: 'Rate of Spread' },
+      { key: 'flame_length_ft', type: 'number', label: 'Flame Length (ft)' },
+      { key: 'fire_type', type: 'select', label: 'Fire Type', options: ['SURFACE','CROWN','GROUND','MIXED'] },
+    ]},
+    { title: 'Actions & Strategy', fields: [
+      { key: 'immediate_actions', type: 'lines', label: 'Immediate Actions (one per line)' },
+      { key: 'strategic_objectives', type: 'lines', label: 'Strategic Objectives (one per line)' },
+      { key: 'planned_next_actions', type: 'lines', label: 'Planned Actions (one per line)' },
+    ]},
+    { title: 'Predictions', nested: 'projected_activity', fields: [
+      { key: 'hours_12', type: 'textarea', label: '12-Hour Outlook' },
+      { key: 'hours_24', type: 'textarea', label: '24-Hour Outlook' },
+      { key: 'hours_48', type: 'textarea', label: '48-Hour Outlook' },
+      { key: 'hours_72', type: 'textarea', label: '72-Hour Outlook' },
+    ]},
+  ],
+  high_risk: [
+    { title: 'Assessment', fields: [
+      { key: 'risk_summary', type: 'textarea', label: 'Risk Summary' },
+      { key: 'escalation_trigger', type: 'textarea', label: 'Escalation Trigger' },
+    ]},
+    { title: 'Factors', fields: [
+      { key: 'contributing_factors', type: 'lines', label: 'Contributing Factors (one per line)' },
+    ]},
+    { title: 'Recommendations', fields: [
+      { key: 'preventive_recommendations', type: 'json', label: 'Preventive Recommendations (JSON)' },
+    ]},
+  ],
+  daily: [
+    { title: 'Assessment', fields: [
+      { key: 'summary', type: 'textarea', label: 'Summary' },
+      { key: 'weather_summary', type: 'textarea', label: 'Weather Summary' },
+    ]},
+    { title: 'Observations', fields: [
+      { key: 'notable_changes', type: 'lines', label: 'Notable Changes (one per line)' },
+      { key: 'next_check_recommendation', type: 'textarea', label: 'Next Check Recommendation' },
+    ]},
+  ],
+  final: [
+    { title: 'Assessment', fields: [
+      { key: 'response_effectiveness', type: 'textarea', label: 'Response Effectiveness' },
+    ]},
+    { title: 'Lessons & Recommendations', fields: [
+      { key: 'lessons_learned', type: 'lines', label: 'Lessons Learned (one per line)' },
+      { key: 'recommendations_for_future', type: 'lines', label: 'Future Recommendations (one per line)' },
+    ]},
+  ],
+};
+
+// ── Sidebar ──
 function toggleSidebar() {
   const sb = document.getElementById('sidebar');
   sb.classList.toggle('collapsed');
@@ -216,111 +636,570 @@ async function loadStatus() {
     const s = await fetch('/api/status').then(r => r.json());
     const pills = document.getElementById('statusPills');
     const backOk = s.reporter_loaded;
-    const corpus  = s.corpus_chunks > 0;
+    const corpus = s.corpus_chunks > 0;
     pills.innerHTML = `
       <div class="status-pill">
         <span class="dot ${backOk ? 'dot-green' : 'dot-red'}"></span>
         <span>${s.backend}</span>
-        ${s.ollama ? `<span style="color:var(--text-3);font-size:11px">${s.ollama.model}</span>` : ''}
       </div>
       <div class="status-pill">
         <span class="dot ${corpus ? 'dot-green' : 'dot-yellow'}"></span>
-        <span>${s.corpus_chunks} corpus chunks</span>
+        <span>${s.corpus_chunks} corpus</span>
       </div>`;
     document.getElementById('sidebarFooter').textContent =
-      `Backend: ${s.backend} · ${new Date(s.timestamp).toLocaleTimeString()}`;
+      `Backend: ${s.backend} · ${new Date(s.timestamp).toLocaleTimeString('en-US')}`;
   } catch { }
 }
 
-// ── Reports ──
+// ── Format helpers ──
+function fmtDate(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  return isNaN(d) ? iso : d.toLocaleString('en-US', {
+    month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
+  });
+}
+
 function confColor(c) {
   if (c >= 0.8) return 'var(--low)';
   if (c >= 0.6) return 'var(--moderate)';
   return 'var(--critical)';
 }
+
 function riskBadge(r) {
-  const m = {CRITICAL:'critical',HIGH:'high',MODERATE:'moderate',LOW:'low'};
-  return `<span class="badge badge-${m[r]||'low'}">${r||'?'}</span>`;
+  const m = { CRITICAL: 'critical', HIGH: 'high', MODERATE: 'moderate', LOW: 'low' };
+  return `<span class="badge badge-${m[r] || 'low'}">${r || '?'}</span>`;
 }
+
 function typeBadge(t) {
-  const icons = {incident:'🔥',high_risk:'⚠',daily:'📅',final:'📝'};
-  return `<span class="badge badge-${t||'daily'}">${icons[t]||''} ${(t||'').replace('_',' ').toUpperCase()}</span>`;
+  const icon = TYPE_ICONS[t] || '📄';
+  return `<span class="badge badge-${t || 'daily'}">${icon} ${(t || '').replace('_', ' ').toUpperCase()}</span>`;
 }
+
 function reviewBadge(s) {
   return s === 'PENDING_REVIEW'
     ? '<span class="badge badge-review">⚠ PENDING</span>'
     : '<span class="badge badge-approved">✓ APPROVED</span>';
 }
-function fmtDate(iso) {
-  if (!iso) return '—';
-  const d = new Date(iso);
-  return isNaN(d) ? iso : d.toLocaleString([], {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});
+
+function truncateId(id) {
+  return id && id.length > 16 ? id.slice(0, 16) + '…' : (id || '—');
 }
 
-async function loadAll() {
+// ── Load reports ──
+async function loadReports() {
+  const btn = document.getElementById('refreshBtn');
+  btn.textContent = '↻ Loading...';
+  btn.disabled = true;
   try {
-    const reports = await fetch('/api/reports?limit=100').then(r => r.json());
-    document.getElementById('sTotal').textContent    = reports.length;
-    document.getElementById('sPending').textContent  = reports.filter(r => r.review_status === 'PENDING_REVIEW').length;
-    document.getElementById('sIncidents').textContent= reports.filter(r => r.report_type === 'incident').length;
-    document.getElementById('sApproved').textContent = reports.filter(r => r.review_status === 'AUTO_APPROVED').length;
-    document.getElementById('tableCount').textContent = `${reports.length} report${reports.length!==1?'s':''}`;
-
-    const el = document.getElementById('reportsContainer');
-    if (!reports.length) {
-      el.innerHTML = `<div class="table-wrap"><div class="empty-state">
-        <span class="empty-icon">📭</span>
-        <p>No reports yet. <a href="/generate">Generate the first one →</a></p>
-      </div></div>`;
-      return;
-    }
-
-    el.innerHTML = `<div class="table-wrap"><table class="reports-table">
-      <thead><tr>
-        <th>Date / Time</th><th>Type</th><th>Risk</th>
-        <th>Incident ID</th><th>Confidence</th><th>Review</th><th>Actions</th>
-      </tr></thead>
-      <tbody>${reports.map(r => {
-        const conf = r.confidence;
-        const confHtml = conf != null ? `
-          <div class="conf-bar">
-            <div class="conf-track"><div class="conf-fill" style="width:${Math.round(conf*100)}%;background:${confColor(conf)}"></div></div>
-            <span class="conf-label">${Math.round(conf*100)}%</span>
-          </div>` : '<span style="color:var(--text-3)">—</span>';
-        return `<tr>
-          <td style="color:var(--text-2);white-space:nowrap">${fmtDate(r.generated_at)}</td>
-          <td>${typeBadge(r.report_type)}</td>
-          <td>${riskBadge(r.risk_level)}</td>
-          <td><span class="mono">${r.incident_id||'—'}</span></td>
-          <td>${confHtml}</td>
-          <td>${reviewBadge(r.review_status)}</td>
-          <td style="white-space:nowrap;display:flex;gap:6px">
-            ${r.rendered_path
-              ? `<button class="btn btn-ghost btn-sm" onclick="viewReport('${r.rendered_path}','${r.id}')">👁 View</button>`
-              : ''}
-            <a class="btn btn-ghost btn-sm" href="/api/reports/${r.id}" target="_blank">⬇ JSON</a>
-          </td>
-        </tr>`;
-      }).join('')}</tbody>
-    </table></div>`;
-  } catch(e) {
-    document.getElementById('reportsContainer').innerHTML =
-      `<div class="table-wrap"><div class="empty-state"><span class="empty-icon">⚠</span><p>${e}</p></div></div>`;
+    allReports = await fetch('/api/reports?limit=100').then(r => r.json());
+    updateTabCounts();
+    updateStats();
+    applyFilters();
+  } catch (e) {
+    document.getElementById('tbody').innerHTML =
+      `<tr><td colspan="7" class="no-match">Failed to load: ${e.message}</td></tr>`;
+  } finally {
+    btn.textContent = '↻ Refresh';
+    btn.disabled = false;
   }
 }
 
-function viewReport(path, id) {
-  document.getElementById('modalTitle').textContent = id;
-  document.getElementById('modalFrame').src = `/api/report-file?path=${encodeURIComponent(path)}`;
-  document.getElementById('modal').classList.add('open');
-}
-function closeModal() {
-  document.getElementById('modal').classList.remove('open');
-  document.getElementById('modalFrame').src = 'about:blank';
+// ── Tab counts ──
+function updateTabCounts() {
+  document.getElementById('cAll').textContent = allReports.length;
+  document.getElementById('cDaily').textContent = allReports.filter(r => r.report_type === 'daily').length;
+  document.getElementById('cHigh').textContent = allReports.filter(r => r.report_type === 'high_risk').length;
+  document.getElementById('cIncident').textContent = allReports.filter(r => r.report_type === 'incident').length;
+  document.getElementById('cFinal').textContent = allReports.filter(r => r.report_type === 'final').length;
 }
 
+// ── Summary stats ──
+function updateStats() {
+  animateCounter('sTotal', allReports.length);
+  animateCounter('sPending', allReports.filter(r => r.review_status === 'PENDING_REVIEW').length);
+  animateCounter('sIncidents', allReports.filter(r => r.report_type === 'incident').length);
+
+  const withConf = allReports.filter(r => r.confidence != null);
+  if (withConf.length) {
+    const avg = withConf.reduce((s, r) => s + r.confidence, 0) / withConf.length;
+    animateCounter('sConfidence', Math.round(avg * 100), '%');
+  } else {
+    document.getElementById('sConfidence').textContent = '—';
+  }
+}
+
+function animateCounter(elId, target, suffix) {
+  suffix = suffix || '';
+  const el = document.getElementById(elId);
+  if (target === 0) { el.textContent = '0' + suffix; return; }
+  const duration = 500;
+  const start = performance.now();
+  function tick(now) {
+    const p = Math.min((now - start) / duration, 1);
+    const eased = 1 - Math.pow(1 - p, 3);
+    el.textContent = Math.round(eased * target) + suffix;
+    if (p < 1) requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+}
+
+// ── Filter by type ──
+function setType(type) {
+  activeType = type;
+  document.querySelectorAll('.type-tab').forEach(t => {
+    t.classList.toggle('active', t.dataset.type === type);
+  });
+  applyFilters();
+}
+
+// ── Search ──
+function onSearch(q) {
+  searchQuery = q.trim().toLowerCase();
+  applyFilters();
+}
+
+// ── Sort ──
+function setSort(col) {
+  if (sortCol === col) {
+    sortDir = sortDir === 'desc' ? 'asc' : 'desc';
+  } else {
+    sortCol = col;
+    sortDir = 'desc';
+  }
+  // Update arrow indicators
+  document.querySelectorAll('.sort-arrow').forEach(a => {
+    const isActive = a.id === 'sa-' + col;
+    a.classList.toggle('active', isActive);
+    a.classList.toggle('desc', isActive && sortDir === 'desc');
+    a.textContent = isActive ? (sortDir === 'asc' ? '↑' : '↓') : '↕';
+  });
+  applyFilters();
+}
+
+// ── Apply all filters + sort + render ──
+function applyFilters() {
+  let reports = [...allReports];
+
+  // Type filter
+  if (activeType !== 'all') {
+    reports = reports.filter(r => r.report_type === activeType);
+  }
+
+  // Search
+  if (searchQuery) {
+    reports = reports.filter(r =>
+      (r.incident_id || '').toLowerCase().includes(searchQuery) ||
+      (r.report_type || '').toLowerCase().includes(searchQuery) ||
+      (r.risk_level || '').toLowerCase().includes(searchQuery) ||
+      (r.review_status || '').toLowerCase().includes(searchQuery)
+    );
+  }
+
+  // Sort
+  reports.sort((a, b) => {
+    let va, vb;
+    if (sortCol === 'risk_level') {
+      va = RISK_ORDER[a.risk_level] || 0;
+      vb = RISK_ORDER[b.risk_level] || 0;
+    } else if (sortCol === 'confidence') {
+      va = a.confidence ?? -1;
+      vb = b.confidence ?? -1;
+    } else {
+      va = a[sortCol] || '';
+      vb = b[sortCol] || '';
+    }
+    if (typeof va === 'string') {
+      return sortDir === 'asc' ? va.localeCompare(vb) : vb.localeCompare(va);
+    }
+    return sortDir === 'asc' ? (va - vb) : (vb - va);
+  });
+
+  renderTable(reports);
+}
+
+// ── Render table ──
+function renderTable(reports) {
+  const tbody = document.getElementById('tbody');
+  const tableWrap = document.getElementById('tableWrap');
+  const emptyState = document.getElementById('emptyState');
+
+  if (!allReports.length) {
+    tableWrap.style.display = 'none';
+    emptyState.style.display = 'block';
+    return;
+  }
+
+  tableWrap.style.display = 'block';
+  emptyState.style.display = 'none';
+
+  if (!reports.length) {
+    tbody.innerHTML = `<tr><td colspan="7" class="no-match">No reports match your filters</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = reports.map((r, i) => {
+    const conf = r.confidence;
+    const confHtml = conf != null ? `
+      <div class="conf-bar">
+        <div class="conf-track"><div class="conf-fill" style="width:${Math.round(conf * 100)}%;background:${confColor(conf)}"></div></div>
+        <span class="conf-label">${Math.round(conf * 100)}%</span>
+      </div>` : '<span style="color:var(--text-3)">—</span>';
+
+    return `<tr onclick="viewReport('${r.id}', '${r.report_type}', '${r.risk_level}')" style="animation-delay:${i * 25}ms">
+      <td style="color:var(--text-2);white-space:nowrap">${fmtDate(r.generated_at)}</td>
+      <td>${typeBadge(r.report_type)}</td>
+      <td>${riskBadge(r.risk_level)}</td>
+      <td><span class="mono" title="${r.incident_id || ''}">${truncateId(r.incident_id)}</span></td>
+      <td>${confHtml}</td>
+      <td>${reviewBadge(r.review_status)}</td>
+      <td onclick="event.stopPropagation()">
+        <div class="row-actions">
+          <a class="act-btn" href="/api/reports/${r.id}" target="_blank" title="Download JSON">JSON</a>
+          <button class="act-btn act-del" onclick="deleteReport('${r.id}')" title="Delete">✕</button>
+        </div>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+// ── Viewer: open / close / tabs ──
+function viewReport(id, reportType, riskLevel) {
+  currentReportId = id;
+
+  // View tab — iframe
+  document.getElementById('viewerFrame').src = `/api/reports/${id}/render?format=html`;
+  document.getElementById('viewerJsonLink').href = `/api/reports/${id}`;
+
+  // Header meta
+  document.getElementById('viewerMeta').innerHTML = `
+    <span class="viewer-title">${id}</span>
+    ${typeBadge(reportType)}
+    ${riskBadge(riskLevel)}
+  `;
+
+  // Fetch full JSON for Edit + Summary tabs
+  fetch(`/api/reports/${id}`).then(r => r.json()).then(data => {
+    currentReport = data;
+    document.getElementById('editContent').innerHTML = renderEditPanel(data);
+    document.getElementById('quickSummaryText').textContent = buildQuickSummary(data);
+    // Reset AI summary
+    document.getElementById('aiSummaryText').style.display = 'none';
+    document.getElementById('aiSummaryText').textContent = '';
+    document.getElementById('aiPlaceholder').style.display = 'block';
+    document.getElementById('aiCopyBtn').style.display = 'none';
+    document.getElementById('aiSumBtn').disabled = false;
+    document.getElementById('aiSumBtn').textContent = 'Generate';
+  });
+
+  // Default to View tab
+  setViewerTab('view');
+
+  document.getElementById('viewerBackdrop').classList.add('open');
+  document.getElementById('viewerPanel').classList.add('open');
+  document.body.style.overflow = 'hidden';
+}
+
+function closeViewer() {
+  document.getElementById('viewerBackdrop').classList.remove('open');
+  document.getElementById('viewerPanel').classList.remove('open');
+  document.body.style.overflow = '';
+  currentReport = null;
+  currentReportId = null;
+  document.getElementById('editStatus').textContent = '';
+  setTimeout(() => { document.getElementById('viewerFrame').src = 'about:blank'; }, 350);
+}
+
+function setViewerTab(tab) {
+  document.querySelectorAll('.vtab').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+  document.querySelectorAll('.vtab-content').forEach(c => c.classList.remove('active'));
+  document.getElementById('vtab' + tab.charAt(0).toUpperCase() + tab.slice(1)).classList.add('active');
+}
+
+// ── Delete report ──
+async function deleteReport(id) {
+  if (!confirm(`Delete report ${id}?`)) return;
+  try {
+    const res = await fetch(`/api/reports/${id}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error((await res.json()).detail || 'Delete failed');
+    await loadReports();
+  } catch (e) {
+    alert('Delete failed: ' + e.message);
+  }
+}
+
+// ── Keyboard shortcuts ──
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') closeViewer();
+  if (e.key === '/' && document.activeElement.tagName !== 'INPUT') {
+    e.preventDefault();
+    document.getElementById('searchInput').focus();
+  }
+});
+
+// ══════════════════════════════════════════════════════════════
+// ── Edit panel ──
+// ══════════════════════════════════════════════════════════════
+
+function escapeHtml(s) {
+  return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function getNestedValue(obj, path) {
+  return path.split('.').reduce((o, k) => o?.[k], obj);
+}
+
+function renderEditPanel(data) {
+  const sections = EDIT_SECTIONS[data.report_type] || [];
+  let html = renderQualitySuggestions(data);
+
+  for (const sec of sections) {
+    html += `<div class="edit-section"><div class="edit-section-title">${sec.title}</div>`;
+    const isRow = sec.fields.length >= 3 && sec.fields.every(f => f.type === 'number' || f.type === 'text' || f.type === 'select');
+    if (isRow) html += '<div class="edit-row-3">';
+
+    for (const f of sec.fields) {
+      const fullKey = sec.nested ? `${sec.nested}.${f.key}` : f.key;
+      const val = sec.nested ? getNestedValue(data, `${sec.nested}.${f.key}`) : data[f.key];
+      html += renderEditField(fullKey, f, val);
+    }
+
+    if (isRow) html += '</div>';
+    html += '</div>';
+  }
+  return html;
+}
+
+function renderEditField(fullKey, fieldDef, value) {
+  const label = fieldDef.label || fullKey.split('.').pop().replace(/_/g, ' ');
+  const dk = `data-key="${escapeHtml(fullKey)}"`;
+
+  if (fieldDef.type === 'textarea') {
+    return `<div class="edit-field"><label>${escapeHtml(label)}</label>
+      <textarea ${dk} rows="3">${escapeHtml(value)}</textarea></div>`;
+  }
+  if (fieldDef.type === 'number') {
+    return `<div class="edit-field"><label>${escapeHtml(label)}</label>
+      <input type="number" ${dk} value="${value ?? ''}" step="any"></div>`;
+  }
+  if (fieldDef.type === 'text') {
+    return `<div class="edit-field"><label>${escapeHtml(label)}</label>
+      <input type="text" ${dk} value="${escapeHtml(value)}"></div>`;
+  }
+  if (fieldDef.type === 'select') {
+    const opts = (fieldDef.options || []).map(o =>
+      `<option value="${o}"${o === value ? ' selected' : ''}>${o}</option>`
+    ).join('');
+    return `<div class="edit-field"><label>${escapeHtml(label)}</label>
+      <select ${dk}>${opts}</select></div>`;
+  }
+  if (fieldDef.type === 'lines') {
+    const text = Array.isArray(value) ? value.join('\n') : (value ?? '');
+    return `<div class="edit-field"><label>${escapeHtml(label)}</label>
+      <textarea ${dk} data-type="lines" class="lines-editor" rows="5">${escapeHtml(text)}</textarea></div>`;
+  }
+  if (fieldDef.type === 'json') {
+    const text = value != null ? JSON.stringify(value, null, 2) : '[]';
+    return `<div class="edit-field"><label>${escapeHtml(label)}</label>
+      <textarea ${dk} data-type="json" rows="8" style="font-family:'JetBrains Mono',monospace;font-size:12px">${escapeHtml(text)}</textarea></div>`;
+  }
+  return '';
+}
+
+function renderQualitySuggestions(data) {
+  const tips = [];
+  const conf = data.report_confidence;
+  if (conf != null && conf < 0.70) {
+    tips.push({ icon: '⚠️', text: `Low confidence (${Math.round(conf*100)}%). Add operator ground-truth notes and re-generate for better accuracy.` });
+  }
+  if ((data.data_quality_score || 0) < 0.75) {
+    tips.push({ icon: 'ℹ️', text: 'Some data sources were unavailable. Verify weather and fire behavior values against local station readings.' });
+  }
+  const dc = data.data_completeness || {};
+  if (dc.fema_nri === false) {
+    tips.push({ icon: 'ℹ️', text: 'FEMA NRI data was unavailable — vulnerability assessments may need manual correction.' });
+  }
+  if ((data.grounding_search_count || 0) < 5) {
+    tips.push({ icon: '⚠️', text: `Only ${data.grounding_search_count || 0} corpus sources used. Low grounding increases hallucination risk.` });
+  }
+  tips.push({ icon: '💡', text: 'To reduce errors: provide operator notes with observed conditions, upload field photos, and verify numbers against local sensors.' });
+
+  return `<div class="edit-suggestions">
+    <div class="suggestions-title">Quality Suggestions</div>
+    ${tips.map(t => `<div class="suggestion"><span class="suggestion-icon">${t.icon}</span><span>${t.text}</span></div>`).join('')}
+  </div>`;
+}
+
+function collectEdits() {
+  const updates = {};
+  document.querySelectorAll('#editContent [data-key]').forEach(el => {
+    const key = el.dataset.key;
+    const dtype = el.dataset.type;
+    let val;
+    if (dtype === 'lines') {
+      val = el.value.split('\n').map(s => s.trim()).filter(Boolean);
+    } else if (dtype === 'json') {
+      try { val = JSON.parse(el.value); } catch { return; }
+    } else if (el.type === 'number') {
+      val = el.value === '' ? null : parseFloat(el.value);
+    } else {
+      val = el.value;
+    }
+    updates[key] = val;
+  });
+  return updates;
+}
+
+async function saveEdits() {
+  if (!currentReportId) return;
+  const updates = collectEdits();
+  const status = document.getElementById('editStatus');
+  status.textContent = 'Saving...';
+  status.style.color = 'var(--text-3)';
+  try {
+    const res = await fetch(`/api/reports/${currentReportId}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(updates),
+    });
+    if (!res.ok) throw new Error((await res.json()).detail || 'Save failed');
+    const result = await res.json();
+    status.textContent = `Saved ${result.updated.length} fields`;
+    status.style.color = 'var(--low)';
+    // Refresh the View tab iframe
+    document.getElementById('viewerFrame').src = `/api/reports/${currentReportId}/render?format=html`;
+    // Refresh table
+    loadReports();
+  } catch (e) {
+    status.textContent = 'Error: ' + e.message;
+    status.style.color = 'var(--critical)';
+  }
+}
+
+function saveAndRerun() {
+  saveEdits().then(() => {
+    if (confirm('Edits saved. Open the Generate page to re-run with corrected data?')) {
+      window.location.href = '/generate';
+    }
+  });
+}
+
+// ══════════════════════════════════════════════════════════════
+// ── Summary panel ──
+// ══════════════════════════════════════════════════════════════
+
+function buildQuickSummary(data) {
+  if (!data) return 'No report data.';
+  const type = data.report_type;
+  const risk = data.risk_level || '?';
+  const conf = data.report_confidence != null ? Math.round(data.report_confidence * 100) + '%' : '?';
+  const date = fmtDate(data.generated_at);
+  const L = [];
+
+  if (type === 'incident') {
+    L.push(`SITUATION BRIEF — ${data.incident_name || 'Active Incident'}`);
+    L.push(`${date}  |  ${risk}  |  ${conf} confidence`);
+    L.push('');
+    L.push('SITUATION');
+    if (data.spread_summary) L.push(`  ${data.spread_summary}`);
+    const w = data.weather_observations;
+    if (w) {
+      const p = [];
+      if (w.temperature_f != null) p.push(`${w.temperature_f}°F`);
+      if (w.relative_humidity_pct != null) p.push(`${w.relative_humidity_pct}% RH`);
+      if (w.wind_speed_mph != null) p.push(`${w.wind_speed_mph} mph ${w.wind_direction || ''}`);
+      if (w.fuel_moisture_1hr != null) p.push(`Fuel ${w.fuel_moisture_1hr}%`);
+      if (p.length) L.push(`  Weather: ${p.join(' | ')}`);
+    }
+    if (data.estimated_area_acres) L.push(`  Area: ~${data.estimated_area_acres} acres`);
+    if (data.immediate_actions?.length) {
+      L.push(''); L.push('TOP ACTIONS');
+      data.immediate_actions.slice(0, 3).forEach((a, i) =>
+        L.push(`  ${i+1}. ${a.length > 140 ? a.slice(0,140) + '…' : a}`)
+      );
+    }
+    if (data.projected_activity?.hours_24) {
+      L.push(''); L.push('24H OUTLOOK');
+      L.push(`  ${data.projected_activity.hours_24}`);
+    }
+    if (data.resource_requirements?.length) {
+      L.push(''); L.push('RESOURCES');
+      data.resource_requirements.forEach(r =>
+        L.push(`  ${r.quantity}x ${r.ics_type ? r.ics_type + ' ' : ''}${r.resource_type}`)
+      );
+    }
+  } else if (type === 'high_risk') {
+    L.push(`HIGH RISK ALERT`);
+    L.push(`${date}  |  ${risk}  |  ${conf} confidence`);
+    L.push('');
+    if (data.risk_summary) L.push(data.risk_summary);
+    if (data.contributing_factors?.length) {
+      L.push(''); L.push('FACTORS');
+      data.contributing_factors.forEach(f => L.push(`  - ${f}`));
+    }
+    if (data.preventive_recommendations?.length) {
+      L.push(''); L.push('ACTIONS');
+      data.preventive_recommendations.forEach(r => L.push(`  [${r.priority}] ${r.title}`));
+    }
+    if (data.escalation_trigger) { L.push(''); L.push(`ESCALATION: ${data.escalation_trigger}`); }
+  } else if (type === 'daily') {
+    L.push(`DAILY SITUATION REPORT`);
+    L.push(`${date}  |  ${risk}  |  ${conf} confidence`);
+    L.push('');
+    if (data.summary) L.push(data.summary);
+    if (data.weather_summary) { L.push(''); L.push(`Weather: ${data.weather_summary}`); }
+    if (data.next_check_recommendation) { L.push(''); L.push(`Next: ${data.next_check_recommendation}`); }
+  } else if (type === 'final') {
+    L.push(`FINAL REPORT — ${data.incident_name || 'Incident'}`);
+    L.push(`${date}  |  ${conf} confidence`);
+    L.push('');
+    if (data.response_effectiveness) L.push(data.response_effectiveness);
+    if (data.lessons_learned?.length) {
+      L.push(''); L.push('LESSONS');
+      data.lessons_learned.forEach(l => L.push(`  - ${l}`));
+    }
+  }
+  L.push(''); L.push('---'); L.push('AI-generated. Not for operational use without human review.');
+  return L.join('\n');
+}
+
+async function generateAiSummary() {
+  if (!currentReportId) return;
+  const btn = document.getElementById('aiSumBtn');
+  btn.disabled = true; btn.textContent = 'Generating...';
+  try {
+    const res = await fetch(`/api/reports/${currentReportId}/summarize`, { method: 'POST' });
+    if (!res.ok) throw new Error((await res.json()).detail || 'Failed');
+    const { summary } = await res.json();
+    document.getElementById('aiSummaryText').textContent = summary;
+    document.getElementById('aiSummaryText').style.display = 'block';
+    document.getElementById('aiPlaceholder').style.display = 'none';
+    document.getElementById('aiCopyBtn').style.display = 'inline-flex';
+    btn.textContent = 'Regenerate';
+  } catch (e) {
+    document.getElementById('aiSummaryText').textContent = 'Error: ' + e.message;
+    document.getElementById('aiSummaryText').style.display = 'block';
+    document.getElementById('aiPlaceholder').style.display = 'none';
+    btn.textContent = 'Retry';
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function copySummary(type) {
+  const el = type === 'ai'
+    ? document.getElementById('aiSummaryText')
+    : document.getElementById('quickSummaryText');
+  navigator.clipboard.writeText(el.textContent).then(() => {
+    const btn = el.closest('.summary-section').querySelector('.btn');
+    const orig = btn.textContent;
+    btn.textContent = 'Copied!';
+    setTimeout(() => { btn.textContent = orig; }, 1500);
+  });
+}
+
+// ── Init ──
 loadStatus();
-loadAll();
+loadReports();
 setInterval(loadStatus, 30000);
 </script>
 </body>

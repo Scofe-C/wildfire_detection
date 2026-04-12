@@ -23,7 +23,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -134,7 +134,7 @@ async def status() -> JSONResponse:
 
     # Corpus
     corpus_dir = _ROOT / cfg.get("corpus", {}).get("local_dir", "corpus/")
-    corpus_count = len(list(corpus_dir.glob("processed/*.json"))) if corpus_dir.exists() else 0
+    corpus_count = len(list(corpus_dir.glob("processed/**/*.json"))) if corpus_dir.exists() else 0
 
     return JSONResponse({
         "backend": backend,
@@ -201,6 +201,21 @@ async def get_report(report_id: str) -> JSONResponse:
     return JSONResponse(json.loads(matches[0].read_text(encoding="utf-8")))
 
 
+@app.delete("/api/reports/{report_id}")
+async def delete_report_endpoint(report_id: str) -> JSONResponse:
+    """Delete a report and its companion files by ID."""
+    from src.reports.report_manager import delete_report  # noqa
+
+    reports_dir = _ROOT / "reports" / "disaster_reports"
+    deleted = delete_report(report_id, reports_dir)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"Report {report_id} not found")
+    return JSONResponse({
+        "deleted": [str(p.relative_to(_ROOT)) for p in deleted],
+        "count": len(deleted),
+    })
+
+
 @app.get("/api/report-file")
 async def serve_report_file(path: str) -> FileResponse:
     """Serve a report HTML or MD file from disk.
@@ -223,6 +238,212 @@ async def serve_report_file(path: str) -> FileResponse:
 
     media = "text/html" if full.suffix == ".html" else "text/plain"
     return FileResponse(str(full), media_type=media)
+
+
+@app.get("/api/reports/{report_id}/render")
+async def render_report_on_demand(report_id: str, format: str = "auto") -> HTMLResponse:
+    """Render a saved JSON report to HTML or Markdown on demand.
+
+    This enables JSON-only storage while still allowing readable report views.
+    The rendered output is NOT saved to disk — it is computed on the fly.
+
+    Parameters
+    ----------
+    report_id:
+        Report filename stem (e.g. ``IncidentReport_20260330_0338``).
+    format:
+        ``"html"``, ``"md"``, or ``"auto"`` (picks based on report type).
+    """
+    from src.models.obj3_gemini.renderer import render_html, render_markdown, markdown_to_html  # noqa
+    from src.models.obj3_gemini.schemas import SCHEMA_MAP  # noqa
+
+    reports_dir = _ROOT / "reports" / "disaster_reports"
+    matches = list(reports_dir.rglob(f"{report_id}.json"))
+    if not matches:
+        raise HTTPException(status_code=404, detail=f"Report {report_id} not found")
+
+    data = json.loads(matches[0].read_text(encoding="utf-8"))
+    report_type = data.get("report_type", "daily")
+
+    schema_cls = SCHEMA_MAP.get(report_type)
+    if schema_cls is None:
+        raise HTTPException(status_code=400, detail=f"Unknown report_type: {report_type}")
+
+    try:
+        parsed = schema_cls.model_validate(data)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"Schema validation failed: {exc}") from exc
+
+    template_dir = _ROOT / "templates"
+
+    # Determine output format
+    if format == "auto":
+        format = "html" if report_type in ("incident", "final") else "md"
+
+    if format == "html":
+        if report_type in ("incident", "final"):
+            content = render_html(parsed, template_dir)
+        else:
+            md_content = render_markdown(parsed, template_dir)
+            content = markdown_to_html(md_content)
+        return HTMLResponse(content)
+    else:
+        md_content = render_markdown(parsed, template_dir)
+        return HTMLResponse(f"<pre style='font-family:monospace;white-space:pre-wrap;padding:24px'>{md_content}</pre>")
+
+
+# ---------------------------------------------------------------------------
+# API — edit report (PATCH)
+# ---------------------------------------------------------------------------
+
+_PROTECTED_FIELDS = frozenset({
+    "incident_id", "report_type", "generated_at", "disclaimer",
+    "operating_mode", "data_quality_score", "data_completeness",
+    "human_input_included", "data_sources_used", "grounding_sources",
+    "grounding_search_count", "review_status", "human_review_required",
+    "disagreement_flag",
+})
+
+
+@app.patch("/api/reports/{report_id}")
+async def update_report(report_id: str, request: Request) -> JSONResponse:
+    """Update editable fields in a saved report.
+
+    Protected metadata fields are silently ignored.
+    After update, the companion HTML/MD file is re-rendered.
+    """
+    body = await request.json()
+
+    reports_dir = _ROOT / "reports" / "disaster_reports"
+    matches = list(reports_dir.rglob(f"{report_id}.json"))
+    if not matches:
+        raise HTTPException(status_code=404, detail=f"Report {report_id} not found")
+
+    json_path = matches[0]
+    data = json.loads(json_path.read_text(encoding="utf-8"))
+
+    # Apply updates, skipping protected fields and handling dot-notation
+    updated_keys: list[str] = []
+    for key, value in body.items():
+        if key in _PROTECTED_FIELDS:
+            continue
+        if "." in key:
+            parts = key.split(".")
+            target = data
+            for part in parts[:-1]:
+                if part not in target or target[part] is None:
+                    target[part] = {}
+                target = target[part]
+            target[parts[-1]] = value
+        else:
+            data[key] = value
+        updated_keys.append(key)
+
+    if not updated_keys:
+        return JSONResponse({"updated": [], "report_id": report_id})
+
+    # Stamp edit metadata
+    data["last_edited_at"] = datetime.now(tz=UTC).isoformat()
+    data["edited_by_human"] = True
+
+    # Save JSON
+    json_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+    # Re-render companion file (best-effort)
+    try:
+        from src.models.obj3_gemini.renderer import render_html, render_markdown  # noqa
+        from src.models.obj3_gemini.schemas import SCHEMA_MAP  # noqa
+
+        schema_cls = SCHEMA_MAP.get(data.get("report_type", ""))
+        if schema_cls:
+            parsed = schema_cls.model_validate(data)
+            template_dir = _ROOT / "templates"
+            if data["report_type"] in ("incident", "final"):
+                content = render_html(parsed, template_dir)
+                json_path.with_suffix(".html").write_text(content, encoding="utf-8")
+            else:
+                content = render_markdown(parsed, template_dir)
+                json_path.with_suffix(".md").write_text(content, encoding="utf-8")
+    except Exception as exc:
+        logger.warning("Failed to re-render companion after edit: %s", exc)
+
+    return JSONResponse({
+        "updated": updated_keys,
+        "report_id": report_id,
+        "edited_at": data["last_edited_at"],
+    })
+
+
+# ---------------------------------------------------------------------------
+# API — summarize report (AI)
+# ---------------------------------------------------------------------------
+
+@app.post("/api/reports/{report_id}/summarize")
+async def summarize_report(report_id: str) -> JSONResponse:
+    """Generate a concise AI executive summary using Gemini."""
+    reports_dir = _ROOT / "reports" / "disaster_reports"
+    matches = list(reports_dir.rglob(f"{report_id}.json"))
+    if not matches:
+        raise HTTPException(status_code=404, detail=f"Report {report_id} not found")
+
+    data = json.loads(matches[0].read_text(encoding="utf-8"))
+
+    def _run() -> str:
+        return _generate_ai_summary(data)
+
+    try:
+        summary = await asyncio.to_thread(_run)
+    except Exception as exc:
+        logger.exception("AI summarize failed")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    return JSONResponse({"summary": summary, "report_id": report_id})
+
+
+def _generate_ai_summary(report_data: dict[str, Any]) -> str:
+    """Call Gemini directly for a concise executive summary."""
+    try:
+        from google import genai  # noqa
+        from google.genai import types as genai_types  # noqa
+    except ImportError:
+        return "AI summary unavailable — google-genai package not installed."
+
+    api_key = os.environ.get("GEMINI_API_KEY", "")
+    if not api_key:
+        return "AI summary unavailable — GEMINI_API_KEY not set."
+
+    import yaml as _yaml  # noqa
+    try:
+        with open(_config_path, encoding="utf-8") as f:
+            cfg = _yaml.safe_load(f) or {}
+    except Exception:
+        cfg = {}
+
+    model = cfg.get("gemini_dev", {}).get("model", "gemini-2.5-flash")
+    client = genai.Client(api_key=api_key)
+
+    report_str = json.dumps(report_data, indent=2)
+    if len(report_str) > 8000:
+        report_str = report_str[:8000] + "\n...(truncated)"
+
+    prompt = (
+        "You are a wildfire emergency communications specialist. "
+        "Distill this AI-generated wildfire report into a CONCISE executive "
+        "summary (3-5 sentences, under 100 words) for rapid distribution to "
+        "incident commanders, emergency managers, and local officials.\n\n"
+        "Focus on: (1) current situation and threat level, (2) most critical "
+        "action needed NOW, (3) key risk or outlook. Use specific numbers "
+        "(temperatures, wind speeds, areas, probabilities) from the data.\n\n"
+        "Write in plain, direct language. No disclaimers or metadata.\n\n"
+        f"Report:\n{report_str}"
+    )
+
+    response = client.models.generate_content(
+        model=model,
+        contents=prompt,
+        config=genai_types.GenerateContentConfig(temperature=0.0),
+    )
+    return response.text.strip()
 
 
 # ---------------------------------------------------------------------------
@@ -294,12 +515,17 @@ async def generate_report(
         "propagator_summary": propagator_summary,
         "telemetry": telemetry or None,
         "fema_nri_tracts": [],
-        "bias_report": {"gate_result": "PASS", "observed_disparity": 0.0},
+        "bias_report": None,          # Dashboard-generated reports have no bias evaluation
         "metrics": {},
-        "source_status": {
-            "FIRMS": {"status": "OK", "detail": "Operator-supplied"},
-            "Open-Meteo": {"status": "OK", "detail": "Operator-supplied"},
-            "SMAP": {"status": "OK", "detail": "Via Open-Meteo soil moisture"},
+        "source_status": None,         # Operator-supplied data has no staleness tracking
+        "data_completeness": {
+            "xgboost_predictions": bool(xgboost_top_cells),
+            "obj2_simulation": obj2_sim is not None,
+            "firms_hotspots": firms_hotspot_count > 0,
+            "telemetry": bool(telemetry),
+            "fema_nri": False,
+            "bias_report": False,
+            "source_status": False,
         },
     }
 

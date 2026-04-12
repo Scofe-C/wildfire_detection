@@ -1,0 +1,19 @@
+{
+    "name": "eaton_fire_jan2025",
+    "description": "Eaton Fire simulation — Jan 7 2025 ignition, testing slope/aspect + wind gust features",
+    "params": {
+        "n_simulations": 50,
+        "fire_period_length_hr": 1.0,
+        "weather_duration_hr": 24,
+        "cell_size_m": 500
+    },
+    "aoi_bounds": [-118.15, 34.12, -117.95, 34.28],
+    "ignition_points": [
+        [34.189, -118.103]
+    ],
+    "weather_csv": "configs/simulations/eaton_weather.csv",
+    "raster_paths": {
+        "dem": "data/static/dem/elev_clip.tif",
+        "fuel": "data/static/landfire/fbfm40/fuel_clip.tif"
+    }
+}

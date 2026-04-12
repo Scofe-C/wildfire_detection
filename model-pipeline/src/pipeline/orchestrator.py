@@ -126,7 +126,7 @@ class PipelineResult:
 def load_pipeline_config(config_path: str | Path | None = None) -> PipelineConfig:
     if config_path is None:
         config_path = Path(__file__).resolve().parents[2] / "configs" / "model_config.yaml"
-    with open(config_path) as f:
+    with open(config_path, encoding="utf-8") as f:
         raw = yaml.safe_load(f)
 
     p = raw["paths"]
@@ -373,7 +373,8 @@ def run_training_pipeline(
             # Alert if soil moisture importance drops below threshold (feature drift signal)
             import yaml as _yaml
             _shap_cfg = (_yaml.safe_load(open(
-                Path(__file__).resolve().parents[2] / "configs" / "model_config.yaml"
+                Path(__file__).resolve().parents[2] / "configs" / "model_config.yaml",
+                encoding="utf-8",
             )) or {}).get("shap", {})
             _min_soil_importance = _shap_cfg.get("min_soil_moisture_importance", 0.05)
             _soil_importance = shap_importances.get("soil_moisture_0_to_7cm", 1.0)
@@ -419,6 +420,33 @@ def run_training_pipeline(
 
         result.bias_gate_passed = True  # non-blocking: pipeline proceeds regardless
 
+        # ── 9.5. Save monitoring baselines to GCS ────────────────────────────
+        # These are used by monitor_runner.py to detect feature/prediction drift.
+        # GCS path convention: {baseline_gcs_prefix}/{run_id}/feature_baseline.json
+        #                      {baseline_gcs_prefix}/{run_id}/prediction_baseline.json
+        # Required setup: GCS_BUCKET_NAME env var or config.gcs_bucket must point
+        # to the same bucket referenced in monitoring_config.yaml.
+        if not config.local_model_dir:
+            try:
+                from src.monitoring.drift_detector import save_baseline
+                from src.monitoring.performance_monitor import save_prediction_baseline
+                from src.preprocessing.feature_engineering import FEATURES as _BASELINE_FEATURES
+
+                _baseline_prefix = "model-artifacts/baselines"
+                save_baseline(
+                    train_df, _BASELINE_FEATURES, run_id,
+                    config.gcs_bucket, _baseline_prefix,
+                )
+                save_prediction_baseline(
+                    winner_y_prob, run_id,
+                    config.gcs_bucket, _baseline_prefix,
+                )
+                logger.info("[%s] Monitoring baselines saved to GCS", run_id)
+            except Exception as e:
+                logger.warning("[%s] Baseline saving failed (non-blocking): %s", run_id, e)
+        else:
+            logger.debug("[%s] Skipping GCS baseline save (local dev mode)", run_id)
+
         # ── 10. Model Registry push (Vertex AI or local) ──────────────────────
         if result.is_deployable:
             if config.local_model_dir:
@@ -429,7 +457,7 @@ def run_training_pipeline(
                 out_dir.mkdir(parents=True, exist_ok=True)
                 model_file = out_dir / ("model.bst" if winner_name == "xgboost" else "model.txt")
                 if winner_name == "xgboost":
-                    winner._model.save_model(str(model_file))
+                    winner._model.get_booster().save_model(str(model_file))
                 else:
                     winner._model.booster_.save_model(str(model_file))
                 metadata = {

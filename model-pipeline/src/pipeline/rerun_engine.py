@@ -111,7 +111,14 @@ class RerunEngine:
             The preprocessed feature matrix passed to the model.
         """
         from src.preprocessing.feature_engineering import full_pipeline
-        from src.validation.model_selector import assign_risk_tier  # type: ignore[import]
+        def assign_risk_tier(score: float) -> str:
+            if score >= 0.65:
+                return "CRITICAL"
+            elif score >= 0.365:
+                return "HIGH"
+            elif score >= 0.15:
+                return "MEDIUM"
+            return "LOW"
 
         model_type = "xgb" if self._framework == "xgboost" else "lgbm"
         X, _ = full_pipeline(df, model_type=model_type, fit_medians=self._medians)
@@ -173,8 +180,8 @@ class RerunEngine:
         from src.pipeline.bridge import build_pipeline_result  # type: ignore[import]
 
         return build_pipeline_result(
-            predictions_df=predictions,
-            input_df=input_df,
-            obj2_result=obj2_sim,
-            firms_data=firms,
+            obj1_predictions=predictions,
+            obj1_input=input_df,
+            obj2_simulation=obj2_sim,
+            firms_hotspots=firms,
         )

@@ -17,8 +17,9 @@ def test_psi_identical_distributions():
 
 
 def test_psi_very_different_distributions():
-    baseline = np.zeros(500)
-    current = np.ones(500)
+    rng = np.random.default_rng(1)
+    baseline = rng.normal(0, 1, 500)
+    current = rng.normal(10, 1, 500)  # large mean shift
     psi = _compute_psi(baseline, current)
     assert psi > 0.25, f"Expected high PSI for fully shifted distribution, got {psi}"
 

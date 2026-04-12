@@ -73,6 +73,7 @@ notifications:
     - "rollback"
     - "shap_drift"
     - "critical_fire_risk"
+    - "data_drift"           # Required for drift detection alerts from monitor_runner
 
 # ---------------------------------------------------------------------------
 # OBJ-2 - Cell2Fire fire spread simulation

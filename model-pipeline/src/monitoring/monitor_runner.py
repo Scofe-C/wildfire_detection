@@ -19,7 +19,7 @@ _COOLDOWN_FILE = Path(__file__).resolve().parents[2] / "reports" / ".last_retrai
 
 
 def _load_monitoring_config() -> dict[str, Any]:
-    with open(_CONFIG_PATH) as f:
+    with open(_CONFIG_PATH, encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 
@@ -59,6 +59,39 @@ def _trigger_github_retrain(repo: str, workflow_file: str, github_token: str) ->
     except Exception as e:
         logger.error("Failed to trigger GitHub retrain: %s", e)
         return False
+
+
+def resolve_latest_baseline_run_id(bucket: str, baseline_prefix: str) -> str | None:
+    """List baseline directories in GCS and return the newest run_id.
+
+    Baselines are stored at ``{baseline_prefix}/{run_id}/feature_baseline.json``.
+    We list all blobs under the prefix, extract unique run_id subdirectories,
+    and return the lexicographically last one (UUIDs and timestamps sort correctly).
+
+    Returns None if no baselines exist.
+    """
+    try:
+        from google.cloud import storage  # type: ignore[import]
+
+        client = storage.Client()
+        blobs = client.list_blobs(bucket, prefix=baseline_prefix + "/")
+        run_ids: set[str] = set()
+        for blob in blobs:
+            # Path: baselines/{run_id}/feature_baseline.json
+            parts = blob.name[len(baseline_prefix):].strip("/").split("/")
+            if len(parts) >= 2:
+                run_ids.add(parts[0])
+
+        if not run_ids:
+            logger.warning("No baselines found under gs://%s/%s", bucket, baseline_prefix)
+            return None
+
+        latest = sorted(run_ids)[-1]
+        logger.info("Resolved latest baseline run_id: %s (from %d candidates)", latest, len(run_ids))
+        return latest
+    except Exception as e:
+        logger.error("Failed to resolve latest baseline: %s", e)
+        return None
 
 
 def run_monitoring_check(
@@ -103,10 +136,14 @@ def run_monitoring_check(
     }
 
     # ── 1. Load baselines ──────────────────────────────────────────────────────
-    if not baseline_run_id:
-        logger.warning("No baseline_run_id provided — skipping drift check")
-        result["error"] = "No baseline_run_id"
-        return result
+    # Resolve "latest" or empty baseline_run_id by scanning GCS
+    if not baseline_run_id or baseline_run_id == "latest":
+        baseline_run_id = resolve_latest_baseline_run_id(bucket, baseline_prefix)
+        if not baseline_run_id:
+            logger.warning("No baselines found in GCS — skipping drift check")
+            result["error"] = "No baselines found in GCS. Run training first to generate baselines."
+            return result
+        logger.info("Using resolved baseline_run_id: %s", baseline_run_id)
 
     try:
         feature_baseline = load_baseline(bucket, baseline_prefix, baseline_run_id)
