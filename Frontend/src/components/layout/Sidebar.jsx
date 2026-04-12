@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import {
   LayoutDashboard, GitBranch, BrainCircuit, Map, FileText, Flame,
-  ChevronRight, Activity
+  ChevronRight, Activity, Layers,
 } from 'lucide-react';
 
 const NAV_ITEMS = [
@@ -10,13 +10,14 @@ const NAV_ITEMS = [
   {
     id: 'model-pipeline', label: 'Model Pipeline',   icon: BrainCircuit,    badge: null,
     children: [
-      { id: 'obj1', label: 'OBJ-1 Ignition',  icon: Activity },
-      { id: 'obj2', label: 'OBJ-2 Spread Sim', icon: Flame },
-      { id: 'obj3', label: 'OBJ-3 Reporter',   icon: FileText },
+      { id: 'obj1', label: 'OBJ-1 Ignition',   icon: Activity },
+      { id: 'obj2', label: 'OBJ-2 Spread Sim',  icon: Flame },
+      { id: 'obj3', label: 'OBJ-3 Reporter',    icon: FileText },
     ],
   },
-  { id: 'risk-monitor',   label: 'Risk Monitor',     icon: Map,             badge: '1 CRIT' },
-  { id: 'reports',        label: 'Incident Reports', icon: FileText,        badge: null },
+  { id: 'fire-map',       label: 'Fire Detection Map', icon: Layers, badge: '2 CRIT' },
+  { id: 'risk-monitor',   label: 'Risk Monitor',       icon: Map,    badge: null },
+  { id: 'reports',        label: 'Incident Reports',   icon: FileText, badge: null },
 ];
 
 export default function Sidebar({ activeView, onNavigate }) {
@@ -29,7 +30,9 @@ export default function Sidebar({ activeView, onNavigate }) {
         <div className="flex items-center gap-2">
           <Flame className="text-risk-high w-5 h-5 flex-shrink-0" />
           <div>
-            <div className="text-text-primary text-xs font-semibold leading-tight tracking-wide uppercase">Wildfire Detection</div>
+            <div className="text-text-primary text-xs font-semibold leading-tight tracking-wide uppercase">
+              Wildfire Detection
+            </div>
             <div className="text-text-muted text-[10px] font-mono leading-tight mt-0.5">MLOps Dashboard</div>
           </div>
         </div>
@@ -98,12 +101,19 @@ export default function Sidebar({ activeView, onNavigate }) {
 
       {/* Footer system status */}
       <div className="px-3 py-3 border-t border-border-subtle">
-        <div className="flex items-center gap-1.5 mb-1.5">
+        <div className="flex items-center gap-1.5 mb-1">
           <div className="w-1.5 h-1.5 rounded-full bg-accent-green animate-pulse" />
-          <span className="text-[10px] text-text-muted font-mono">DAG RUNNING</span>
+          <span className="text-[10px] text-text-muted font-mono">DAG: RUNNING</span>
         </div>
-        <div className="text-[10px] text-text-muted font-mono">wildfire_data_pipeline</div>
-        <div className="text-[10px] text-text-muted font-mono">Mode: QUIET  Res: 64 km</div>
+        <div className="text-[10px] text-text-muted font-mono mb-1.5">Mode: QUIET · Res: 64km</div>
+        <div className="flex items-center gap-1.5">
+          <span className="text-[9px] font-mono px-1 py-0.5 rounded border bg-status-broken/10 text-status-broken border-status-broken/25">
+            1 BROKEN
+          </span>
+          <span className="text-[9px] font-mono px-1 py-0.5 rounded border bg-status-partial/10 text-status-partial border-status-partial/25">
+            3 PARTIAL
+          </span>
+        </div>
       </div>
     </aside>
   );

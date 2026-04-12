@@ -8,6 +8,7 @@ import OBJ2Spread from './components/model-pipeline/OBJ2Spread';
 import OBJ3Reporter from './components/model-pipeline/OBJ3Reporter';
 import RiskMonitor from './components/risk-monitor/RiskMonitor';
 import IncidentReports from './components/reports/IncidentReports';
+import FireMap from './components/fire-map/FireMap';
 
 const VIEWS = {
   'overview':       Overview,
@@ -17,6 +18,7 @@ const VIEWS = {
   'obj3':           OBJ3Reporter,
   'risk-monitor':   RiskMonitor,
   'reports':        IncidentReports,
+  'fire-map':       FireMap,
 };
 
 export default function App() {

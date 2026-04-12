@@ -197,13 +197,113 @@ export const PIPELINE_HISTORY = [
   { run: '2025-01-15 18:00', status: 'success', duration_s: 142 },
   { run: '2025-01-15 12:00', status: 'success', duration_s: 138 },
   { run: '2025-01-15 06:00', status: 'success', duration_s: 145 },
-  { run: '2025-01-15 00:00', status: 'success', duration_s: 151 },
+  { run: '2025-01-15 00:00', status: 'warning', duration_s: 198 },
   { run: '2025-01-14 18:00', status: 'success', duration_s: 139 },
   { run: '2025-01-14 12:00', status: 'warning', duration_s: 210 },
   { run: '2025-01-14 06:00', status: 'success', duration_s: 144 },
   { run: '2025-01-14 00:00', status: 'success', duration_s: 137 },
-  { run: '2025-01-13 18:00', status: 'success', duration_s: 141 },
+  { run: '2025-01-13 18:00', status: 'failed',  duration_s: 45 },
   { run: '2025-01-13 12:00', status: 'success', duration_s: 148 },
-  { run: '2025-01-13 06:00', status: 'failed', duration_s: 22 },
+  { run: '2025-01-13 06:00', status: 'failed',  duration_s: 22 },
   { run: '2025-01-13 00:00', status: 'success', duration_s: 140 },
 ];
+
+// ─── Recent Events / Audit Log ────────────────────────────────────────────────
+// level: 'error' | 'warning' | 'info'
+export const RECENT_EVENTS = [
+  {
+    ts: '2025-01-15T18:04:32Z',
+    level: 'info',
+    component: 'export',
+    msg: 'Run 2025-01-15 18:00 UTC completed. 4 artifacts → GCS (wildfire-mlops-data).',
+  },
+  {
+    ts: '2025-01-15T18:04:00Z',
+    level: 'warning',
+    component: 'psi_check',
+    msg: 'Manual PSI check: fire_weather_index PSI=0.31 exceeds threshold 0.25. No auto-action (not implemented).',
+  },
+  {
+    ts: '2025-01-15T00:02:11Z',
+    level: 'warning',
+    component: 'ingest_weather',
+    msg: 'Open-Meteo degraded (HTTP 503 × 2). NWS fallback triggered for 5 cells. Flag-2 cells +5.',
+  },
+  {
+    ts: '2025-01-13T18:01:55Z',
+    level: 'error',
+    component: 'ingest_firms',
+    msg: 'FIRMS API timeout (504). Run aborted at t=45s. 3 retries exhausted. Next run resumed 12:00.',
+  },
+  {
+    ts: '2025-01-13T06:01:22Z',
+    level: 'error',
+    component: 'ingest_firms',
+    msg: 'FIRMS API timeout (504 Gateway Timeout). Run aborted at t=22s. Retry 1/3 failed.',
+  },
+  {
+    ts: '2025-01-10T11:03:45Z',
+    level: 'error',
+    component: 'model_gate',
+    msg: 'LightGBM a3f1c291 blocked: AUC-PR=0.8961 < 0.8900. Recall=0.891 < 0.90. Held in staging.',
+  },
+  {
+    ts: '2025-01-10T09:41:22Z',
+    level: 'info',
+    component: 'model_deploy',
+    msg: 'XGBoost CA 970bb676 passed all gates (AUC-PR=0.9051, FNR=0.097). Deployed to Vertex AI.',
+  },
+  {
+    ts: '2025-01-10T00:00:00Z',
+    level: 'info',
+    component: 'operator',
+    msg: 'Manual retrain triggered. Reason: pre-season model refresh. Auto-retrain not implemented.',
+  },
+];
+
+// ─── System Component Status ──────────────────────────────────────────────────
+// status: 'working' | 'partial' | 'broken' | 'planned'
+export const COMPONENT_STATUS = [
+  { id: 'firms_ingest',   label: 'NASA FIRMS Ingest',     status: 'working',  note: 'VIIRS + MODIS · 3h latency' },
+  { id: 'goes_ingest',    label: 'GOES-R ABI Ingest',     status: 'broken',   note: 'Stub — ingest_goes.py not wired' },
+  { id: 'weather_ingest', label: 'Open-Meteo / NWS',      status: 'working',  note: 'NWS fallback available' },
+  { id: 'landfire_srtm',  label: 'LANDFIRE / SRTM',       status: 'working',  note: 'Static cache · 2022 vintage' },
+  { id: 'airflow_dag',    label: 'Airflow DAG (6hr)',      status: 'working',  note: 'wildfire_data_pipeline' },
+  { id: 'watchdog',       label: 'Watchdog Cloud Fn',     status: 'working',  note: 'GCP poll 30min · QUIET' },
+  { id: 'obj1_xgb',       label: 'OBJ-1 XGBoost',         status: 'working',  note: 'CA + TX production · AUC-PR > 0.90' },
+  { id: 'obj1_lgbm',      label: 'OBJ-1 LightGBM',        status: 'partial',  note: 'Staging only · failed AUC-PR gate' },
+  { id: 'obj2_cell2fire', label: 'OBJ-2 Cell2Fire',       status: 'partial',  note: 'Manual trigger only · not in DAG' },
+  { id: 'obj3_gemini',    label: 'OBJ-3 Gemini Reporter', status: 'working',  note: 'gemini-2.5-flash · 2 reports today' },
+  { id: 'auto_retrain',   label: 'Auto-Retrain Pipeline', status: 'planned',  note: 'Not implemented · manual only' },
+  { id: 'psi_monitor',    label: 'PSI / Drift Monitor',   status: 'partial',  note: 'Manual checks · no CI trigger' },
+  { id: 'bias_gate',      label: 'Bias Gate (DVC)',        status: 'working',  note: 'Fairlearn FNR < 5% · enforced' },
+  { id: 'hrrr_ingest',    label: 'NOAA HRRR Ingest',      status: 'planned',  note: 'Emergency mode only · untested' },
+];
+
+// ─── PSI / Feature Drift Monitoring ──────────────────────────────────────────
+export const PSI_MONITORING = {
+  last_checked: '2025-01-15T18:04:00Z',
+  monitoring_mode: 'manual',
+  reference_window: 'training_data_2024',
+  auto_retrain_on_drift: false,
+  psi_threshold: 0.25,
+  features: [
+    { feature: 'fire_weather_index',   psi: 0.31, status: 'drift',  rank: 1 },
+    { feature: 'drought_index_proxy',  psi: 0.27, status: 'drift',  rank: 2 },
+    { feature: 'vpd',                  psi: 0.18, status: 'stable', rank: 3 },
+    { feature: 'wind_speed_10m',       psi: 0.14, status: 'stable', rank: 4 },
+    { feature: 'temperature_2m',       psi: 0.12, status: 'stable', rank: 5 },
+    { feature: 'relative_humidity_2m', psi: 0.09, status: 'stable', rank: 6 },
+  ],
+};
+
+// ─── Retrain Status ───────────────────────────────────────────────────────────
+export const RETRAIN_STATUS = {
+  auto_retrain_implemented: false,
+  last_manual_retrain: '2025-01-10T09:41:22Z',
+  trigger_reason: 'manual_operator',
+  next_scheduled: null,
+  psi_trigger_threshold: 0.25,
+  auc_pr_degradation_threshold: 0.05,
+  note: 'Auto-retrain not yet implemented. All retrains are manually triggered by operator.',
+};

@@ -1,26 +1,24 @@
-import { CheckCircle, XCircle, AlertTriangle, Activity, Database, BrainCircuit, Map, Clock, ArrowRight } from 'lucide-react';
-import { PIPELINE_META, PIPELINE_HISTORY, DATA_QUALITY_FLAGS } from '../../data/mockPipelineData';
-import { OBJ1_RUNS, OBJ3_STATE } from '../../data/mockModelData';
+import {
+  CheckCircle, XCircle, AlertTriangle, Database,
+  BrainCircuit, Map, ArrowRight, Terminal, RefreshCw, TrendingUp,
+} from 'lucide-react';
+import {
+  PIPELINE_HISTORY, DATA_QUALITY_FLAGS,
+  RECENT_EVENTS, COMPONENT_STATUS, PSI_MONITORING,
+} from '../../data/mockPipelineData';
+import { OBJ1_RUNS } from '../../data/mockModelData';
 import { CALIFORNIA_CELLS, TEXAS_CELLS, getRiskTier } from '../../data/mockGridData';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 
-function StatusDot({ status }) {
-  const map = {
-    success: 'bg-accent-green',
-    warning: 'bg-accent-orange',
-    failed:  'bg-risk-critical',
-    running: 'bg-accent-blue animate-pulse',
-    cached:  'bg-text-muted',
-    stub:    'bg-text-muted',
-  };
-  return <span className={`inline-block w-2 h-2 rounded-full ${map[status] ?? 'bg-text-muted'}`} />;
-}
+// ── helpers ───────────────────────────────────────────────────────────────────
 
-function StatCard({ icon: Icon, label, value, sub, color = 'text-text-primary', onClick }) {
+function StatCard({ icon: Icon, label, value, sub, color = 'text-text-primary', onClick, critical }) {
   return (
     <button
       onClick={onClick}
-      className="bg-surface-2 border border-border-subtle rounded-lg p-4 text-left hover:border-border-default transition-colors"
+      className={`bg-surface-2 border rounded-lg p-4 text-left hover:border-border-default transition-colors ${
+        critical ? 'border-risk-critical/40 glow-critical' : 'border-border-subtle'
+      }`}
     >
       <div className="flex items-start justify-between mb-3">
         <Icon className={`w-4 h-4 ${color}`} />
@@ -35,73 +33,148 @@ function StatCard({ icon: Icon, label, value, sub, color = 'text-text-primary', 
 
 function RiskBadge({ tier }) {
   const colors = {
-    CRITICAL: 'bg-risk-critical/20 text-risk-critical border-risk-critical/40',
+    CRITICAL: 'bg-risk-critical/20 text-risk-critical border-risk-critical/50',
     HIGH:     'bg-risk-high/20 text-risk-high border-risk-high/40',
     MEDIUM:   'bg-risk-medium/20 text-risk-medium border-risk-medium/40',
     LOW:      'bg-risk-low/20 text-risk-low border-risk-low/40',
   };
   return (
-    <span className={`text-[9px] font-mono font-bold px-1.5 py-0.5 rounded border ${colors[tier]}`}>{tier}</span>
+    <span className={`text-[9px] font-mono font-bold px-1.5 py-0.5 rounded border ${colors[tier]}`}>
+      {tier}
+    </span>
   );
 }
 
+const STATUS_CFG = {
+  working: {
+    dot:   'bg-status-working',
+    badge: 'bg-status-working/10 text-status-working border-status-working/30',
+    border: 'border-border-subtle',
+    label: 'WORKING',
+  },
+  partial: {
+    dot:   'bg-status-partial',
+    badge: 'bg-status-partial/10 text-status-partial border-status-partial/30',
+    border: 'border-border-subtle',
+    label: 'PARTIAL',
+  },
+  broken: {
+    dot:   'bg-status-broken',
+    badge: 'bg-status-broken/10 text-status-broken border-status-broken/40',
+    border: 'border-status-broken/35 glow-critical',
+    label: 'BROKEN',
+  },
+  planned: {
+    dot:   'bg-status-planned',
+    badge: 'bg-status-planned/10 text-status-planned border-status-planned/30',
+    border: 'border-border-subtle',
+    label: 'PLANNED',
+  },
+};
+
+function ComponentCard({ label, status, note }) {
+  const cfg = STATUS_CFG[status] ?? STATUS_CFG.planned;
+  return (
+    <div className={`bg-surface-3 border rounded p-2.5 ${cfg.border}`}>
+      <div className="flex items-center gap-1.5 mb-1">
+        <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${cfg.dot}`} />
+        <span className="text-text-primary text-[10px] font-semibold leading-tight flex-1 min-w-0 truncate">
+          {label}
+        </span>
+        <span className={`text-[8px] font-mono font-bold px-1 py-0.5 rounded border flex-shrink-0 ${cfg.badge}`}>
+          {cfg.label}
+        </span>
+      </div>
+      <div className="text-text-muted text-[9px] leading-tight">{note}</div>
+    </div>
+  );
+}
+
+const EVENT_LEVEL_CFG = {
+  error:   { bar: 'bg-risk-critical',  labelCls: 'text-risk-critical' },
+  warning: { bar: 'bg-accent-orange',  labelCls: 'text-accent-orange' },
+  info:    { bar: 'bg-text-muted',     labelCls: 'text-text-muted' },
+};
+
+function EventLogItem({ ts, level, component, msg }) {
+  const cfg = EVENT_LEVEL_CFG[level] ?? EVENT_LEVEL_CFG.info;
+  return (
+    <div className="flex gap-2 py-1.5">
+      <div className={`w-0.5 flex-shrink-0 self-stretch rounded-full ${cfg.bar}`} />
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-1.5 mb-0.5 flex-wrap">
+          <span className={`text-[8px] font-mono font-bold ${cfg.labelCls}`}>{level.toUpperCase()}</span>
+          <span className="text-[8px] font-mono text-accent-blue">{component}</span>
+          <span className="text-[8px] font-mono text-text-muted ml-auto">{ts.slice(5, 16).replace('T', ' ')}</span>
+        </div>
+        <div className="text-[9px] text-text-secondary leading-snug">{msg}</div>
+      </div>
+    </div>
+  );
+}
+
+// ── main component ────────────────────────────────────────────────────────────
+
 export default function Overview({ onNavigate }) {
-  const allCells = [...CALIFORNIA_CELLS, ...TEXAS_CELLS];
+  const allCells     = [...CALIFORNIA_CELLS, ...TEXAS_CELLS];
   const criticalCells = allCells.filter(c => getRiskTier(c.fire_risk_score) === 'CRITICAL');
   const highCells     = allCells.filter(c => getRiskTier(c.fire_risk_score) === 'HIGH');
+  const prodRuns      = OBJ1_RUNS.filter(r => r.status === 'production');
 
-  const prodRuns = OBJ1_RUNS.filter(r => r.status === 'production');
-  const recentHistory = PIPELINE_HISTORY.slice(0, 8);
-
-  const historyBarData = recentHistory.map((h, i) => ({
+  const historyData = PIPELINE_HISTORY.slice(0, 8).map((h, i) => ({
     name: `R${i + 1}`,
     duration: h.duration_s,
     status: h.status,
   }));
+  const barColor = (s) => s === 'success' ? '#10b981' : s === 'warning' ? '#f59e0b' : '#ff3333';
 
-  const barColor = (s) => {
-    if (s === 'success') return '#10b981';
-    if (s === 'warning') return '#f59e0b';
-    return '#ef4444';
-  };
-
-  const qualityData = DATA_QUALITY_FLAGS.filter(f => f.count > 0).map(f => ({
-    name: `Flag ${f.flag}`,
-    label: f.label,
-    count: f.count,
-  }));
+  const brokenCount  = COMPONENT_STATUS.filter(c => c.status === 'broken').length;
+  const partialCount = COMPONENT_STATUS.filter(c => c.status === 'partial').length;
+  const driftCount   = PSI_MONITORING.features.filter(f => f.status === 'drift').length;
 
   return (
-    <div className="p-6 space-y-6 overflow-y-auto h-full">
-      {/* Operational mode banner */}
-      <div className="bg-surface-2 border border-accent-green/30 rounded-lg px-4 py-3 flex items-center justify-between">
+    <div className="p-6 space-y-5 overflow-y-auto h-full">
+
+      {/* ── 1. Operational Banner ──────────────────────────────────────────── */}
+      <div className="bg-surface-2 border border-border-default rounded-lg px-4 py-2.5 flex items-center justify-between gap-3 flex-wrap">
         <div className="flex items-center gap-3">
-          <div className="w-2 h-2 rounded-full bg-accent-green animate-pulse" />
+          <div className="w-2 h-2 rounded-full bg-accent-green animate-pulse flex-shrink-0" />
           <div>
-            <span className="text-accent-green text-xs font-mono font-semibold">OPERATIONAL MODE: QUIET</span>
-            <span className="text-text-muted text-xs font-mono ml-3">Resolution: 64 km  |  Poll: 30 min  |  Cycle: 6 hr</span>
+            <span className="text-accent-green text-xs font-mono font-semibold">MODE: QUIET</span>
+            <span className="text-text-muted text-[10px] font-mono ml-3">
+              Res: 64km · Poll: 30min · Cycle: 6hr
+            </span>
           </div>
         </div>
-        <div className="text-text-muted text-[10px] font-mono">
-          Last run: 2025-01-15 18:04 UTC &nbsp;|&nbsp; Next: 2025-01-16 00:00 UTC
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="text-[9px] font-mono px-1.5 py-0.5 rounded border bg-risk-critical/10 text-risk-critical border-risk-critical/40">
+            GOES-R: STUB
+          </span>
+          <span className="text-[9px] font-mono px-1.5 py-0.5 rounded border bg-accent-orange/10 text-accent-orange border-accent-orange/40">
+            PSI DRIFT: fire_weather_index (0.31)
+          </span>
+          <span className="text-[9px] font-mono px-1.5 py-0.5 rounded border bg-accent-orange/10 text-accent-orange border-accent-orange/40">
+            AUTO-RETRAIN: NOT IMPL.
+          </span>
+          <span className="text-text-muted text-[10px] font-mono">Last: 2025-01-15 18:04 UTC</span>
         </div>
       </div>
 
-      {/* Top stat cards */}
+      {/* ── 2. Stat Cards ──────────────────────────────────────────────────── */}
       <div className="grid grid-cols-4 gap-4">
         <StatCard
           icon={Database}
-          label="Data Pipeline"
-          value="6 / 6"
-          sub="stages healthy"
-          color="text-accent-green"
+          label="Data Sources Active"
+          value="4 / 5"
+          sub="GOES-R: stub — not wired"
+          color="text-accent-orange"
           onClick={() => onNavigate('data-pipeline')}
         />
         <StatCard
           icon={BrainCircuit}
           label="Models in Production"
           value={`${prodRuns.length} / ${OBJ1_RUNS.length}`}
-          sub={`AUC-PR best: ${Math.max(...prodRuns.map(r => r.metrics.auc_pr)).toFixed(4)}`}
+          sub="LightGBM a3f1c291 failed AUC-PR gate"
           color="text-accent-blue"
           onClick={() => onNavigate('obj1')}
         />
@@ -109,7 +182,7 @@ export default function Overview({ onNavigate }) {
           icon={Map}
           label="Grid Cells Monitored"
           value={allCells.length}
-          sub={`CA: ${CALIFORNIA_CELLS.length}  TX: ${TEXAS_CELLS.length}`}
+          sub={`CA: ${CALIFORNIA_CELLS.length}  TX: ${TEXAS_CELLS.length}  ·  H3 64km`}
           color="text-text-primary"
           onClick={() => onNavigate('risk-monitor')}
         />
@@ -117,38 +190,74 @@ export default function Overview({ onNavigate }) {
           icon={AlertTriangle}
           label="Critical Cells"
           value={criticalCells.length}
-          sub={`+${highCells.length} HIGH tier cells`}
-          color={criticalCells.length > 0 ? 'text-risk-critical' : 'text-accent-green'}
+          sub={`+${highCells.length} HIGH tier`}
+          color="text-risk-critical"
+          critical={criticalCells.length > 0}
           onClick={() => onNavigate('risk-monitor')}
         />
       </div>
 
-      {/* Middle section: pipeline runs + top alerts */}
+      {/* ── 3. Component Status Matrix ─────────────────────────────────────── */}
+      <div className="bg-surface-2 border border-border-subtle rounded-lg p-4">
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="text-text-secondary text-xs font-semibold uppercase tracking-wider">
+            System Components
+          </h2>
+          <div className="flex items-center gap-2 text-[10px] font-mono">
+            {brokenCount > 0 && (
+              <span className="px-1.5 py-0.5 rounded border bg-status-broken/10 text-status-broken border-status-broken/30">
+                {brokenCount} BROKEN
+              </span>
+            )}
+            {partialCount > 0 && (
+              <span className="px-1.5 py-0.5 rounded border bg-status-partial/10 text-status-partial border-status-partial/30">
+                {partialCount} PARTIAL
+              </span>
+            )}
+          </div>
+        </div>
+        <div className="grid grid-cols-4 gap-2">
+          {COMPONENT_STATUS.map(c => (
+            <ComponentCard key={c.id} {...c} />
+          ))}
+        </div>
+        <div className="mt-3 pt-2 border-t border-border-subtle flex items-center gap-4 text-[9px] font-mono text-text-muted flex-wrap gap-y-1">
+          {Object.entries(STATUS_CFG).map(([k, v]) => (
+            <span key={k} className="flex items-center gap-1">
+              <span className={`w-1.5 h-1.5 rounded-full ${v.dot}`} />
+              {v.label}
+            </span>
+          ))}
+        </div>
+      </div>
+
+      {/* ── 4. Pipeline History + Recent Events ────────────────────────────── */}
       <div className="grid grid-cols-3 gap-4">
 
-        {/* Pipeline run history */}
+        {/* Pipeline run history chart */}
         <div className="col-span-2 bg-surface-2 border border-border-subtle rounded-lg p-4">
           <h2 className="text-text-secondary text-xs font-semibold uppercase tracking-wider mb-3">
-            Pipeline Run History  <span className="text-text-muted font-normal normal-case">(last 8 × 6-hr runs)</span>
+            Pipeline Run History
+            <span className="text-text-muted font-normal normal-case ml-2">(last 8 × 6-hr runs)</span>
           </h2>
-          <ResponsiveContainer width="100%" height={110}>
-            <BarChart data={historyBarData} margin={{ top: 2, right: 2, left: -20, bottom: 2 }}>
+          <ResponsiveContainer width="100%" height={100}>
+            <BarChart data={historyData} margin={{ top: 2, right: 2, left: -20, bottom: 2 }}>
               <XAxis dataKey="name" tick={{ fontSize: 9, fill: '#4a5978' }} axisLine={false} tickLine={false} />
               <YAxis tick={{ fontSize: 9, fill: '#4a5978' }} axisLine={false} tickLine={false} />
               <Tooltip
                 contentStyle={{ background: '#131b2e', border: '1px solid #253348', borderRadius: 4, fontSize: 10 }}
                 labelStyle={{ color: '#8a9bbf' }}
-                formatter={(v, n, p) => [`${v}s`, 'duration']}
+                formatter={(v) => [`${v}s`, 'duration']}
               />
               <Bar dataKey="duration" radius={[2, 2, 0, 0]}>
-                {historyBarData.map((entry, index) => (
-                  <Cell key={index} fill={barColor(entry.status)} />
+                {historyData.map((entry, i) => (
+                  <Cell key={i} fill={barColor(entry.status)} />
                 ))}
               </Bar>
             </BarChart>
           </ResponsiveContainer>
-          <div className="flex gap-4 mt-2">
-            {[['success', '#10b981'], ['warning', '#f59e0b'], ['failed', '#ef4444']].map(([s, c]) => (
+          <div className="flex gap-4 mt-1">
+            {[['success', '#10b981'], ['warning', '#f59e0b'], ['failed', '#ff3333']].map(([s, c]) => (
               <div key={s} className="flex items-center gap-1">
                 <span className="w-2 h-2 rounded-sm inline-block" style={{ background: c }} />
                 <span className="text-[10px] text-text-muted capitalize">{s}</span>
@@ -157,7 +266,79 @@ export default function Overview({ onNavigate }) {
           </div>
         </div>
 
-        {/* Data quality flag distribution */}
+        {/* Recent events log */}
+        <div className="bg-surface-2 border border-border-subtle rounded-lg p-4 flex flex-col">
+          <div className="flex items-center gap-2 mb-2">
+            <Terminal className="w-3 h-3 text-text-muted flex-shrink-0" />
+            <h2 className="text-text-secondary text-xs font-semibold uppercase tracking-wider">Recent Events</h2>
+          </div>
+          <div className="flex-1 overflow-y-auto divide-y divide-border-subtle/50 max-h-[152px]">
+            {RECENT_EVENTS.map((e, i) => (
+              <EventLogItem key={i} {...e} />
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* ── 5. PSI Drift + Data Quality Flags ──────────────────────────────── */}
+      <div className="grid grid-cols-2 gap-4">
+
+        {/* PSI / Drift Monitoring */}
+        <div className="bg-surface-2 border border-border-subtle rounded-lg p-4">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2">
+              <TrendingUp className="w-3 h-3 text-text-muted" />
+              <h2 className="text-text-secondary text-xs font-semibold uppercase tracking-wider">
+                PSI / Feature Drift
+              </h2>
+            </div>
+            <div className="flex items-center gap-2">
+              {driftCount > 0 && (
+                <span className="text-[9px] font-mono px-1.5 py-0.5 rounded border bg-risk-critical/10 text-risk-critical border-risk-critical/30">
+                  {driftCount} DRIFTING
+                </span>
+              )}
+              <span className="text-[9px] font-mono px-1.5 py-0.5 rounded border bg-accent-orange/10 text-accent-orange border-accent-orange/30">
+                MANUAL
+              </span>
+            </div>
+          </div>
+          <div className="space-y-2">
+            {PSI_MONITORING.features.map(f => {
+              const isDrift = f.status === 'drift';
+              return (
+                <div key={f.feature} className="flex items-center gap-2">
+                  <span className="text-[10px] font-mono text-text-secondary w-40 truncate flex-shrink-0">
+                    {f.feature}
+                  </span>
+                  <div className="flex-1 bg-surface-3 rounded-full h-1.5 overflow-hidden">
+                    <div
+                      className={`h-full rounded-full ${isDrift ? 'bg-risk-critical' : 'bg-accent-green'}`}
+                      style={{ width: `${Math.min(100, (f.psi / 0.5) * 100)}%` }}
+                    />
+                  </div>
+                  <span className={`text-[10px] font-mono font-semibold w-8 text-right flex-shrink-0 ${
+                    isDrift ? 'text-risk-critical' : 'text-accent-green'
+                  }`}>
+                    {f.psi.toFixed(2)}
+                  </span>
+                  <span className={`text-[8px] font-mono px-1 py-0.5 rounded border w-11 text-center flex-shrink-0 ${
+                    isDrift
+                      ? 'bg-risk-critical/10 text-risk-critical border-risk-critical/30'
+                      : 'bg-accent-green/10 text-accent-green border-accent-green/30'
+                  }`}>
+                    {isDrift ? 'DRIFT' : 'OK'}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+          <div className="mt-3 pt-2 border-t border-border-subtle text-[9px] text-text-muted font-mono">
+            Ref: training_data_2024 · threshold: PSI &gt; 0.25 = drift · Auto-trigger: OFF
+          </div>
+        </div>
+
+        {/* Data Quality Flags */}
         <div className="bg-surface-2 border border-border-subtle rounded-lg p-4">
           <h2 className="text-text-secondary text-xs font-semibold uppercase tracking-wider mb-3">
             Data Quality Flags
@@ -168,27 +349,39 @@ export default function Overview({ onNavigate }) {
                 <span className="text-[10px] font-mono text-text-muted w-6 flex-shrink-0">F{f.flag}</span>
                 <div className="flex-1 bg-surface-3 rounded-full h-1.5 overflow-hidden">
                   <div
-                    className={`h-full rounded-full ${f.flag === 0 || f.flag === 1 ? 'bg-accent-green' : f.flag === 2 || f.flag === 4 ? 'bg-accent-orange' : f.flag >= 3 ? 'bg-risk-critical' : 'bg-text-muted'}`}
+                    className={`h-full rounded-full ${
+                      f.flag <= 1 ? 'bg-accent-green' :
+                      f.flag === 2 ? 'bg-accent-orange' :
+                      f.flag === 3 ? 'bg-accent-blue' :
+                      f.flag === 4 ? 'bg-accent-orange' :
+                      'bg-risk-critical'
+                    }`}
                     style={{ width: `${(f.count / 55) * 100}%` }}
                   />
                 </div>
-                <span className="text-[10px] font-mono text-text-secondary w-4 text-right">{f.count}</span>
+                <span className="text-[10px] font-mono text-text-secondary w-4 text-right flex-shrink-0">
+                  {f.count}
+                </span>
+                <span className="text-[9px] text-text-muted w-40 truncate">{f.label}</span>
               </div>
             ))}
           </div>
-          <div className="mt-3 pt-3 border-t border-border-subtle text-[10px] text-text-muted font-mono">
-            55 cells total this run
+          <div className="mt-3 pt-2 border-t border-border-subtle text-[10px] text-text-muted font-mono">
+            55 cells this run · flag-1 dominant (Open-Meteo primary)
           </div>
         </div>
       </div>
 
-      {/* Alert cells table */}
+      {/* ── 6. Top Risk Cells ──────────────────────────────────────────────── */}
       <div className="bg-surface-2 border border-border-subtle rounded-lg p-4">
         <div className="flex items-center justify-between mb-3">
           <h2 className="text-text-secondary text-xs font-semibold uppercase tracking-wider">
             Top Risk Cells This Cycle
           </h2>
-          <button onClick={() => onNavigate('risk-monitor')} className="text-[10px] text-accent-blue hover:underline flex items-center gap-1">
+          <button
+            onClick={() => onNavigate('risk-monitor')}
+            className="text-[10px] text-accent-blue hover:underline flex items-center gap-1"
+          >
             View all <ArrowRight className="w-3 h-3" />
           </button>
         </div>
@@ -197,7 +390,9 @@ export default function Overview({ onNavigate }) {
             <thead>
               <tr className="border-b border-border-subtle">
                 {['grid_id', 'name', 'region', 'risk_score', 'tier', 'temp_2m', 'vpd', 'fwi', 'fuel_fbfm40', 'active_fires'].map(col => (
-                  <th key={col} className="text-left text-text-muted font-mono py-1.5 pr-3 uppercase text-[9px] tracking-wider">{col}</th>
+                  <th key={col} className="text-left text-text-muted font-mono py-1.5 pr-3 uppercase text-[9px] tracking-wider">
+                    {col}
+                  </th>
                 ))}
               </tr>
             </thead>
@@ -208,12 +403,24 @@ export default function Overview({ onNavigate }) {
                 .map(cell => {
                   const tier = getRiskTier(cell.fire_risk_score);
                   const region = CALIFORNIA_CELLS.includes(cell) ? 'california' : 'texas';
+                  const isCritical = tier === 'CRITICAL';
                   return (
-                    <tr key={cell.grid_id} className="border-b border-border-subtle/50 hover:bg-surface-3/50 transition-colors">
-                      <td className="py-1.5 pr-3 font-mono text-text-muted text-[10px]">{cell.grid_id.slice(0, 10)}…</td>
-                      <td className="py-1.5 pr-3 text-text-secondary">{cell.name}</td>
+                    <tr
+                      key={cell.grid_id}
+                      className={`border-b border-border-subtle/50 transition-colors ${
+                        isCritical ? 'hover:bg-risk-critical/5' : 'hover:bg-surface-3/50'
+                      }`}
+                    >
+                      <td className="py-1.5 pr-3 font-mono text-text-muted text-[10px]">
+                        {cell.grid_id.slice(0, 10)}…
+                      </td>
+                      <td className={`py-1.5 pr-3 font-medium ${isCritical ? 'text-risk-critical' : 'text-text-secondary'}`}>
+                        {cell.name}
+                      </td>
                       <td className="py-1.5 pr-3 text-text-muted font-mono capitalize">{region}</td>
-                      <td className="py-1.5 pr-3 font-mono text-text-primary">{cell.fire_risk_score.toFixed(3)}</td>
+                      <td className={`py-1.5 pr-3 font-mono font-semibold ${isCritical ? 'text-risk-critical' : 'text-text-primary'}`}>
+                        {cell.fire_risk_score.toFixed(3)}
+                      </td>
                       <td className="py-1.5 pr-3"><RiskBadge tier={tier} /></td>
                       <td className="py-1.5 pr-3 font-mono text-text-secondary">{cell.temperature_2m}°C</td>
                       <td className="py-1.5 pr-3 font-mono text-text-secondary">{cell.vpd} kPa</td>
@@ -228,15 +435,34 @@ export default function Overview({ onNavigate }) {
         </div>
       </div>
 
-      {/* Model health strip */}
+      {/* ── 7. Model Registry + Retrain Status ─────────────────────────────── */}
       <div className="bg-surface-2 border border-border-subtle rounded-lg p-4">
-        <h2 className="text-text-secondary text-xs font-semibold uppercase tracking-wider mb-3">Model Registry Status</h2>
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="text-text-secondary text-xs font-semibold uppercase tracking-wider">
+            Model Registry
+          </h2>
+          <div className="flex items-center gap-1.5 px-2 py-1 rounded border bg-accent-orange/10 text-accent-orange border-accent-orange/30 glow-warning">
+            <RefreshCw className="w-3 h-3 flex-shrink-0" />
+            <span className="text-[9px] font-mono">
+              Auto-Retrain: NOT IMPLEMENTED · last manual: 2025-01-10
+            </span>
+          </div>
+        </div>
         <div className="grid grid-cols-3 gap-3">
           {OBJ1_RUNS.map(run => (
-            <div key={run.run_id} className="bg-surface-3 border border-border-subtle rounded p-3">
+            <div
+              key={run.run_id}
+              className={`bg-surface-3 border rounded p-3 ${
+                run.status !== 'production' ? 'border-accent-orange/30' : 'border-border-subtle'
+              }`}
+            >
               <div className="flex items-center justify-between mb-2">
                 <span className="text-text-primary text-xs font-mono">{run.run_id}</span>
-                <span className={`text-[9px] font-mono px-1.5 py-0.5 rounded border ${run.status === 'production' ? 'bg-accent-green/10 text-accent-green border-accent-green/30' : 'bg-accent-orange/10 text-accent-orange border-accent-orange/30'}`}>
+                <span className={`text-[9px] font-mono px-1.5 py-0.5 rounded border ${
+                  run.status === 'production'
+                    ? 'bg-accent-green/10 text-accent-green border-accent-green/30'
+                    : 'bg-accent-orange/10 text-accent-orange border-accent-orange/30'
+                }`}>
                   {run.status.toUpperCase()}
                 </span>
               </div>
@@ -244,27 +470,42 @@ export default function Overview({ onNavigate }) {
               <div className="flex gap-3 mt-2">
                 <div>
                   <div className="text-[9px] text-text-muted">AUC-PR</div>
-                  <div className={`text-xs font-mono font-semibold ${run.metrics.auc_pr >= 0.89 ? 'text-accent-green' : 'text-risk-critical'}`}>{run.metrics.auc_pr.toFixed(4)}</div>
+                  <div className={`text-xs font-mono font-semibold ${
+                    run.metrics.auc_pr >= 0.89 ? 'text-accent-green' : 'text-risk-critical'
+                  }`}>
+                    {run.metrics.auc_pr.toFixed(4)}
+                  </div>
                 </div>
                 <div>
                   <div className="text-[9px] text-text-muted">FNR</div>
-                  <div className="text-xs font-mono font-semibold text-text-secondary">{(run.metrics.fnr * 100).toFixed(1)}%</div>
+                  <div className="text-xs font-mono font-semibold text-text-secondary">
+                    {(run.metrics.fnr * 100).toFixed(1)}%
+                  </div>
                 </div>
                 <div>
                   <div className="text-[9px] text-text-muted">Threshold</div>
-                  <div className="text-xs font-mono font-semibold text-text-secondary">{run.metrics.threshold_tuned}</div>
+                  <div className="text-xs font-mono font-semibold text-text-secondary">
+                    {run.metrics.threshold_tuned}
+                  </div>
                 </div>
               </div>
               <div className="mt-2 flex items-center gap-1">
-                {run.gates.auc_pr_gate.passed ? <CheckCircle className="w-3 h-3 text-accent-green" /> : <XCircle className="w-3 h-3 text-risk-critical" />}
+                {run.gates.auc_pr_gate.passed
+                  ? <CheckCircle className="w-3 h-3 text-accent-green" />
+                  : <XCircle className="w-3 h-3 text-risk-critical" />
+                }
                 <span className="text-[9px] text-text-muted">AUC-PR gate</span>
-                {run.gates.fnr_disparity_gate.passed ? <CheckCircle className="w-3 h-3 text-accent-green ml-2" /> : <XCircle className="w-3 h-3 text-risk-critical ml-2" />}
+                {run.gates.fnr_disparity_gate.passed
+                  ? <CheckCircle className="w-3 h-3 text-accent-green ml-2" />
+                  : <XCircle className="w-3 h-3 text-risk-critical ml-2" />
+                }
                 <span className="text-[9px] text-text-muted">Bias gate</span>
               </div>
             </div>
           ))}
         </div>
       </div>
+
     </div>
   );
 }
