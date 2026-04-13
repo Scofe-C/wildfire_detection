@@ -61,9 +61,9 @@ data_sources:
     rate_limit:
       max_requests_per_day: 10000
       backoff_base_seconds: 2
-      backoff_max_seconds: 120
+      backoff_max_seconds: 30
     timeout_seconds: 20
-    max_retries: 5
+    max_retries: 3
     coordinate_precision: 3
 
   nws:
