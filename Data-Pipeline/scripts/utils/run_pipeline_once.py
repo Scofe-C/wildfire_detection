@@ -88,7 +88,7 @@ def run(date_str: str = "2024-07-15T12:00", resolution_km: int = 64) -> pd.DataF
     nan_pct = fused.isnull().mean().mul(100).round(1)
     print("  NaN % per column:")
     for col, pct in nan_pct.items():
-        flag = "  ← MISSING" if pct == 100 else ("  ← partial" if pct > 0 else "")
+        flag = "  ** MISSING" if pct == 100 else ("  ** partial" if pct > 0 else "")
         print(f"    {col:<35} {pct:5.1f}%{flag}")
 
     print()
