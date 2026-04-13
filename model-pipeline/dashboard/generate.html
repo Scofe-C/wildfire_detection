@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Generate Report — OBJ-3</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&family=DM+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/static/style.css">
 <style>
 /* ── Form layout ── */
@@ -159,6 +159,25 @@ select option { background: var(--surface); }
 .kv-list .v { font-weight: 500; }
 .result-actions { display: flex; gap: 8px; margin-top: 12px; }
 .result-actions .btn { width: auto; font-size: 12px; padding: 6px 14px; }
+
+/* ── Validation errors ── */
+.field-error {
+  font-size: 11px; color: var(--critical); margin-top: 3px;
+  display: none; /* shown by JS */
+}
+.field-error.show { display: block; }
+input.has-error, textarea.has-error, select.has-error {
+  border-color: var(--critical) !important;
+  box-shadow: 0 0 0 2px rgba(239,68,68,0.12) !important;
+}
+.validation-banner {
+  background: var(--critical-bg); border: 1px solid var(--critical-border);
+  border-radius: 6px; padding: 12px 16px; margin-bottom: 14px;
+  font-size: 12px; color: var(--critical); display: none;
+}
+.validation-banner.show { display: block; }
+.validation-banner ul { margin: 6px 0 0 18px; padding: 0; }
+.validation-banner li { margin-bottom: 3px; }
 </style>
 </head>
 <body>
@@ -402,33 +421,154 @@ select option { background: var(--surface); }
               </div>
 
               <div id="rerunPanel" style="display:none;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px;margin-bottom:14px">
-                <div style="font-size:12px;font-weight:600;margin-bottom:10px;color:var(--warning)">⚡ Local Observation Override</div>
+                <div style="font-size:12px;font-weight:600;margin-bottom:10px;color:var(--warning)">⚡ Full Data Override</div>
                 <div class="field">
                   <label>Grid ID <span style="color:var(--critical)">*</span></label>
                   <input type="text" id="rerun_grid_id" placeholder="e.g. 852830bffffffff">
                 </div>
-                <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
-                  <div class="field">
-                    <label>Temperature (°F)</label>
-                    <input type="number" id="rerun_temp_f" placeholder="e.g. 105" step="0.1">
+
+                <!-- Weather overrides -->
+                <details open style="margin-bottom:10px">
+                  <summary style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:var(--text-3);cursor:pointer;margin-bottom:8px">Weather</summary>
+                  <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+                    <div class="field">
+                      <label>Temperature (°F)</label>
+                      <input type="number" id="rerun_temp_f" placeholder="e.g. 105" step="0.1">
+                    </div>
+                    <div class="field">
+                      <label>Wind Speed (mph)</label>
+                      <input type="number" id="rerun_wind_mph" placeholder="e.g. 35" step="0.1">
+                    </div>
+                    <div class="field">
+                      <label>Relative Humidity (%)</label>
+                      <input type="number" id="rerun_rh" placeholder="e.g. 12" step="0.1">
+                    </div>
+                    <div class="field">
+                      <label>Soil Moisture (m³/m³)</label>
+                      <input type="number" id="rerun_soil" placeholder="e.g. 0.08" step="0.001">
+                    </div>
+                    <div class="field">
+                      <label>Fire Weather Index</label>
+                      <input type="number" id="rerun_fwi" placeholder="e.g. 28.5" step="0.1">
+                    </div>
+                    <div class="field">
+                      <label>Wind Direction (°)</label>
+                      <input type="number" id="rerun_wind_dir" placeholder="e.g. 225" min="0" max="360" step="1">
+                    </div>
+                    <div class="field">
+                      <label>Precipitation (mm)</label>
+                      <input type="number" id="rerun_precip" placeholder="e.g. 0.0" min="0" step="0.1">
+                    </div>
+                    <div class="field">
+                      <label>VPD (kPa)</label>
+                      <input type="number" id="rerun_vpd" placeholder="e.g. 4.5" min="0" step="0.1">
+                    </div>
                   </div>
-                  <div class="field">
-                    <label>Wind Speed (mph)</label>
-                    <input type="number" id="rerun_wind_mph" placeholder="e.g. 35" step="0.1">
+                </details>
+
+                <!-- Vegetation overrides -->
+                <details style="margin-bottom:10px">
+                  <summary style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:var(--text-3);cursor:pointer;margin-bottom:8px">Vegetation</summary>
+                  <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+                    <div class="field">
+                      <label>NDVI (-1 to 1)</label>
+                      <input type="number" id="rerun_ndvi" placeholder="e.g. 0.35" min="-1" max="1" step="0.01">
+                    </div>
+                    <div class="field">
+                      <label>Fuel Fraction (0-1)</label>
+                      <input type="number" id="rerun_fuel_frac" placeholder="e.g. 0.7" min="0" max="1" step="0.01">
+                    </div>
+                    <div class="field">
+                      <label>FBFM40 Fuel Model</label>
+                      <select id="rerun_fbfm40">
+                        <option value="">— auto —</option>
+                        <option value="101">GR1 (short grass)</option>
+                        <option value="102">GR2 (low grass)</option>
+                        <option value="121">GS1 (grass-shrub)</option>
+                        <option value="141">SH1 (low shrub)</option>
+                        <option value="145">SH5 (high shrub)</option>
+                        <option value="161">TU1 (timber-understory)</option>
+                        <option value="165">TU5 (high-load timber)</option>
+                        <option value="181">TL1 (timber litter)</option>
+                        <option value="185">TL5 (high-load litter)</option>
+                        <option value="201">SB1 (slash-blowdown)</option>
+                      </select>
+                    </div>
+                    <div class="field">
+                      <label>Vegetation Type</label>
+                      <input type="text" id="rerun_veg_type" placeholder="e.g. chaparral">
+                    </div>
                   </div>
-                  <div class="field">
-                    <label>Relative Humidity (%)</label>
-                    <input type="number" id="rerun_rh" placeholder="e.g. 12" step="0.1">
+                </details>
+
+                <!-- FIRMS Hotspots -->
+                <details style="margin-bottom:10px">
+                  <summary style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:var(--text-3);cursor:pointer;margin-bottom:8px">FIRMS Hotspots</summary>
+                  <div id="firmsRows"></div>
+                  <button type="button" class="preset-btn" onclick="addFirmsRow()" style="margin-top:6px;font-size:11px">+ Add Hotspot</button>
+                </details>
+
+                <!-- OBJ-2 Simulation -->
+                <details style="margin-bottom:10px">
+                  <summary style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:var(--text-3);cursor:pointer;margin-bottom:8px">OBJ-2 Simulation</summary>
+                  <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+                    <div class="field">
+                      <label>Spread Speed (km/h)</label>
+                      <input type="number" id="rerun_obj2_speed" placeholder="e.g. 2.5" min="0" step="0.1">
+                    </div>
+                    <div class="field">
+                      <label>Spread Direction (°)</label>
+                      <input type="number" id="rerun_obj2_dir" placeholder="e.g. 45" min="0" max="360" step="1">
+                    </div>
+                    <div class="field">
+                      <label>Crown Fire Status</label>
+                      <select id="rerun_obj2_crown">
+                        <option value="">— auto —</option>
+                        <option value="none">None</option>
+                        <option value="passive_crown">Passive Crown</option>
+                        <option value="active_crown">Active Crown</option>
+                      </select>
+                    </div>
+                    <div class="field">
+                      <label>Dead Fuel Moisture (%)</label>
+                      <input type="number" id="rerun_obj2_dfm" placeholder="e.g. 6" min="0" step="0.1">
+                    </div>
                   </div>
+                </details>
+
+                <!-- XGBoost Cell Overrides -->
+                <details style="margin-bottom:10px">
+                  <summary style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:var(--text-3);cursor:pointer;margin-bottom:8px">XGBoost Cell Overrides</summary>
+                  <div id="xgbRows"></div>
+                  <button type="button" class="preset-btn" onclick="addXgbRow()" style="margin-top:6px;font-size:11px">+ Add Cell</button>
+                </details>
+
+                <!-- Risk Level Override -->
+                <details style="margin-bottom:10px">
+                  <summary style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:var(--text-3);cursor:pointer;margin-bottom:8px">Risk Level Override</summary>
                   <div class="field">
-                    <label>Soil Moisture (m³/m³)</label>
-                    <input type="number" id="rerun_soil" placeholder="e.g. 0.08" step="0.001">
+                    <select id="rerun_risk_override">
+                      <option value="">Auto (from model)</option>
+                      <option value="LOW">LOW</option>
+                      <option value="MODERATE">MODERATE</option>
+                      <option value="HIGH">HIGH</option>
+                      <option value="CRITICAL">CRITICAL</option>
+                    </select>
                   </div>
-                </div>
-                <div class="field">
-                  <label>Fire Weather Index</label>
-                  <input type="number" id="rerun_fwi" placeholder="e.g. 28.5" step="0.1">
-                </div>
+                </details>
+
+                <!-- Advisory Input -->
+                <details style="margin-bottom:10px">
+                  <summary style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:var(--text-3);cursor:pointer;margin-bottom:8px">Reviewer Advisories</summary>
+                  <div style="font-size:11px;color:var(--text-3);margin-bottom:8px">Structured advice that influences the LLM's decisions and reasoning.</div>
+                  <div id="advisoryRows"></div>
+                  <button type="button" class="preset-btn" onclick="addAdvisoryRow()" style="margin-top:6px;font-size:11px">+ Add Advisory</button>
+                </details>
+              </div>
+
+              <div class="validation-banner" id="validationBanner">
+                <strong>Please fix the following errors:</strong>
+                <ul id="validationList"></ul>
               </div>
 
               <button type="button" class="btn btn-primary" id="submitBtn" onclick="handleSubmit()">
@@ -530,8 +670,318 @@ function toggleRerun(enabled) {
   document.getElementById('st').textContent = enabled ? 'Re-run with Local Data' : 'Generate Report';
 }
 
+// ── Dynamic FIRMS rows ──
+let firmsCount = 0;
+function addFirmsRow() {
+  const id = firmsCount++;
+  const html = `<div id="firms_${id}" style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr auto;gap:6px;align-items:end;margin-bottom:6px">
+    <div class="field"><label>Lat</label><input type="number" class="firms-lat" placeholder="34.05" step="0.001"></div>
+    <div class="field"><label>Lon</label><input type="number" class="firms-lon" placeholder="-118.2" step="0.001"></div>
+    <div class="field"><label>FRP (MW)</label><input type="number" class="firms-frp" placeholder="85" min="0" step="0.1"></div>
+    <div class="field"><label>Confidence</label><select class="firms-conf"><option>nominal</option><option>low</option><option>high</option></select></div>
+    <button type="button" class="file-del" onclick="document.getElementById('firms_${id}').remove()" style="margin-bottom:14px">✕</button>
+  </div>`;
+  document.getElementById('firmsRows').insertAdjacentHTML('beforeend', html);
+}
+
+// ── Dynamic XGBoost rows ──
+let xgbCount = 0;
+function addXgbRow() {
+  const id = xgbCount++;
+  const html = `<div id="xgb_${id}" style="display:grid;grid-template-columns:2fr 1fr 1fr 1fr auto;gap:6px;align-items:end;margin-bottom:6px">
+    <div class="field"><label>H3 Index</label><input type="text" class="xgb-h3" placeholder="8928308280fffff"></div>
+    <div class="field"><label>P(fire)</label><input type="number" class="xgb-prob" placeholder="0.91" min="0" max="1" step="0.01"></div>
+    <div class="field"><label>Lat</label><input type="number" class="xgb-lat" placeholder="34.1" step="0.001"></div>
+    <div class="field"><label>Lon</label><input type="number" class="xgb-lon" placeholder="-118.3" step="0.001"></div>
+    <button type="button" class="file-del" onclick="document.getElementById('xgb_${id}').remove()" style="margin-bottom:14px">✕</button>
+  </div>`;
+  document.getElementById('xgbRows').insertAdjacentHTML('beforeend', html);
+}
+
+// ── Dynamic advisory rows ──
+let advCount = 0;
+function addAdvisoryRow() {
+  const id = advCount++;
+  const html = `<div id="adv_${id}" style="background:var(--panel);border:1px solid var(--border);border-radius:6px;padding:10px;margin-bottom:8px">
+    <div style="display:flex;gap:8px;margin-bottom:8px">
+      <div class="field" style="flex:1"><label>Category</label>
+        <select class="adv-cat"><option value="general">General</option><option value="evacuation">Evacuation</option><option value="resource">Resource</option><option value="data_quality">Data Quality</option><option value="risk_assessment">Risk Assessment</option></select>
+      </div>
+      <div class="field" style="flex:1"><label>Priority</label>
+        <select class="adv-pri"><option value="MEDIUM">Medium</option><option value="LOW">Low</option><option value="HIGH">High</option><option value="CRITICAL">Critical</option></select>
+      </div>
+      <button type="button" class="file-del" onclick="document.getElementById('adv_${id}').remove()" style="align-self:end;margin-bottom:14px">✕</button>
+    </div>
+    <div class="field"><label>Advisory Text</label><textarea class="adv-text" rows="2" placeholder="e.g. Evacuate zone B — ground crews report spot fires crossing containment line"></textarea></div>
+    <div class="field"><label>Affects Zones <span class="opt">(comma-separated H3 cells or zone names)</span></label><input type="text" class="adv-zones" placeholder="e.g. 852830bffffffff, Zone A"></div>
+  </div>`;
+  document.getElementById('advisoryRows').insertAdjacentHTML('beforeend', html);
+}
+
+// ── Collect dynamic rows into JSON ──
+function collectFirms() {
+  const rows = [];
+  document.querySelectorAll('#firmsRows > div').forEach(row => {
+    const lat = row.querySelector('.firms-lat')?.value;
+    const lon = row.querySelector('.firms-lon')?.value;
+    const frp = row.querySelector('.firms-frp')?.value;
+    const conf = row.querySelector('.firms-conf')?.value;
+    if (lat && lon && frp) rows.push({ lat:+lat, lon:+lon, frp:+frp, confidence:conf||'nominal' });
+  });
+  return rows.length ? rows : null;
+}
+function collectXgb() {
+  const rows = [];
+  document.querySelectorAll('#xgbRows > div').forEach(row => {
+    const h3 = row.querySelector('.xgb-h3')?.value?.trim();
+    const prob = row.querySelector('.xgb-prob')?.value;
+    const lat = row.querySelector('.xgb-lat')?.value;
+    const lon = row.querySelector('.xgb-lon')?.value;
+    if (h3 && prob) rows.push({ h3_index:h3, probability:+prob, lat:+(lat||0), lon:+(lon||0) });
+  });
+  return rows.length ? rows : null;
+}
+function collectAdvisories() {
+  const rows = [];
+  document.querySelectorAll('#advisoryRows > div').forEach(row => {
+    const text = row.querySelector('.adv-text')?.value?.trim();
+    if (!text) return;
+    const zones = (row.querySelector('.adv-zones')?.value||'').split(',').map(s=>s.trim()).filter(Boolean);
+    rows.push({
+      category: row.querySelector('.adv-cat')?.value || 'general',
+      priority: row.querySelector('.adv-pri')?.value || 'MEDIUM',
+      advisory_text: text,
+      affects_zones: zones,
+    });
+  });
+  return rows.length ? rows : null;
+}
+
+// ── Validation ──
+const RANGES = {
+  temperature_max:   { min:-80,  max:160,  unit:'°F',   label:'Temperature' },
+  wind_speed_mph:    { min:0,    max:250,  unit:'mph',  label:'Wind Speed' },
+  relative_humidity: { min:0,    max:100,  unit:'%',    label:'Relative Humidity' },
+  soil_moisture:     { min:0,    max:1,    unit:'m³/m³',label:'Soil Moisture' },
+  firms_hotspot_count:{min:0,    max:9999, unit:'',     label:'FIRMS Hotspot Count' },
+  // Rerun weather
+  rerun_temp_f:      { min:-80,  max:160,  unit:'°F',   label:'Temperature (rerun)' },
+  rerun_wind_mph:    { min:0,    max:250,  unit:'mph',  label:'Wind Speed (rerun)' },
+  rerun_rh:          { min:0,    max:100,  unit:'%',    label:'Relative Humidity (rerun)' },
+  rerun_soil:        { min:0,    max:1,    unit:'m³/m³',label:'Soil Moisture (rerun)' },
+  rerun_fwi:         { min:0,    max:150,  unit:'',     label:'Fire Weather Index (rerun)' },
+  rerun_wind_dir:    { min:0,    max:360,  unit:'°',    label:'Wind Direction (rerun)' },
+  rerun_precip:      { min:0,    max:500,  unit:'mm',   label:'Precipitation (rerun)' },
+  rerun_vpd:         { min:0,    max:20,   unit:'kPa',  label:'VPD (rerun)' },
+  // Vegetation
+  rerun_ndvi:        { min:-1,   max:1,    unit:'',     label:'NDVI' },
+  rerun_fuel_frac:   { min:0,    max:1,    unit:'',     label:'Fuel Fraction' },
+  // OBJ-2
+  rerun_obj2_speed:  { min:0,    max:50,   unit:'km/h', label:'Spread Speed' },
+  rerun_obj2_dir:    { min:0,    max:360,  unit:'°',    label:'Spread Direction' },
+  rerun_obj2_dfm:    { min:0,    max:100,  unit:'%',    label:'Dead Fuel Moisture' },
+};
+
+const MAX_FILE_MB = 10;
+const MAX_TOTAL_MB = 50;
+const ALLOWED_EXTENSIONS = ['png','jpg','jpeg','gif','webp','bmp','tiff','pdf','txt','csv','json','geojson','xml','md','log','shp','kml'];
+
+function clearErrors() {
+  document.querySelectorAll('.field-error').forEach(el => { el.classList.remove('show'); el.textContent = ''; });
+  document.querySelectorAll('.has-error').forEach(el => el.classList.remove('has-error'));
+  document.getElementById('validationBanner').classList.remove('show');
+}
+
+function showFieldError(inputEl, msg) {
+  if (!inputEl) return;
+  inputEl.classList.add('has-error');
+  // Find or create error div after the input
+  let errEl = inputEl.parentElement.querySelector('.field-error');
+  if (!errEl) {
+    errEl = document.createElement('div');
+    errEl.className = 'field-error';
+    inputEl.parentElement.appendChild(errEl);
+  }
+  errEl.textContent = msg;
+  errEl.classList.add('show');
+}
+
+function validateRange(id, isRerun) {
+  const el = document.getElementById(id);
+  if (!el || el.value === '') return null; // empty = skip
+  const r = RANGES[id];
+  if (!r) return null;
+  const val = parseFloat(el.value);
+  if (isNaN(val)) {
+    showFieldError(el, `${r.label} must be a number.`);
+    return `${r.label}: not a valid number`;
+  }
+  if (val < r.min || val > r.max) {
+    showFieldError(el, `Must be between ${r.min} and ${r.max} ${r.unit}.`);
+    return `${r.label}: ${val} is outside valid range [${r.min}, ${r.max}]`;
+  }
+  return null;
+}
+
+function validateForm() {
+  clearErrors();
+  const errors = [];
+  const isRerun = document.getElementById('rerunToggle').checked;
+
+  // -- Generate form fields --
+  if (!isRerun) {
+    for (const id of ['temperature_max','wind_speed_mph','relative_humidity','soil_moisture','firms_hotspot_count']) {
+      const err = validateRange(id);
+      if (err) errors.push(err);
+    }
+    // Validate XGBoost JSON if provided
+    const xgbJson = document.getElementById('xgboost_cells_json')?.value?.trim();
+    if (xgbJson) {
+      try {
+        const parsed = JSON.parse(xgbJson);
+        if (!Array.isArray(parsed)) throw new Error('Must be a JSON array');
+        for (let i = 0; i < parsed.length; i++) {
+          const c = parsed[i];
+          if (typeof c !== 'object' || c === null) throw new Error(`Cell [${i}] is not an object`);
+          if (c.probability != null && (c.probability < 0 || c.probability > 1))
+            throw new Error(`Cell [${i}] probability=${c.probability} out of range [0, 1]`);
+        }
+      } catch(e) {
+        const el = document.getElementById('xgboost_cells_json');
+        showFieldError(el, e.message);
+        errors.push('XGBoost JSON: ' + e.message);
+      }
+    }
+    // Validate OBJ-2 JSON if provided
+    const obj2Json = document.getElementById('obj2_simulation_json')?.value?.trim();
+    if (obj2Json) {
+      try {
+        const parsed = JSON.parse(obj2Json);
+        if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed))
+          throw new Error('Must be a JSON object');
+      } catch(e) {
+        const el = document.getElementById('obj2_simulation_json');
+        showFieldError(el, e.message);
+        errors.push('OBJ-2 JSON: ' + e.message);
+      }
+    }
+  }
+
+  // -- Rerun fields --
+  if (isRerun) {
+    const gridId = document.getElementById('rerun_grid_id')?.value?.trim();
+    if (!gridId) {
+      showFieldError(document.getElementById('rerun_grid_id'), 'Grid ID is required.');
+      errors.push('Grid ID is required for re-run');
+    } else if (!/^[0-9a-fA-F]{10,16}$/.test(gridId)) {
+      showFieldError(document.getElementById('rerun_grid_id'), 'Must be 10-16 hex characters (H3 index).');
+      errors.push('Grid ID: invalid format (must be hex H3 index)');
+    }
+
+    // Weather ranges
+    for (const id of ['rerun_temp_f','rerun_wind_mph','rerun_rh','rerun_soil','rerun_fwi',
+                       'rerun_wind_dir','rerun_precip','rerun_vpd']) {
+      const err = validateRange(id, true);
+      if (err) errors.push(err);
+    }
+
+    // Vegetation ranges
+    for (const id of ['rerun_ndvi','rerun_fuel_frac','rerun_obj2_speed','rerun_obj2_dir','rerun_obj2_dfm']) {
+      const err = validateRange(id, true);
+      if (err) errors.push(err);
+    }
+
+    // FIRMS row validation
+    document.querySelectorAll('#firmsRows > div').forEach((row, i) => {
+      const lat = parseFloat(row.querySelector('.firms-lat')?.value);
+      const lon = parseFloat(row.querySelector('.firms-lon')?.value);
+      const frp = parseFloat(row.querySelector('.firms-frp')?.value);
+      if (isNaN(lat) && isNaN(lon) && isNaN(frp)) return; // all empty = skip
+      if (isNaN(lat) || lat < -90 || lat > 90) {
+        showFieldError(row.querySelector('.firms-lat'), 'Lat: -90 to 90');
+        errors.push(`FIRMS hotspot ${i+1}: latitude out of range [-90, 90]`);
+      }
+      if (isNaN(lon) || lon < -180 || lon > 180) {
+        showFieldError(row.querySelector('.firms-lon'), 'Lon: -180 to 180');
+        errors.push(`FIRMS hotspot ${i+1}: longitude out of range [-180, 180]`);
+      }
+      if (isNaN(frp) || frp < 0 || frp > 5000) {
+        showFieldError(row.querySelector('.firms-frp'), 'FRP: 0-5000 MW');
+        errors.push(`FIRMS hotspot ${i+1}: FRP out of range [0, 5000]`);
+      }
+    });
+
+    // XGBoost row validation
+    document.querySelectorAll('#xgbRows > div').forEach((row, i) => {
+      const h3 = row.querySelector('.xgb-h3')?.value?.trim();
+      const prob = parseFloat(row.querySelector('.xgb-prob')?.value);
+      const lat = row.querySelector('.xgb-lat')?.value;
+      const lon = row.querySelector('.xgb-lon')?.value;
+      if (!h3 && isNaN(prob)) return; // all empty = skip
+      if (h3 && !/^[0-9a-fA-F]{15,16}$/.test(h3)) {
+        showFieldError(row.querySelector('.xgb-h3'), 'Must be 15-16 hex chars');
+        errors.push(`XGB cell ${i+1}: invalid H3 index format`);
+      }
+      if (isNaN(prob) || prob < 0 || prob > 1) {
+        showFieldError(row.querySelector('.xgb-prob'), 'P: 0 to 1');
+        errors.push(`XGB cell ${i+1}: probability out of range [0, 1]`);
+      }
+      if (lat && (parseFloat(lat) < -90 || parseFloat(lat) > 90)) {
+        showFieldError(row.querySelector('.xgb-lat'), 'Lat: -90 to 90');
+        errors.push(`XGB cell ${i+1}: latitude out of range`);
+      }
+      if (lon && (parseFloat(lon) < -180 || parseFloat(lon) > 180)) {
+        showFieldError(row.querySelector('.xgb-lon'), 'Lon: -180 to 180');
+        errors.push(`XGB cell ${i+1}: longitude out of range`);
+      }
+    });
+
+    // Advisory text length
+    document.querySelectorAll('#advisoryRows > div').forEach((row, i) => {
+      const text = row.querySelector('.adv-text')?.value || '';
+      if (text.length > 1000) {
+        showFieldError(row.querySelector('.adv-text'), `${text.length}/1000 chars — too long`);
+        errors.push(`Advisory ${i+1}: text exceeds 1000 character limit`);
+      }
+    });
+  }
+
+  // -- File validation (both modes) --
+  let totalSize = 0;
+  for (let i = 0; i < files.length; i++) {
+    const f = files[i];
+    const ext = f.name.split('.').pop()?.toLowerCase() || '';
+    if (!ALLOWED_EXTENSIONS.includes(ext)) {
+      errors.push(`File "${f.name}": unsupported type (.${ext})`);
+    }
+    if (f.size > MAX_FILE_MB * 1024 * 1024) {
+      errors.push(`File "${f.name}": exceeds ${MAX_FILE_MB}MB limit (${(f.size/1048576).toFixed(1)}MB)`);
+    }
+    totalSize += f.size;
+  }
+  if (totalSize > MAX_TOTAL_MB * 1024 * 1024) {
+    errors.push(`Total file size ${(totalSize/1048576).toFixed(1)}MB exceeds ${MAX_TOTAL_MB}MB limit`);
+  }
+  if (files.length > 20) {
+    errors.push(`Too many files (${files.length}). Maximum is 20.`);
+  }
+
+  // -- Show banner if errors --
+  if (errors.length) {
+    const banner = document.getElementById('validationBanner');
+    document.getElementById('validationList').innerHTML = errors.map(e => `<li>${e}</li>`).join('');
+    banner.classList.add('show');
+    banner.scrollIntoView({ behavior:'smooth', block:'nearest' });
+  }
+
+  return errors;
+}
+
 // ── Submit (handles both /api/generate and /api/rerun) ──
 async function handleSubmit() {
+  const validationErrors = validateForm();
+  if (validationErrors.length) return; // stop — errors shown inline
+
   const btn = document.getElementById('submitBtn');
   const si = document.getElementById('si');
   const st = document.getElementById('st');
@@ -550,20 +1000,63 @@ async function handleSubmit() {
       const fd = new FormData();
       const gridId = document.getElementById('rerun_grid_id').value.trim();
       if (!gridId) { showResult({ success:false, error:'Grid ID is required for local re-run.' }); return; }
+
+      // Build full overrides JSON
+      const v = (id) => { const el=document.getElementById(id); return el && el.value!=='' ? +el.value : undefined; };
+      const s = (id) => { const el=document.getElementById(id); return el && el.value ? el.value : undefined; };
+
+      const overrides = { grid_id: gridId, region: document.querySelector('[name=region]')?.value || 'california' };
+
+      // Weather
+      const weather = {};
+      const wMap = { rerun_temp_f:'temperature_f', rerun_wind_mph:'wind_speed_mph', rerun_rh:'relative_humidity',
+                     rerun_soil:'soil_moisture', rerun_fwi:'fire_weather_index', rerun_wind_dir:'wind_direction_deg',
+                     rerun_precip:'precipitation_mm', rerun_vpd:'vpd_kpa' };
+      for (const [elId, key] of Object.entries(wMap)) { const val=v(elId); if(val!==undefined) weather[key]=val; }
+      if (Object.keys(weather).length) overrides.weather = weather;
+
+      // Vegetation
+      const veg = {};
+      const ndvi=v('rerun_ndvi'); if(ndvi!==undefined) veg.ndvi=ndvi;
+      const ff=v('rerun_fuel_frac'); if(ff!==undefined) veg.dominant_fuel_fraction=ff;
+      const fbfm=s('rerun_fbfm40'); if(fbfm) veg.fuel_model_fbfm40=+fbfm;
+      const vegType=s('rerun_veg_type'); if(vegType) veg.vegetation_type=vegType;
+      if (Object.keys(veg).length) overrides.vegetation = veg;
+
+      // FIRMS
+      const firms = collectFirms();
+      if (firms) overrides.firms_hotspots = firms;
+
+      // XGBoost
+      const xgb = collectXgb();
+      if (xgb) overrides.xgboost_cells = xgb;
+
+      // OBJ-2
+      const obj2 = {};
+      const o2speed=v('rerun_obj2_speed'); if(o2speed!==undefined) obj2.spread_speed_kmh=o2speed;
+      const o2dir=v('rerun_obj2_dir'); if(o2dir!==undefined) obj2.spread_direction_deg=o2dir;
+      const o2crown=s('rerun_obj2_crown'); if(o2crown) obj2.crown_fire_status=o2crown;
+      const o2dfm=v('rerun_obj2_dfm'); if(o2dfm!==undefined) obj2.dead_fuel_moisture_pct=o2dfm;
+      if (Object.keys(obj2).length) overrides.obj2_simulation = obj2;
+
+      // Risk override
+      const riskOvr=s('rerun_risk_override');
+      if (riskOvr) overrides.risk_level_override = riskOvr;
+
       fd.append('grid_id', gridId);
-      fd.append('region', document.querySelector('[name=region]')?.value || 'california');
-      const tempF   = document.getElementById('rerun_temp_f').value;
-      const windMph = document.getElementById('rerun_wind_mph').value;
-      const rh      = document.getElementById('rerun_rh').value;
-      const soil    = document.getElementById('rerun_soil').value;
-      const fwi     = document.getElementById('rerun_fwi').value;
-      if (tempF)   fd.append('temperature_f', tempF);
-      if (windMph) fd.append('wind_speed_mph', windMph);
-      if (rh)      fd.append('relative_humidity', rh);
-      if (soil)    fd.append('soil_moisture', soil);
-      if (fwi)     fd.append('fire_weather_index', fwi);
+      fd.append('overrides_json', JSON.stringify(overrides));
+
+      // Advisories
+      const advs = collectAdvisories();
+      if (advs) fd.append('advisories_json', JSON.stringify(advs));
+
+      // Operator notes
       const notes = document.getElementById('operator_notes')?.value;
-      if (notes)   fd.append('operator_notes', notes);
+      if (notes) fd.append('operator_notes', notes);
+
+      // Files (shared with main form)
+      files.forEach(f => fd.append('files', f));
+
       res = await fetch('/api/rerun', { method:'POST', body:fd });
     } else {
       const form = document.getElementById('form');
@@ -573,6 +1066,10 @@ async function handleSubmit() {
       res = await fetch('/api/generate', { method:'POST', body:fd });
     }
     d = await res.json();
+    // Treat HTTP 4xx/5xx as errors even if JSON has no success field
+    if (!res.ok && d.success === undefined) {
+      d.success = false;
+    }
     showResult(d);
   } catch(err) {
     showResult({ success:false, error: String(err) });
@@ -603,9 +1100,8 @@ function showResult(d) {
       ['Files', (d.files_processed||0)+' processed'],
       ['Backend', d.backend_used],
     ]);
-    const viewUrl = d.rendered_path
-      ? `/api/report-file?path=${encodeURIComponent(d.rendered_path)}`
-      : `/api/reports/${d.json_path ? d.json_path.split('/').pop().replace('.json','') : d.incident_id}/render?format=html`;
+    const reportId = d.json_path ? d.json_path.split('/').pop().replace('.json','') : d.incident_id;
+    const viewUrl = `/api/reports/${reportId}/render?format=html`;
     acts.innerHTML =
       `<a class="btn btn-primary" href="${viewUrl}" target="_blank">👁 View</a>` +
       `<a class="btn btn-ghost" href="/">📋 All</a>`;
@@ -613,7 +1109,25 @@ function showResult(d) {
     box.className  = 'result-box err';
     head.className = 'result-head err';
     head.innerHTML = `<span>❌</span><span>Failed</span>`;
-    kv.innerHTML = `<div style="grid-column:1/-1;color:var(--critical);font-size:12px;word-break:break-word">${d.error||d.detail||'Unknown error'}</div>`;
+    // Format error detail — may be string, array, or object (Pydantic 422)
+    let errHtml = '';
+    const detail = d.detail || d.error || 'Unknown error';
+    if (Array.isArray(detail)) {
+      errHtml = '<ul style="margin:4px 0 0 16px;padding:0">' +
+        detail.map(e => {
+          if (typeof e === 'object') {
+            const loc = (e.loc||[]).join(' → ');
+            const msg = e.msg || JSON.stringify(e);
+            return `<li>${loc ? `<strong>${loc}:</strong> ` : ''}${msg}</li>`;
+          }
+          return `<li>${e}</li>`;
+        }).join('') + '</ul>';
+    } else if (typeof detail === 'object') {
+      errHtml = `<pre style="margin:4px 0;font-size:11px;white-space:pre-wrap">${JSON.stringify(detail, null, 2)}</pre>`;
+    } else {
+      errHtml = String(detail);
+    }
+    kv.innerHTML = `<div style="grid-column:1/-1;color:var(--critical);font-size:12px;word-break:break-word">${errHtml}</div>`;
     acts.innerHTML = '';
   }
   wrap.classList.add('show');

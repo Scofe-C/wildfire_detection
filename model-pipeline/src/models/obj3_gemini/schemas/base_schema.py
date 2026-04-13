@@ -16,6 +16,19 @@ REQUIRED_DISCLAIMER = "AI-generated. Not for operational use without human revie
 # Nested supporting types
 # ---------------------------------------------------------------------------
 
+class ReasoningStep(BaseModel):
+    """A single step in the LLM's reasoning chain for reviewer audit."""
+
+    step_number: int = Field(ge=1)
+    category: Literal[
+        "data_assessment", "risk_evaluation", "resource_planning",
+        "evacuation_decision", "confidence_calibration", "advisory_integration",
+    ]
+    observation: str
+    conclusion: str
+    data_cited: list[str] = Field(default_factory=list)
+
+
 class RiskCell(BaseModel):
     """A single H3 cell with its risk score and coordinates."""
 
@@ -31,6 +44,13 @@ class Recommendation(BaseModel):
     title: str
     description: str
     priority: Literal["LOW", "MEDIUM", "HIGH", "CRITICAL"]
+    rationale: str = Field(
+        description=(
+            "Data-driven justification: cite specific values from the ML pipeline "
+            "(H3 cells, probabilities, wind speed, FRP), environmental telemetry, "
+            "or corpus doctrine that motivated this recommendation."
+        ),
+    )
 
 
 class VulnerableGroup(BaseModel):
@@ -174,6 +194,8 @@ class BaseReport(BaseModel):
     # B4: data quality — stamped deterministically by reporter.py, not by the LLM.
     data_quality_score: float = Field(default=0.0, ge=0.0, le=1.0)
     data_completeness: dict[str, bool] | None = None
+    # Reasoning trace — structured audit trail of LLM analytical decisions.
+    reasoning_trace: list[ReasoningStep] = Field(default_factory=list)
 
     @field_validator("disclaimer")
     @classmethod

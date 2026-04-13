@@ -3,7 +3,7 @@
 
 # Active LLM backend: "ollama" | "gemini_dev" | "vertex_ai"
 # Override priority: CLI --backend > env var LLM_BACKEND > this value
-llm_backend: "ollama"
+llm_backend: "gemini_dev"
 
 # --- Ollama (Phase 1: local model) ---
 ollama:
@@ -16,13 +16,19 @@ ollama:
 # Free tier: 10 RPM, 250 RPD for 2.5-flash; preview models have lower limits
 # API key read from env var GEMINI_API_KEY
 gemini_dev:
-  model: "gemini-2.5-flash"
-  # Alternative models (free tier):
-  #   "gemini-2.5-flash"              — stable, 10 RPM / 250 RPD (recommended)
-  #   "gemini-2.5-flash-lite"         — stable, 15 RPM / 1000 RPD (faster, lighter)
-  #   "gemini-3-flash-preview"        — preview, lower limits (latest generation)
-  #   "gemini-3.1-flash-lite-preview" — preview, lower limits
-  # Paid only: "gemini-2.5-pro", "gemini-3.1-pro-preview"
+  model: "gemini-3-flash-preview"
+  # Auto-fallback priority: on rate limit, switch to next model in order.
+  # Per-minute limit → pause 60s and retry same model (up to 2 times).
+  # Per-day limit → mark model exhausted, switch to next.
+  model_priority:
+    - "gemini-3-flash-preview"    # Primary: newest generation, best instruction following
+    - "gemini-2.5-flash"          # Fallback 1: stable, 10 RPM / 500 RPD / 250K TPM
+    - "gemini-2.5-flash-lite"     # Fallback 2: lighter, 30 RPM / 1500 RPD / 250K TPM
+    - "gemini-2.0-flash"          # Fallback 3: older but proven, 15 RPM / 1500 RPD / 1M TPM
+    - "gemini-2.0-flash-lite"     # Last resort: lightest, 30 RPM / 1500 RPD / 1M TPM
+  # NOT recommended for free tier:
+  #   "gemini-2.5-pro"  — only 5 RPM / 25 RPD, exhausts instantly
+  # Check latest limits: https://ai.google.dev/pricing
 
 # --- Vertex AI (Phase 3: GCP project) ---
 vertex_ai:
@@ -44,8 +50,8 @@ reporting:
   confidence_threshold: 0.70
   min_grounding_sources: 3
   output_dir: "reports/disaster_reports"
-  gcs_bucket: "wildfire-model-pipeline"
-  default_render_format: "json"   # "json" (save JSON only) | "auto" (JSON + rendered HTML/MD)
+  gcs_bucket: ""
+  default_render_format: "auto"   # "json" (save JSON only) | "auto" (JSON + rendered HTML/MD)
   max_ml_block_chars: 20000       # Cloud backends
   max_data_block_chars: 20000     # Cloud backends
   ollama_max_ml_block_chars: 6000    # Local models — keep total context < 32K tokens

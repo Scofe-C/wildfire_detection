@@ -19,7 +19,7 @@ _COOLDOWN_FILE = Path(__file__).resolve().parents[2] / "reports" / ".last_retrai
 
 
 def _load_monitoring_config() -> dict[str, Any]:
-    with open(_CONFIG_PATH) as f:
+    with open(_CONFIG_PATH, encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 

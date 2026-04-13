@@ -67,7 +67,7 @@ def _load_propagator_config(
         config_path = (
             Path(__file__).resolve().parents[3] / "configs" / "model_config.yaml"
         )
-    with open(config_path) as f:
+    with open(config_path, encoding="utf-8") as f:
         raw = yaml.safe_load(f)
     return raw["obj2"]["propagator"]
 
@@ -81,7 +81,7 @@ def load_crosswalk(crosswalk_path: str | Path | None = None) -> dict[int, int]:
     if crosswalk_path is not None:
         crosswalk_path = Path(crosswalk_path)
         if crosswalk_path.exists():
-            with open(crosswalk_path) as f:
+            with open(crosswalk_path, encoding="utf-8") as f:
                 raw = json.load(f)
             return {int(k): int(v) for k, v in raw.items()}
             logger.info("Loaded crosswalk from %s (%d entries)", crosswalk_path, len(raw))
@@ -155,7 +155,7 @@ class PropagatorSpread(BaseModel):
         config_file = model_path / "propagator_config.json" if model_path.is_dir() else model_path
 
         if config_file.exists():
-            with open(config_file) as f:
+            with open(config_file, encoding="utf-8") as f:
                 self._config = json.load(f)
         else:
             logger.warning(

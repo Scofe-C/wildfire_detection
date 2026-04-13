@@ -324,11 +324,8 @@ def _rothermel_surface_ros(
     E = 0.715 * math.exp(-3.59e-4 * sigma)
 
     U_safe = max(0.0, U_midflame_ftmin)
-    if U_safe > 0 and beta_op > 0:
-        # U is already in ft/min — Rothermel eq. 47 uses ft/min directly.
-        phi_w = C * U_safe ** B * (beta / beta_op) ** (-E)
-    else:
-        phi_w = 0.0
+    # U is already in ft/min — Rothermel eq. 47 uses ft/min directly.
+    phi_w = C * U_safe ** B * (beta / beta_op) ** (-E) if U_safe > 0 and beta_op > 0 else 0.0
 
     # ── Step 11: Assemble ROS R (Rothermel eq. 52) ────────────────────────
     denominator = rho_b * epsilon * Q_ig
@@ -566,8 +563,8 @@ def _weighted_circular_mean(bearings: list[float], weights: list[float]) -> floa
     total_w = sum(weights)
     if total_w <= 0:
         return 0.0
-    sin_sum = sum(w * math.sin(math.radians(b)) for b, w in zip(bearings, weights))
-    cos_sum = sum(w * math.cos(math.radians(b)) for b, w in zip(bearings, weights))
+    sin_sum = sum(w * math.sin(math.radians(b)) for b, w in zip(bearings, weights, strict=False))
+    cos_sum = sum(w * math.cos(math.radians(b)) for b, w in zip(bearings, weights, strict=False))
     return (math.degrees(math.atan2(sin_sum, cos_sum)) + 360) % 360
 
 
@@ -814,7 +811,7 @@ class PythonFireSpreadSimulator:
             spread_rates.append(ros_kmh)
             bearings_list.append(bear)
 
-            if I_B > max_I_B:
+            if max_I_B < I_B:
                 max_I_B = I_B
                 max_crown_status = crown_status
 

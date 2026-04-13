@@ -126,7 +126,7 @@ class PipelineResult:
 def load_pipeline_config(config_path: str | Path | None = None) -> PipelineConfig:
     if config_path is None:
         config_path = Path(__file__).resolve().parents[2] / "configs" / "model_config.yaml"
-    with open(config_path) as f:
+    with open(config_path, encoding="utf-8") as f:
         raw = yaml.safe_load(f)
 
     p = raw["paths"]
@@ -373,7 +373,8 @@ def run_training_pipeline(
             # Alert if soil moisture importance drops below threshold (feature drift signal)
             import yaml as _yaml
             _shap_cfg = (_yaml.safe_load(open(
-                Path(__file__).resolve().parents[2] / "configs" / "model_config.yaml"
+                Path(__file__).resolve().parents[2] / "configs" / "model_config.yaml",
+                encoding="utf-8",
             )) or {}).get("shap", {})
             _min_soil_importance = _shap_cfg.get("min_soil_moisture_importance", 0.05)
             _soil_importance = shap_importances.get("soil_moisture_0_to_7cm", 1.0)
@@ -456,7 +457,7 @@ def run_training_pipeline(
                 out_dir.mkdir(parents=True, exist_ok=True)
                 model_file = out_dir / ("model.bst" if winner_name == "xgboost" else "model.txt")
                 if winner_name == "xgboost":
-                    winner._model.save_model(str(model_file))
+                    winner._model.get_booster().save_model(str(model_file))
                 else:
                     winner._model.booster_.save_model(str(model_file))
                 metadata = {
