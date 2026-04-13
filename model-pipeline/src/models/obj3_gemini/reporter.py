@@ -330,6 +330,8 @@ class GeminiDisasterReporter(BaseModel):
             "latency_ms": report_result.latency_ms,
             "data_quality_score": parsed.data_quality_score,
             "data_completeness": parsed.data_completeness,
+            "reasoning_step_count": len(parsed.reasoning_trace),
+            "reasoning_categories": list({s.category for s in parsed.reasoning_trace}),
         }
 
     # -- High-level convenience method -----------------------------------------
@@ -721,6 +723,41 @@ def _preprocess_report_json(raw_json: str, context_bundle: ContextBundle) -> str
     # Stamp data_completeness from context bundle (not LLM-generated)
     # This is set later by generate_report() from pipeline_result if available
     data.setdefault("data_completeness", None)
+
+    # --- Normalise: reasoning_trace ---
+    _VALID_CATEGORIES = {
+        "data_assessment", "risk_evaluation", "resource_planning",
+        "evacuation_decision", "confidence_calibration", "advisory_integration",
+    }
+    trace = data.get("reasoning_trace")
+    if isinstance(trace, list):
+        clean_trace = []
+        for i, step in enumerate(trace):
+            if not isinstance(step, dict):
+                continue
+            step["step_number"] = i + 1
+            # Normalise category to lowercase, default to data_assessment
+            cat = step.get("category", "")
+            if isinstance(cat, str):
+                cat = cat.lower().replace(" ", "_")
+            if cat not in _VALID_CATEGORIES:
+                cat = "data_assessment"
+            step["category"] = cat
+            # Truncate excessively long fields
+            for text_field in ("observation", "conclusion"):
+                val = step.get(text_field)
+                if isinstance(val, str) and len(val) > 500:
+                    step[text_field] = val[:497] + "..."
+            # Ensure data_cited is a list of strings
+            cited = step.get("data_cited")
+            if not isinstance(cited, list):
+                step["data_cited"] = []
+            else:
+                step["data_cited"] = [str(c)[:200] for c in cited]
+            clean_trace.append(step)
+        data["reasoning_trace"] = clean_trace[:7]  # cap at 7 steps
+    else:
+        data["reasoning_trace"] = []
 
     return _json.dumps(data)
 

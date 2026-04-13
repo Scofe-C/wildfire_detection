@@ -477,6 +477,27 @@ async def generate_report(
     if _reporter is None:
         raise HTTPException(status_code=503, detail="Reporter not loaded — check server logs")
 
+    # --- Validate generate form inputs ---
+    errors: list[str] = []
+
+    if risk_level.upper() not in ("LOW", "MODERATE", "HIGH", "CRITICAL"):
+        errors.append(f"Invalid risk_level: {risk_level!r}. Must be LOW/MODERATE/HIGH/CRITICAL.")
+    if firms_hotspot_count < 0:
+        errors.append("firms_hotspot_count must be >= 0.")
+    if temperature_max is not None and not (-80 <= temperature_max <= 160):
+        errors.append(f"temperature_max={temperature_max} out of range [-80, 160] °F.")
+    if wind_speed_mph is not None and not (0 <= wind_speed_mph <= 250):
+        errors.append(f"wind_speed_mph={wind_speed_mph} out of range [0, 250].")
+    if relative_humidity is not None and not (0 <= relative_humidity <= 100):
+        errors.append(f"relative_humidity={relative_humidity} out of range [0, 100] %.")
+    if soil_moisture is not None and not (0 <= soil_moisture <= 1):
+        errors.append(f"soil_moisture={soil_moisture} out of range [0, 1].")
+    if report_type_override not in ("auto", "daily", "high_risk", "incident", "final"):
+        errors.append(f"Invalid report_type_override: {report_type_override!r}.")
+
+    if errors:
+        raise HTTPException(status_code=422, detail=errors)
+
     # --- Build pipeline_result ---
     telemetry: dict[str, Any] = {}
     if temperature_max is not None:
@@ -492,16 +513,32 @@ async def generate_report(
     if xgboost_cells_json:
         try:
             parsed = json.loads(xgboost_cells_json)
-            if isinstance(parsed, list):
-                xgboost_top_cells = parsed
-        except json.JSONDecodeError:
-            pass
+            if not isinstance(parsed, list):
+                raise ValueError("Expected a JSON array of cell objects")
+            for i, cell in enumerate(parsed):
+                if not isinstance(cell, dict):
+                    raise ValueError(f"Cell [{i}] is not a JSON object")
+                prob = cell.get("probability")
+                if prob is not None and not (0 <= float(prob) <= 1):
+                    raise ValueError(f"Cell [{i}] probability={prob} out of range [0, 1]")
+            xgboost_top_cells = parsed
+        except (json.JSONDecodeError, ValueError, TypeError) as e:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Invalid xgboost_cells_json: {e}",
+            ) from e
 
     obj2_sim: dict[str, Any] | None = None
     if obj2_simulation_json:
-        import contextlib
-        with contextlib.suppress(json.JSONDecodeError):
+        try:
             obj2_sim = json.loads(obj2_simulation_json)
+            if not isinstance(obj2_sim, dict):
+                raise ValueError("Expected a JSON object")
+        except (json.JSONDecodeError, ValueError) as e:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Invalid obj2_simulation_json: {e}",
+            ) from e
 
     pipeline_result: dict[str, Any] = {
         "run_id": f"dashboard-{datetime.now(tz=UTC).strftime('%Y%m%d-%H%M%S')}",
@@ -541,11 +578,30 @@ async def generate_report(
     except Exception:
         active_backend = "ollama"
 
+    from src.pipeline.rerun_engine import ALLOWED_MIME_TYPES  # noqa
+
     raw_files: list[tuple[str, bytes, str]] = []
+    if len(files) > _MAX_FILES:
+        raise HTTPException(status_code=422, detail=f"Max {_MAX_FILES} files allowed")
+    total_bytes = 0
     for uf in files:
         if uf.filename and uf.size and uf.size > 0:
-            content = await uf.read()
+            if uf.size > _MAX_FILE_BYTES:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"File '{uf.filename}' exceeds {_MAX_FILE_BYTES // (1024*1024)}MB limit",
+                )
+            total_bytes += uf.size
+            if total_bytes > _MAX_TOTAL_BYTES:
+                raise HTTPException(status_code=422, detail="Total upload size exceeds 50MB")
             mime = uf.content_type or "application/octet-stream"
+            if mime not in ALLOWED_MIME_TYPES:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"File '{uf.filename}' has unsupported type '{mime}'. "
+                           f"Allowed: images, PDFs, text, CSV, JSON, GeoJSON.",
+                )
+            content = await uf.read()
             raw_files.append((uf.filename, content, mime))
 
     processed_files = process_files(raw_files, active_backend)
@@ -634,8 +690,30 @@ async def generate_report(
 # API — operator re-run with local observations
 # ---------------------------------------------------------------------------
 
+def _sanitize_pydantic_errors(errors: list[dict]) -> list[dict]:
+    """Make Pydantic error dicts JSON-serializable.
+
+    Pydantic v2 puts ValueError objects in ``ctx.error`` which are not
+    serializable by ``json.dumps``.  Convert them to strings.
+    """
+    clean = []
+    for err in errors:
+        e = dict(err)
+        ctx = e.get("ctx")
+        if isinstance(ctx, dict):
+            e["ctx"] = {k: str(v) for k, v in ctx.items()}
+        clean.append(e)
+    return clean
+
+
+_MAX_FILE_BYTES = 10 * 1024 * 1024   # 10 MB per file
+_MAX_TOTAL_BYTES = 50 * 1024 * 1024  # 50 MB total
+_MAX_FILES = 20
+
+
 @app.post("/api/rerun")
 async def rerun_with_local_data(
+    # Legacy flat fields (backward compat)
     grid_id: str = Form(...),
     region: str = Form("california"),
     temperature_f: float | None = Form(None),
@@ -643,37 +721,124 @@ async def rerun_with_local_data(
     relative_humidity: float | None = Form(None),
     soil_moisture: float | None = Form(None),
     fire_weather_index: float | None = Form(None),
+    # Full override JSON (new — takes precedence over flat fields when present)
+    overrides_json: str | None = Form(None),
+    # Structured advisories (new)
+    advisories_json: str | None = Form(None),
+    # Existing
     operator_notes: str | None = Form(None),
     backend_override: str | None = Form(None),
+    # File uploads (new)
+    files: list[UploadFile] = File(default=[]),  # noqa: B008
 ) -> JSONResponse:
     """Re-run OBJ-1 + OBJ-2 with operator-supplied local observations.
 
-    Loads the latest pipeline data for the region from disk/GCS, replaces
-    operator-overridden columns in the target grid cell, re-scores with the
-    production model, then generates an OBJ-3 report with real predictions.
+    Accepts full data overrides (weather, vegetation, FIRMS, XGBoost cells,
+    OBJ-2 simulation, risk level), file/image uploads, and structured
+    reviewer advisories.  Falls back to legacy flat weather fields when
+    ``overrides_json`` is not provided.
     """
     if _reporter is None:
         raise HTTPException(status_code=503, detail="Reporter not loaded — check server logs")
 
     import json as _json
 
-    # Build override dict from non-None form fields
-    overrides: dict[str, float] = {}
-    for field_name, value in [
-        ("temperature_f", temperature_f),
-        ("wind_speed_mph", wind_speed_mph),
-        ("relative_humidity", relative_humidity),
-        ("soil_moisture", soil_moisture),
-        ("fire_weather_index", fire_weather_index),
-    ]:
-        if value is not None:
-            overrides[field_name] = value
+    from pydantic import ValidationError
 
-    # Load latest pipeline data for the region
+    from src.pipeline.rerun_engine import RerunOverrides, WeatherOverrides
+
+    # --- Parse overrides ---
+    if overrides_json:
+        try:
+            typed_overrides = RerunOverrides.model_validate_json(overrides_json)
+        except ValidationError as e:
+            raise HTTPException(status_code=422, detail=_sanitize_pydantic_errors(e.errors())) from e
+        # Honour grid_id / region from typed model
+        grid_id = typed_overrides.grid_id
+        region = typed_overrides.region
+    else:
+        # Build from legacy flat fields — validate bounds
+        try:
+            weather = WeatherOverrides(
+                temperature_f=temperature_f,
+                wind_speed_mph=wind_speed_mph,
+                relative_humidity=relative_humidity,
+                soil_moisture=soil_moisture,
+                fire_weather_index=fire_weather_index,
+            )
+            typed_overrides = RerunOverrides(
+                grid_id=grid_id, region=region, weather=weather,
+            )
+        except ValidationError as e:
+            raise HTTPException(status_code=422, detail=_sanitize_pydantic_errors(e.errors())) from e
+
+    # --- Parse advisories ---
+    from src.models.obj3_gemini.context_builder import HumanAdvisory
+
+    advisories: list[HumanAdvisory] = []
+    if advisories_json:
+        try:
+            raw_advs = _json.loads(advisories_json)
+            if not isinstance(raw_advs, list):
+                raw_advs = [raw_advs]
+            for item in raw_advs:
+                advisories.append(HumanAdvisory(
+                    category=item.get("category", "general"),
+                    advisory_text=str(item.get("advisory_text", ""))[:1000],
+                    priority=item.get("priority", "MEDIUM"),
+                    affects_zones=item.get("affects_zones") or [],
+                    submitted_by=item.get("submitted_by", "reviewer"),
+                    submitted_at=item.get("submitted_at") or datetime.now(tz=UTC).isoformat(),
+                ))
+        except (ValueError, KeyError, TypeError) as e:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Invalid advisories_json: {e}",
+            ) from e
+
+    # --- Process uploaded files ---
+    from src.api.file_processor import process_files  # noqa
+
+    import yaml  # noqa
+    try:
+        with open(_config_path, encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+        active_backend = backend_override or cfg.get("llm_backend", "ollama")
+    except Exception:
+        active_backend = "ollama"
+
+    from src.pipeline.rerun_engine import ALLOWED_MIME_TYPES as _AMT  # noqa
+
+    raw_files: list[tuple[str, bytes, str]] = []
+    total_bytes = 0
+    if len(files) > _MAX_FILES:
+        raise HTTPException(status_code=422, detail=f"Max {_MAX_FILES} files allowed")
+    for uf in files:
+        if uf.filename and uf.size and uf.size > 0:
+            if uf.size > _MAX_FILE_BYTES:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"File '{uf.filename}' exceeds {_MAX_FILE_BYTES // (1024*1024)}MB limit",
+                )
+            total_bytes += uf.size
+            if total_bytes > _MAX_TOTAL_BYTES:
+                raise HTTPException(status_code=422, detail="Total upload size exceeds 50MB")
+            mime = uf.content_type or "application/octet-stream"
+            if mime not in _AMT:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"File '{uf.filename}' has unsupported type '{mime}'. "
+                           f"Allowed: images, PDFs, text, CSV, JSON, GeoJSON.",
+                )
+            content = await uf.read()
+            raw_files.append((uf.filename, content, mime))
+
+    processed_files = process_files(raw_files, active_backend) if raw_files else []
+
+    # --- Load pipeline data ---
     import pandas as pd
     pipeline_data_path = _ROOT / "historical_data" / f"{region}_merged.parquet"
     if not pipeline_data_path.exists():
-        # Fallback: look for any parquet with region name
         candidates = list(_ROOT.rglob(f"*{region}*.parquet"))
         if not candidates:
             raise HTTPException(
@@ -701,36 +866,72 @@ async def rerun_with_local_data(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to load model metadata: {e}") from e
 
-    # Re-run with overrides
+    # --- Re-run with full overrides ---
     def _run_rerun() -> Any:
         from src.pipeline.rerun_engine import RerunEngine
 
         engine = RerunEngine(model_path=model_dir, config=meta)
-        df_overridden = engine.apply_overrides(df, grid_id=grid_id, overrides=overrides)
+
+        # Apply weather + vegetation overrides to the DataFrame
+        df_overridden = engine.apply_overrides(df, grid_id=grid_id, overrides=typed_overrides)
+
+        # Run OBJ-1 + OBJ-2
         predictions, input_df = engine.run_obj1(df_overridden)
         obj2_sim = engine.run_obj2(df_overridden, predictions)
+
+        # Apply OBJ-2 simulation overrides if provided
+        if typed_overrides.obj2_simulation:
+            obj2_sim = engine.apply_obj2_overrides(obj2_sim, typed_overrides.obj2_simulation)
+
         pipeline_result = engine.build_result(predictions, input_df, obj2_sim, firms=None)
 
-        # Wire operator notes into HumanInput
-        from src.models.obj3_gemini.context_builder import HumanInput
+        # Inject FIRMS hotspot overrides
+        if typed_overrides.firms_hotspots:
+            engine.inject_firms_overrides(pipeline_result, typed_overrides.firms_hotspots)
+
+        # Inject XGBoost cell overrides
+        if typed_overrides.xgboost_cells:
+            engine.inject_xgboost_overrides(pipeline_result, typed_overrides.xgboost_cells)
+
+        # Apply risk level override
+        if typed_overrides.risk_level_override:
+            engine.apply_risk_override(pipeline_result, typed_overrides.risk_level_override)
+
+        # Build HumanInput with notes + advisories
+        from src.models.obj3_gemini.context_builder import HumanInput, UploadedFile as CtxUploadedFile
 
         human_inputs = []
+        flat_summary = engine._flatten_overrides(typed_overrides)
+        override_summary = ", ".join(f"{k}={v}" for k, v in flat_summary.items())
+        notes_parts = []
+        if override_summary:
+            notes_parts.append(
+                f"Operator local observations applied to grid_id={grid_id}: {override_summary}."
+            )
         if operator_notes:
-            override_summary = ", ".join(f"{k}={v}" for k, v in overrides.items())
-            human_inputs.append(HumanInput(
-                text_notes=(
-                    f"Operator local observations applied to grid_id={grid_id}: "
-                    f"{override_summary}. Notes: {operator_notes}"
-                ),
-                uploaded_files=[],
-                source="operator",
-                submitted_at=datetime.now(tz=UTC).isoformat(),
+            notes_parts.append(f"Notes: {operator_notes}")
+
+        # Convert ProcessedFile → UploadedFile for HumanInput text injection
+        uf_list: list[CtxUploadedFile] = []
+        for pf in processed_files:
+            uf_list.append(CtxUploadedFile(
+                filename=pf.filename,
+                content_bytes=pf.text_content.encode("utf-8"),
+                mime_type="text/plain",
             ))
+
+        human_inputs.append(HumanInput(
+            text_notes=" ".join(notes_parts) if notes_parts else None,
+            uploaded_files=uf_list,
+            advisories=advisories,
+            source="operator",
+            submitted_at=datetime.now(tz=UTC).isoformat(),
+        ))
 
         return _reporter.generate_report(
             pipeline_result=pipeline_result,
             human_inputs=human_inputs,
-            uploaded_files=[],
+            uploaded_files=processed_files,
         )
 
     try:
@@ -746,7 +947,12 @@ async def rerun_with_local_data(
         "report_type": rr.report_type,
         "grid_id": grid_id,
         "region": region,
-        "overrides_applied": overrides,
+        "overrides_applied": typed_overrides.model_dump(exclude_none=True),
+        "advisories_applied": len(advisories),
+        "files_processed": len(processed_files),
+        "reasoning_steps": (
+            len(rr.parsed_report.reasoning_trace) if rr.parsed_report else 0
+        ),
         "json_path": str(result.json_path.relative_to(_ROOT)) if result.json_path else None,
         "rendered_path": str(
             (result.html_path or result.markdown_path).relative_to(_ROOT)

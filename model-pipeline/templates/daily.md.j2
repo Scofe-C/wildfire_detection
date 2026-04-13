@@ -44,6 +44,21 @@ _No notable changes in this period._
 {{ next_check_recommendation }}
 {% endif %}
 
+{% if reasoning_trace %}
+---
+
+## Reasoning Trace
+
+_Key analytical steps for reviewer audit._
+
+{% for step in reasoning_trace %}
+**#{{ step.step_number }} — {{ step.category | replace("_", " ") | title }}**
+- **Observation:** {{ step.observation }}
+- **Conclusion:** {{ step.conclusion }}{% if step.data_cited %}
+- **Data cited:** {{ step.data_cited | join(", ") }}{% endif %}
+
+{% endfor %}
+{% endif %}
 ---
 
 ## Data Sources

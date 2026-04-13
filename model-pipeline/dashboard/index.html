@@ -492,6 +492,7 @@
     <div class="viewer-tabs">
       <button class="vtab active" data-tab="view" onclick="setViewerTab('view')">Report</button>
       <button class="vtab" data-tab="edit" onclick="setViewerTab('edit')">Edit</button>
+      <button class="vtab" data-tab="reasoning" onclick="setViewerTab('reasoning')">Reasoning</button>
       <button class="vtab" data-tab="summary" onclick="setViewerTab('summary')">Summary</button>
     </div>
     <div class="viewer-actions">
@@ -510,6 +511,12 @@
       <button class="btn btn-primary" onclick="saveEdits()">Save Changes</button>
       <button class="btn btn-ghost" onclick="saveAndRerun()">Save & Re-generate</button>
       <span class="edit-status" id="editStatus"></span>
+    </div>
+  </div>
+  <!-- Reasoning tab -->
+  <div class="vtab-content" id="vtabReasoning">
+    <div style="padding:18px;overflow-y:auto;max-height:100%" id="reasoningContent">
+      <div style="color:var(--text-3);font-size:13px">Select a report to view its reasoning trace.</div>
     </div>
   </div>
   <!-- Summary tab -->
@@ -878,10 +885,11 @@ function viewReport(id, reportType, riskLevel) {
     ${riskBadge(riskLevel)}
   `;
 
-  // Fetch full JSON for Edit + Summary tabs
+  // Fetch full JSON for Edit + Reasoning + Summary tabs
   fetch(`/api/reports/${id}`).then(r => r.json()).then(data => {
     currentReport = data;
     document.getElementById('editContent').innerHTML = renderEditPanel(data);
+    document.getElementById('reasoningContent').innerHTML = renderReasoning(data);
     document.getElementById('quickSummaryText').textContent = buildQuickSummary(data);
     // Reset AI summary
     document.getElementById('aiSummaryText').style.display = 'none';
@@ -936,6 +944,54 @@ document.addEventListener('keydown', e => {
     document.getElementById('searchInput').focus();
   }
 });
+
+// ══════════════════════════════════════════════════════════════
+// ── Reasoning trace panel ──
+// ══════════════════════════════════════════════════════════════
+
+const CAT_COLORS = {
+  data_assessment: '#3b82f6',
+  risk_evaluation: '#ef4444',
+  resource_planning: '#f59e0b',
+  evacuation_decision: '#8b5cf6',
+  confidence_calibration: '#06b6d4',
+  advisory_integration: '#10b981',
+};
+
+function renderReasoning(report) {
+  const trace = report.reasoning_trace || [];
+  if (!trace.length) {
+    return `<div style="text-align:center;padding:40px 20px;color:var(--text-3)">
+      <div style="font-size:28px;margin-bottom:12px;opacity:0.5">&#129504;</div>
+      <div style="font-size:14px;font-weight:500;margin-bottom:4px">No reasoning trace available</div>
+      <div style="font-size:12px">This report was generated without a reasoning trace (Ollama backend or older report).</div>
+    </div>`;
+  }
+
+  let html = `<div style="margin-bottom:14px">
+    <div style="font-size:13px;font-weight:600;margin-bottom:4px">LLM Reasoning Trace</div>
+    <div style="font-size:11px;color:var(--text-3)">${trace.length} analytical step${trace.length>1?'s':''} — review the model's key decisions and data citations</div>
+  </div>`;
+
+  for (const step of trace) {
+    const color = CAT_COLORS[step.category] || '#888';
+    const catLabel = (step.category || '').replace(/_/g, ' ');
+    const cited = (step.data_cited || []).filter(Boolean);
+    html += `<div style="background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:14px;margin-bottom:10px;border-left:3px solid ${color}">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+        <span style="background:var(--bg);border:1px solid var(--border);border-radius:50%;width:24px;height:24px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;flex-shrink:0">${step.step_number}</span>
+        <span style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:${color}">${catLabel}</span>
+      </div>
+      <div style="font-size:12px;margin-bottom:6px"><strong style="color:var(--text-2)">Observation:</strong> ${escapeHtml(step.observation)}</div>
+      <div style="font-size:12px;margin-bottom:${cited.length?'8':'0'}px"><strong style="color:var(--text-2)">Conclusion:</strong> ${escapeHtml(step.conclusion)}</div>
+      ${cited.length ? `<div style="display:flex;flex-wrap:wrap;gap:4px">${cited.map(c =>
+        `<span style="font-size:10px;background:var(--bg);border:1px solid var(--border);border-radius:3px;padding:1px 6px;font-family:'JetBrains Mono',monospace">${escapeHtml(c)}</span>`
+      ).join('')}</div>` : ''}
+    </div>`;
+  }
+
+  return html;
+}
 
 // ══════════════════════════════════════════════════════════════
 // ── Edit panel ──
