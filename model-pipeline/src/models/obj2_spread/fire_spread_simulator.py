@@ -1141,6 +1141,7 @@ class PythonFireSpreadSimulator:
         angles_rad = np.radians(all_directions)
         R_bar      = math.sqrt(np.mean(np.cos(angles_rad))**2 +
                                np.mean(np.sin(angles_rad))**2)
+        R_bar      = min(R_bar, 1.0 - 1e-9)  # clamp to avoid log(>=1) → negative sqrt
         dir_std    = math.degrees(math.sqrt(-2.0 * math.log(max(R_bar, 1e-9))))
 
         # Run deterministic baseline for comparison (uses un-perturbed weather)

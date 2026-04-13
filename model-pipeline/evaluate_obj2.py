@@ -1036,15 +1036,29 @@ def _print_historical(per_fire: list[dict], aggregate: dict):
         print(f"  {f['name']}")
         print(f"{'-'*70}")
         r = f["result"]
-        print(f"  direction  : {r['spread_direction_deg']:.1f} deg")
-        print(f"  speed      : {r['spread_speed_kmh']:.3f} km/h")
+        mc = f.get("monte_carlo")
+
+        # Hybrid output (40% det + 60% MC p90)
+        DET_W, MC_W = 0.4, 0.6
+        det_speed = r['spread_speed_kmh']
+        if mc:
+            mc_p90  = mc.get('spread_speed_kmh_p90', det_speed)
+            h_speed = DET_W * det_speed + MC_W * mc_p90
+            h_dir   = mc.get('dominant_direction_deg', r['spread_direction_deg'])
+        else:
+            mc_p90  = det_speed
+            h_speed = det_speed
+            h_dir   = r['spread_direction_deg']
+
+        print(f"  approach   : HYBRID (40% det + 60% MC p90)")
+        print(f"  direction  : {h_dir:.1f} deg")
+        print(f"  speed      : {h_speed:.3f} km/h")
         print(f"  moisture   : {r['dead_fuel_moisture_pct']:.1f}%")
         print(f"  intensity  : {r['byram_intensity_kwm']:.1f} kW/m")
         print(f"  crown      : {r['crown_fire_status']}")
-        print()
-        for name, check in f["gate"]["per_output"].items():
-            icon = "[PASS]" if check["passed"] else "[FAIL]"
-            print(f"  {icon}  {name}: {check['detail']}")
+        if mc:
+            print(f"  crown prob : {mc.get('crown_fire_probability', 0):.1%}")
+            print(f"  speed p90  : {mc_p90:.3f} km/h (severe-scenario ceiling)")
 
     print("\n" + "=" * 70)
     agg = aggregate
@@ -1093,6 +1107,9 @@ def _print_realtime(results: dict):
         h_speed   = DET_W * det_speed + MC_W * mc_p90
         h_dir     = mc.get('dominant_direction_deg', r['spread_direction_deg'])
 
+        res_km_int = int(res_km)
+        is_coarse  = res_km_int >= 64   # 93km intercell — spatial spread not meaningful
+
         print(f"  ignition cell : {r['ignition_cell']}")
         print(f"  approach      : HYBRID (40% deterministic + 60% MC p90)")
         print(f"  direction     : {h_dir:.1f} deg")
@@ -1104,47 +1121,51 @@ def _print_realtime(results: dict):
             print(f"  crown prob    : {mc.get('crown_fire_probability', 0):.1%}")
             print(f"  speed CI p90  : {mc_p90:.4f} km/h (severe-scenario ceiling)")
 
-        # ── Threatened cells analysis ────────────────────────────────────
-        ta = data.get("threatened_analysis", {})
-        if ta:
-            print(f"\n  Threatened neighbor analysis:")
-            print(f"    burnable neighbors  : {ta.get('n_burnable_neighbors', '?')}/{ta.get('n_total_neighbors', '?')}")
-            print(f"    reachable in 1h     : {ta.get('n_reachable_1h', 0)}")
-            print(f"    max spread rate     : {ta.get('max_spread_rate_kmh', 0):.3f} km/h")
-            t2n = ta.get('time_to_nearest_neighbor_h')
-            print(f"    time to nearest     : {t2n:.1f}h" if t2n else "    time to nearest     : N/A")
-            print(f"    spread cone         : {ta.get('spread_cone_deg', 0):.0f} deg")
+        if is_coarse:
+            # At 64km, intercell distance = 93km.
+            # Fire behavior indices above are meaningful; spatial spread is not.
+            print(f"\n  [NOTE] 64km resolution — fire behavior index only.")
+            print(f"         Intercell distance is 93km. Use 22km for spatial spread prediction.")
+        else:
+            # ── Threatened cells analysis (22km only) ────────────────────
+            ta = data.get("threatened_analysis", {})
+            if ta:
+                print(f"\n  Threatened neighbor analysis:")
+                print(f"    burnable neighbors  : {ta.get('n_burnable_neighbors', '?')}/{ta.get('n_total_neighbors', '?')}")
+                print(f"    reachable in 1h     : {ta.get('n_reachable_1h', 0)}")
+                print(f"    max spread rate     : {ta.get('max_spread_rate_kmh', 0):.3f} km/h")
+                t2n = ta.get('time_to_nearest_neighbor_h')
+                print(f"    time to nearest     : {t2n:.1f}h" if t2n else "    time to nearest     : N/A")
+                print(f"    spread cone         : {ta.get('spread_cone_deg', 0):.0f} deg")
 
-        # ── Input quality ────────────────────────────────────────────────
+            # ── Spread propagation ────────────────────────────────────────
+            sp = data.get("spread_propagation")
+            if sp:
+                print(f"\n  1-hour spread propagation:")
+                print(f"    total cells burned  : {sp['total_burned']}")
+                timeline = sp.get("timeline", [])
+                if timeline:
+                    print(f"    {'hour':>6}  {'new cells':>10}  {'total burned':>13}")
+                    for entry in timeline:
+                        print(f"    {entry['t_hour']:>6.1f}  {entry['newly_ignited']:>10}  {entry['total_burning']:>13}")
+                else:
+                    print("    (fire did not spread beyond ignition cell)")
+
+            # ── Neighbour burn probabilities ──────────────────────────────
+            if mc:
+                nb_probs = mc.get("neighbor_burn_probabilities", {})
+                if nb_probs:
+                    print(f"\n  Neighbour burn probabilities (MC N={mc['n_simulations']}, horizon={mc.get('horizon_hours', 1):.0f}h):")
+                    sorted_nb = sorted(nb_probs.items(), key=lambda x: x[1], reverse=True)
+                    for cell_id, prob in sorted_nb:
+                        print(f"    {cell_id}  {prob:.1%}")
+
+        # ── Input quality (both resolutions) ─────────────────────────────
         iq = data.get("input_quality", {})
         if iq:
             score = iq.get("quality_score", 0)
             label = "GOOD" if score > 0.75 else "MODERATE" if score > 0.5 else "LOW"
             print(f"\n  Input quality: {score:.0%} ({label})")
-            for note in iq.get("quality_notes", [])[:3]:
-                print(f"    - {note}")
-
-        # ── Spread propagation ───────────────────────────────────────────
-        sp = data.get("spread_propagation")
-        if sp:
-            print(f"\n  1-hour spread propagation:")
-            print(f"    total cells burned  : {sp['total_burned']}")
-            timeline = sp.get("timeline", [])
-            if timeline:
-                print(f"    {'hour':>6}  {'new cells':>10}  {'total burned':>13}")
-                for entry in timeline:
-                    print(f"    {entry['t_hour']:>6.1f}  {entry['newly_ignited']:>10}  {entry['total_burning']:>13}")
-            else:
-                print("    (fire did not spread beyond ignition cell)")
-
-        # ── Monte Carlo neighbour burn probabilities ─────────────────────
-        if mc:
-            nb_probs = mc.get("neighbor_burn_probabilities", {})
-            if nb_probs:
-                print(f"\n  Neighbour burn probabilities (MC N={mc['n_simulations']}, horizon={mc.get('horizon_hours', 1):.0f}h):")
-                sorted_nb = sorted(nb_probs.items(), key=lambda x: x[1], reverse=True)
-                for cell_id, prob in sorted_nb:
-                    print(f"    {cell_id}  {prob:.1%}")
 
     print("=" * 70 + "\n")
 
@@ -1220,8 +1241,18 @@ def main(
 
             # Honest threatened cell analysis
             ta = analyze_threatened_cells(result)
-            prop_honesty = compute_propagation_honesty(result)
             iq = compute_input_quality(result)
+
+            # Monte Carlo for hybrid output
+            try:
+                mc_result = sim.simulate_monte_carlo(
+                    df, ign_id, fire["ignition_prob"],
+                    n_simulations=100,
+                    horizon_hours=1.0,
+                )
+            except Exception as mc_exc:
+                logger.warning("MC failed for %s: %s — using deterministic only", fire["fire_id"], mc_exc)
+                mc_result = None
 
             entry = {
                 "fire_id": fire["fire_id"],
@@ -1233,8 +1264,8 @@ def main(
                 ]},
                 "gate": gate,
                 "threatened_analysis": ta,
-                "propagation_honesty": prop_honesty,
                 "input_quality": iq,
+                "monte_carlo": mc_result,
                 "latency_ms": round(elapsed_ms, 1),
                 "ground_truth": asdict(fire["ground_truth"]),
             }
