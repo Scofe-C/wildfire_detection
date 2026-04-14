@@ -1,34 +1,26 @@
-# Wildfire MLOps - Local Development Docker Compose
-# =================================================
-# Usage: docker compose up -d --build
-#        Open: http://localhost:8080 (user: airflow, pass: airflow)
-#
-# Cross-platform notes:
-#   - Windows 11/10 (WSL2 Docker Desktop): use CRLF-safe .env (see .env.example)
-#   - macOS: use environment.yml for native conda dev; Docker for Airflow UI
-#   - All: GCP key is mounted read-only; never commit gcp-key.json
-#
-# Improvements applied:
-#   4a. Budget alerts are GCP Console only (no code change needed here)
-#   DVC volumes restored: .dvc/ and dvc.yaml are mounted so version_with_dvc
-#       BashOperator can call dvc add / dvc push from inside the container.
 
-version: '3.8'
+# =============================================================================
+# Wildfire Detection MLOps — Root Docker Compose
+# =============================================================================
+# Default profile (make up):    Airflow only — lightweight, data-team work
+# Full profile    (make up-full): Airflow + OBJ-3 Dashboard + Fire Monitor + MLflow
+#
+# Usage:
+#   docker compose up -d                          # default (Airflow)
+#   docker compose --profile full up -d           # everything
+#   docker compose down                           # stop all
+# =============================================================================
 
 x-airflow-common-env: &airflow-common-env
   MODEL_PIPELINE_ROOT: /opt/model-pipeline
   AIRFLOW__CORE__EXECUTOR: LocalExecutor
-
-  # Both keys for Airflow 2.x compat (moved from [core] to [database] in 2.3+)
   AIRFLOW__CORE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
   AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
-
   AIRFLOW__CORE__FERNET_KEY: ""
   AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
   AIRFLOW__CORE__LOAD_EXAMPLES: "false"
   AIRFLOW__CORE__ENABLE_XCOM_PICKLING: "true"
   AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "true"
-
   FIRMS_MAP_KEY: ${FIRMS_MAP_KEY:-your_firms_api_key_here}
   GEMINI_API_KEY: ${GEMINI_API_KEY:-}
   GCS_BUCKET_NAME: ${GCS_BUCKET_NAME:-wildfire-mlops-dev}
@@ -37,22 +29,20 @@ x-airflow-common-env: &airflow-common-env
   GOOGLE_APPLICATION_CREDENTIALS: /opt/airflow/gcp-key.json
 
 x-airflow-common-volumes: &airflow-common-volumes
-  - ./dags:/opt/airflow/dags
-  - ./scripts:/opt/airflow/scripts
-  - ./configs:/opt/airflow/configs
-  - ./data:/opt/airflow/data
-  - ./logs:/opt/airflow/logs
-  - ./tests:/opt/airflow/tests
-  # GCP service account key (create locally — never commit)
-  - ${GCP_KEY_PATH:-../gcp-key.json}:/opt/airflow/gcp-key.json:ro
-  # DVC config and pipeline definition (needed by version_with_dvc task)
-  - ./.dvc:/opt/airflow/.dvc
-  - ./dvc.yaml:/opt/airflow/dvc.yaml
-  - ./dvc.lock:/opt/airflow/dvc.lock
-  # DVC pointer files land here (dvc/ is git-tracked; data/ is gitignored)
-  - ./dvc:/opt/airflow/dvc
+  - ./Data-Pipeline/dags:/opt/airflow/dags
+  - ./Data-Pipeline/scripts:/opt/airflow/scripts
+  - ./Data-Pipeline/configs:/opt/airflow/configs
+  - ./Data-Pipeline/data:/opt/airflow/data
+  - ./Data-Pipeline/logs:/opt/airflow/logs
+  - ./Data-Pipeline/tests:/opt/airflow/tests
+  - ${GCP_KEY_PATH:-./gcp-key.json}:/opt/airflow/gcp-key.json:ro
+  - ./Data-Pipeline/.dvc:/opt/airflow/.dvc
+  - ./Data-Pipeline/dvc.yaml:/opt/airflow/dvc.yaml
+  - ./Data-Pipeline/dvc.lock:/opt/airflow/dvc.lock
+  - ./Data-Pipeline/dvc:/opt/airflow/dvc
 
 services:
+  # ── Airflow (default profile) ──────────────────────────────────────────────
   postgres:
     image: postgres:15.4
     environment:
@@ -69,7 +59,7 @@ services:
 
   airflow-init:
     build:
-      context: ..
+      context: .
       dockerfile: Data-Pipeline/docker/Dockerfile
       target: airflow-init
     image: wildfire-airflow-init:local
@@ -83,25 +73,16 @@ services:
       - -c
       - |
         set -e
-
         airflow db migrate
-
         airflow users create \
-          --username airflow \
-          --firstname Wildfire \
-          --lastname MLOps \
-          --role Admin \
-          --email airflow@example.com \
-          --password airflow \
-        || true
-
+          --username airflow --firstname Wildfire --lastname MLOps \
+          --role Admin --email airflow@example.com --password airflow || true
         airflow pools set open_meteo_pool 1 "Serialize Open-Meteo API calls to avoid 429s" || true
-
         echo "Airflow init complete."
 
   airflow-webserver:
     build:
-      context: ..
+      context: .
       dockerfile: Data-Pipeline/docker/Dockerfile
       target: airflow-webserver
     image: wildfire-airflow-webserver:local
@@ -123,7 +104,7 @@ services:
 
   airflow-scheduler:
     build:
-      context: ..
+      context: .
       dockerfile: Data-Pipeline/docker/Dockerfile
       target: airflow-scheduler
     image: wildfire-airflow-scheduler:local
@@ -141,20 +122,22 @@ services:
       timeout: 10s
       retries: 10
 
-  # OBJ-3 disaster report server (Gemini LLM)
+  # ── OBJ-3 Dashboard (full profile) ────────────────────────────────────────
   obj3-dashboard:
+    profiles: ["full"]
     build:
-      context: ../model-pipeline
+      context: ./model-pipeline
       dockerfile: Dockerfile
       target: dashboard
     image: wildfire-obj3-dashboard:local
     environment:
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      LLM_BACKEND: ${LLM_BACKEND:-gemini_dev}
       GOOGLE_APPLICATION_CREDENTIALS: /app/gcp-key.json
       GOOGLE_CLOUD_PROJECT: ${GOOGLE_CLOUD_PROJECT:-}
       GCS_BUCKET_NAME: ${GCS_BUCKET_NAME:-wildfire-mlops-dev}
     volumes:
-      - ${GCP_KEY_PATH:-../gcp-key.json}:/app/gcp-key.json:ro
+      - ${GCP_KEY_PATH:-./gcp-key.json}:/app/gcp-key.json:ro
     ports:
       - "8000:8000"
     healthcheck:
@@ -162,6 +145,40 @@ services:
       interval: 30s
       timeout: 10s
       retries: 5
+
+  # ── Fire Monitor (full profile) ───────────────────────────────────────────
+  fire-monitor:
+    profiles: ["full"]
+    build:
+      context: .
+      dockerfile: Data-Pipeline/docker/Dockerfile
+      target: airflow-base
+    image: wildfire-fire-monitor:local
+    environment:
+      <<: *airflow-common-env
+      BIND_HOST: "0.0.0.0"
+    volumes: *airflow-common-volumes
+    command: ["python3", "scripts/fire_monitor.py", "--with-api", "--api-port", "8001"]
+    ports:
+      - "8001:8001"
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+  # ── MLflow (full profile) ─────────────────────────────────────────────────
+  mlflow:
+    profiles: ["full"]
+    image: python:3.11-slim
+    working_dir: /mlflow
+    command: >
+      bash -c "pip install --quiet mlflow &&
+               mlflow ui --host 0.0.0.0 --port 5000
+               --backend-store-uri sqlite:///mlruns.db"
+    volumes:
+      - ./model-pipeline/mlruns.db:/mlflow/mlruns.db
+      - ./model-pipeline/mlruns:/mlflow/mlruns
+    ports:
+      - "5000:5000"
 
 volumes:
   postgres-data:

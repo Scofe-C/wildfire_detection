@@ -8,7 +8,9 @@ build/
 
 # Environment
 .env
+env
 *.env.local
+model-pipeline/.env
 venv/
 .venv/
 
@@ -26,6 +28,17 @@ airflow.db
 airflow.cfg
 airflow-webserver.pid
 **/logs/
+
+# Build caches
+Frontend/.vite/
+**/.hypothesis/
+**/node_modules/
+
+# Temp / output files
+*.tmp.yaml
+*_tmp.yaml
+*.docx
+model-pipeline/corpus/
 
 # IDE
 .vscode/
