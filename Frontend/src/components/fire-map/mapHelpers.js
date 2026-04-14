@@ -126,6 +126,17 @@ export function hexPathD(cx, cy, r) {
     pts.slice(1).map(p => `L${p.x.toFixed(1)},${p.y.toFixed(1)}`).join('') + 'Z';
 }
 
+// ─── Hex boundary in lat/lon (for Leaflet polygons) ──────────────────────────
+
+export function hexBoundary(lat, lon, radiusKm = 32) {
+  const latR = radiusKm / 111.32;
+  const lonR = radiusKm / (111.32 * Math.cos(lat * Math.PI / 180));
+  return [0, 1, 2, 3, 4, 5].map(i => {
+    const angle = (Math.PI / 3) * i + Math.PI / 6;
+    return [lat + latR * Math.sin(angle), lon + lonR * Math.cos(angle)];
+  });
+}
+
 // ─── Wind arrow SVG path (larger, more visible) ──────────────────────────────
 
 export function windArrowD(cx, cy, directionDeg, speed, scale = 1) {

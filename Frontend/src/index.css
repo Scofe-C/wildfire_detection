@@ -112,35 +112,77 @@ body {
 .animate-fade-up-2 { animation: fadeSlideUp 0.5s ease 120ms both; }
 .animate-fade-up-3 { animation: fadeSlideUp 0.5s ease 180ms both; }
 
-/* ── Map-specific utilities ── */
+/* ── Leaflet overrides (dark theme) ── */
 
-/* SVG fill transitions for layer switching */
-svg path, svg polygon, svg circle {
-  transition: fill 0.3s ease, opacity 0.3s ease, stroke 0.3s ease;
+.leaflet-tooltip-dark {
+  background: rgba(13, 10, 7, 0.92) !important;
+  border: 1px solid rgba(68, 64, 60, 0.6) !important;
+  color: #f5f1eb !important;
+  border-radius: 8px !important;
+  padding: 6px 10px !important;
+  font-family: 'JetBrains Mono', monospace !important;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5) !important;
+  backdrop-filter: blur(8px);
 }
-
-/* Smooth SVG viewBox transitions disabled during drag (set via JS) */
-svg.map-transitioning {
-  transition: viewBox 0.2s ease;
-}
-
-/* Glass morphism panels */
-.glass-panel {
-  background: rgba(26, 22, 20, 0.7);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  border: 1px solid rgba(68, 64, 60, 0.5);
-}
-[data-theme="light"] .glass-panel {
-  background: rgba(255, 255, 255, 0.75);
-  border-color: rgba(212, 205, 195, 0.6);
+.leaflet-tooltip-dark::before {
+  border-top-color: rgba(13, 10, 7, 0.92) !important;
 }
 
-/* Fire shimmer animation for active fire cells */
-@keyframes fireShimmer {
-  0%, 100% { filter: brightness(1); }
-  50% { filter: brightness(1.15); }
+.leaflet-tooltip-light {
+  background: rgba(255, 255, 255, 0.95) !important;
+  border: 1px solid rgba(212, 205, 195, 0.6) !important;
+  color: #1c1917 !important;
+  border-radius: 8px !important;
+  padding: 6px 10px !important;
+  font-family: 'JetBrains Mono', monospace !important;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12) !important;
 }
-.fire-shimmer {
-  animation: fireShimmer 1.5s ease-in-out infinite;
+.leaflet-tooltip-light::before {
+  border-top-color: rgba(255, 255, 255, 0.95) !important;
+}
+
+/* Light mode Leaflet overrides */
+[data-theme="light"] .leaflet-control-zoom a {
+  background: rgba(255, 255, 255, 0.92) !important;
+  color: #57534e !important;
+  border-color: rgba(212, 205, 195, 0.5) !important;
+}
+[data-theme="light"] .leaflet-control-zoom a:hover {
+  background: #fff !important;
+  color: #1c1917 !important;
+}
+[data-theme="light"] .leaflet-control-attribution {
+  background: rgba(255, 255, 255, 0.8) !important;
+  color: #a8a29e !important;
+}
+[data-theme="light"] .leaflet-control-attribution a { color: #57534e !important; }
+
+/* Dark zoom controls */
+.leaflet-control-zoom a {
+  background: rgba(26, 22, 20, 0.9) !important;
+  color: #a8a29e !important;
+  border-color: rgba(68, 64, 60, 0.5) !important;
+  backdrop-filter: blur(8px);
+}
+.leaflet-control-zoom a:hover {
+  background: rgba(41, 37, 36, 0.95) !important;
+  color: #f5f1eb !important;
+}
+
+/* Dark attribution */
+.leaflet-control-attribution {
+  background: rgba(13, 10, 7, 0.7) !important;
+  color: #78716c !important;
+  font-size: 9px !important;
+  backdrop-filter: blur(4px);
+}
+.leaflet-control-attribution a { color: #a8a29e !important; }
+
+/* Fire pulse ring animation */
+.fire-pulse-ring {
+  animation: firePulse 2s ease-in-out infinite;
+}
+@keyframes firePulse {
+  0%, 100% { stroke-opacity: 0.8; stroke-width: 2; }
+  50% { stroke-opacity: 0.15; stroke-width: 1; }
 }
