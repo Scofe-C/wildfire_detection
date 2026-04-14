@@ -45,7 +45,8 @@ function RiskBadge({ tier }) {
   return <span className={`text-[9px] font-mono font-semibold px-1.5 py-0.5 rounded border leading-none ${c}`}>{tier}</span>;
 }
 function Row({ icon: I, label, value, unit }) {
-  return <div className="flex items-center justify-between py-[3px]"><span className="flex items-center gap-1.5 text-text-muted"><I className="w-3 h-3"/><span className="text-[10px] font-mono">{label}</span></span><span className="text-[10px] font-mono text-text-primary">{value}{unit?` ${unit}`:''}</span></div>;
+  const display = value == null ? '—' : typeof value === 'number' ? fmt(value) : value;
+  return <div className="flex items-center justify-between py-[3px]"><span className="flex items-center gap-1.5 text-text-muted"><I className="w-3 h-3"/><span className="text-[10px] font-mono">{label}</span></span><span className="text-[10px] font-mono text-text-primary">{display}{unit && display !== '—' ? ` ${unit}` : ''}</span></div>;
 }
 
 // ─── Fly to selected cell ─────────────────────────────────────────────────────
@@ -123,9 +124,7 @@ function LayerBar({ layers, setLayers, stats, resolution, setResolution, mapStyl
           ))}
         </div>
         <div className="flex bg-surface-2 border border-border-subtle rounded-lg p-0.5 gap-px">
-          {['64km','22km'].map(r=>(
-            <button key={r} onClick={()=>setResolution(r)} className={`px-2 py-0.5 rounded-md text-[9px] font-mono transition-colors ${resolution===r?'bg-surface-0 text-text-primary font-semibold':'text-text-muted hover:text-text-secondary'}`}>{r}</button>
-          ))}
+          <span className="px-2 py-0.5 rounded-md text-[9px] font-mono bg-surface-0 text-text-primary font-semibold">64km</span>
         </div>
       </div>
     </div>
@@ -192,20 +191,20 @@ function DetailPanel({ cellId, allCells, edits, setEdits, onNavigate }) {
   return (
     <div className="flex flex-col h-full overflow-y-auto">
       <div className={`px-4 py-3 border-b border-border-subtle ${tier==='CRITICAL'?'glow-critical bg-risk-critical/5':''}`}>
-        <div className="flex items-start justify-between gap-2 mb-1"><div><div className="text-text-primary text-[13px] font-semibold leading-tight">{merged.name}</div><div className="text-text-muted text-[9px] font-mono mt-0.5">{merged.grid_id.slice(0,12)}...</div></div><RiskBadge tier={tier}/></div>
-        <div className="text-[10px] font-mono text-text-muted">{merged.lat.toFixed(2)}°N, {Math.abs(merged.lon).toFixed(2)}°W</div>
+        <div className="flex items-start justify-between gap-2 mb-1"><div><div className="text-text-primary text-[13px] font-semibold leading-tight">{merged.name || merged.grid_id?.slice(0,12)}</div><div className="text-text-muted text-[9px] font-mono mt-0.5">{merged.grid_id}</div></div><RiskBadge tier={tier}/></div>
+        <div className="text-[10px] font-mono text-text-muted">{fmt(merged.lat, 4)}°N, {fmt(Math.abs(merged.lon), 4)}°W</div>
         {edits[cellId]&&<div className="mt-1 flex items-center gap-1 text-[9px] font-mono text-purple-400"><Pencil className="w-2.5 h-2.5"/>Overrides active</div>}
       </div>
 
       {editing ? <EditForm cell={cell} vals={draft} onChange={(k,v)=>setDraft(d=>({...d,[k]:v}))} onSave={saveEdit} onCancel={cancelEdit}/> : <>
         <div className="px-4 py-3 border-b border-border-subtle">
           <div className="flex items-center gap-1.5 mb-2"><Activity className="w-3 h-3 text-accent-blue"/><span className="text-[10px] font-mono font-semibold text-text-secondary uppercase tracking-wider">Ignition Risk</span></div>
-          <div className="flex justify-between items-center mb-1"><span className="text-[10px] font-mono text-text-muted">P(ignition)</span><span className={`text-[14px] font-mono font-bold ${TIER_COLORS[tier].text}`}>{(merged.fire_risk_score*100).toFixed(1)}%</span></div>
-          <div className="h-2 bg-surface-3 rounded-full overflow-hidden"><div className="h-full rounded-full transition-all duration-500" style={{width:`${merged.fire_risk_score*100}%`,background:`linear-gradient(90deg,${TIER_COLORS.LOW.fill},${TIER_COLORS[tier].fill})`,boxShadow:`0 0 8px ${TIER_COLORS[tier].glow}`}}/></div>
+          <div className="flex justify-between items-center mb-1"><span className="text-[10px] font-mono text-text-muted">P(ignition)</span><span className={`text-[14px] font-mono font-bold ${TIER_COLORS[tier].text}`}>{fmt((merged.fire_risk_score||0)*100, 1)}%</span></div>
+          <div className="h-2 bg-surface-3 rounded-full overflow-hidden"><div className="h-full rounded-full transition-all duration-500" style={{width:`${(merged.fire_risk_score||0)*100}%`,background:`linear-gradient(90deg,${TIER_COLORS.LOW.fill},${TIER_COLORS[tier].fill})`,boxShadow:`0 0 8px ${TIER_COLORS[tier].glow}`}}/></div>
         </div>
         <div className="px-4 py-3 border-b border-border-subtle">
           <div className="flex items-center gap-1.5 mb-2"><Thermometer className="w-3 h-3 text-accent-orange"/><span className="text-[10px] font-mono font-semibold text-text-secondary uppercase tracking-wider">Weather</span></div>
-          <div className="divide-y divide-border-subtle/30"><Row icon={Thermometer} label="Temperature" value={merged.temperature_2m} unit="°C"/><Row icon={Droplets} label="Humidity" value={merged.relative_humidity_2m} unit="%"/><Row icon={Wind} label="Wind" value={`${merged.wind_speed_10m} m/s ${compassLabel(merged.wind_direction_10m)}`}/><Row icon={Activity} label="VPD" value={merged.vpd} unit="kPa"/><Row icon={Droplets} label="Soil Moisture" value={merged.soil_moisture_0_to_7cm} unit="m³/m³"/></div>
+          <div className="divide-y divide-border-subtle/30"><Row icon={Thermometer} label="Temperature" value={merged.temperature_2m} unit="°C"/><Row icon={Droplets} label="Humidity" value={merged.relative_humidity_2m} unit="%"/><Row icon={Wind} label="Wind" value={merged.wind_speed_10m != null ? `${fmt(merged.wind_speed_10m)} km/h ${compassLabel(merged.wind_direction_10m)}` : null}/><Row icon={Activity} label="VPD" value={merged.vpd} unit="kPa"/><Row icon={Droplets} label="Soil Moisture" value={merged.soil_moisture_0_to_7cm} unit="m³/m³"/></div>
         </div>
         <div className="px-4 py-3 border-b border-border-subtle">
           <div className="flex items-center gap-1.5 mb-2"><TreePine className="w-3 h-3 text-green-500"/><span className="text-[10px] font-mono font-semibold text-text-secondary uppercase tracking-wider">Terrain & Canopy</span></div>
@@ -266,17 +265,19 @@ export default function FireMap({ onNavigate }) {
         }
         if (!cancelled && Object.keys(spreadMap).length > 0) setLiveSpread(spreadMap);
       } catch { /* backend offline */ }
+      if (!cancelled) setLoading(false);
     }
     fetchLive();
     return () => { cancelled = true; };
   }, []);
 
+  const [loading, setLoading] = useState(true);
+
   const allCells = useMemo(() => {
-    if (liveCells && res === '64km') return liveCells;
-    const ca = res === '22km' ? generateFireZoomCells(CALIFORNIA_CELLS_ENRICHED, OBJ2_SPREAD) : CALIFORNIA_CELLS_ENRICHED;
-    const tx = res === '22km' ? generateFireZoomCells(TEXAS_CELLS_ENRICHED, OBJ2_SPREAD) : TEXAS_CELLS_ENRICHED;
-    return [...ca.map(c=>({...c,region:'california'})), ...tx.map(c=>({...c,region:'texas'}))];
-  }, [res, liveCells]);
+    if (liveCells) return liveCells;
+    if (loading) return []; // Show empty map while loading — no mock flash
+    return [...CALIFORNIA_CELLS_ENRICHED.map(c=>({...c,region:'california'})), ...TEXAS_CELLS_ENRICHED.map(c=>({...c,region:'texas'}))];
+  }, [liveCells, loading]);
 
   const stats = useMemo(() => ({
     critical: allCells.filter(c=>getRiskTier(c.fire_risk_score)==='CRITICAL').length,

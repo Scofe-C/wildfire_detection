@@ -119,6 +119,7 @@ function EventLogItem({ ts, level, component, msg }) {
 
 export default function Overview({ onNavigate }) {
   const [liveCells, setLiveCells] = useState(null);
+  const [loadingCells, setLoadingCells] = useState(true);
 
   useEffect(() => {
     let cancelled = false;
@@ -137,12 +138,13 @@ export default function Overview({ onNavigate }) {
           setLiveCells(cells);
         }
       } catch { /* backend offline — fall back to mock */ }
+      if (!cancelled) setLoadingCells(false);
     }
     fetchLive();
     return () => { cancelled = true; };
   }, []);
 
-  const allCells     = liveCells || [...CALIFORNIA_CELLS, ...TEXAS_CELLS];
+  const allCells     = liveCells || (loadingCells ? [] : [...CALIFORNIA_CELLS, ...TEXAS_CELLS]);
   const criticalCells = allCells.filter(c => getRiskTier(c.fire_risk_score) === 'CRITICAL');
   const highCells     = allCells.filter(c => getRiskTier(c.fire_risk_score) === 'HIGH');
   const prodRuns      = OBJ1_RUNS.filter(r => r.status === 'production');

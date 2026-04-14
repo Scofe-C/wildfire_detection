@@ -163,6 +163,7 @@ export default function RiskMonitor() {
   const [regionFilter, setRegionFilter] = useState('all');
   const [tierFilter, setTierFilter] = useState('all');
   const [liveCells, setLiveCells] = useState(null);
+  const [loadingCells, setLoadingCells] = useState(true);
 
   useEffect(() => {
     let cancelled = false;
@@ -180,15 +181,16 @@ export default function RiskMonitor() {
                         ...tx.cells.map(c => normalizeCell({ ...c, region: 'texas' }))]);
         }
       } catch { /* fall back to mock */ }
+      if (!cancelled) setLoadingCells(false);
     }
     fetchLive();
     return () => { cancelled = true; };
   }, []);
 
-  const allCells = liveCells || [
+  const allCells = liveCells || (loadingCells ? [] : [
     ...CALIFORNIA_CELLS.map(c => ({ ...c, region: 'california' })),
     ...TEXAS_CELLS.map(c => ({ ...c, region: 'texas' })),
-  ];
+  ]);
 
   const filteredCells = allCells.filter(c => {
     const tier = getRiskTier(c.fire_risk_score);
