@@ -14,10 +14,7 @@
 pipeline:
   name: "wildfire_data_pipeline"
   version: "1.1.0"
-  # --- Improvement 1a ---
-  # Default changed from 64 km (H3 res 2, ~200 cells CA+TX) to 22 km (H3 res 5,
-  # ~800-1000 cells CA alone). Keep 64 in the map for backward cache compat.
-  default_resolution_km: 22
+  default_resolution_km: 64
   supported_resolutions_km: [64, 22, 10, 1]
   h3_resolution_map:
     64: 2     # Legacy — backward compat with existing static cache files

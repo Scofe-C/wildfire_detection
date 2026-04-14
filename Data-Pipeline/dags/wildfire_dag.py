@@ -64,7 +64,7 @@ SCHEDULE_INTERVAL = "0 */6 * * *"  # Fallback cron; watchdog_sensor_dag override
 # Resolution tiers (watchdog escalation):
 #   quiet mode:  64 km (H3 res 2) — coarse default scan, ~200 cells CA+TX
 #   fire mode:   22 km (H3 res 5) — fire-confirmed detailed scan, ~800-1000 cells CA
-DEFAULT_RESOLUTION_KM = 22  # Matches schema_config.yaml default_resolution_km
+DEFAULT_RESOLUTION_KM = 64  # Matches schema_config.yaml default_resolution_km
 
 # Region definitions — mirrors schema_config.yaml geographic_scope
 # Defined here so the DAG can build TaskGroups without reading the config at
@@ -675,7 +675,7 @@ with DAG(
     tags=["wildfire", "mlops", "data-pipeline"],
     params={
         "resolution_km": DEFAULT_RESOLUTION_KM,
-        "weather_lookback_hours": 6,   # 6h for 22km (auto); override to 24 for 64km
+        "weather_lookback_hours": 24,
         # Watchdog trigger params (set by watchdog_sensor_dag on fire detection)
         "trigger_source": "cron",         # "cron" | "watchdog_active" | "watchdog_emergency"
         "fire_cells": [],                 # H3 cell IDs confirmed by watchdog
@@ -730,6 +730,7 @@ with DAG(
                 python_callable=task_ingest_weather,
                 op_kwargs={"region": region_key},
                 provide_context=True,
+                pool="open_meteo_pool",  # serialize across regions to avoid 429s
             )
 
             process_f = PythonOperator(

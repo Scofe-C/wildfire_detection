@@ -539,7 +539,7 @@ def _fetch_open_meteo_batch(
         "longitude":  lons,
         "hourly":     ",".join(OPEN_METEO_HOURLY_PARAMS),
         "start_date": start_date.strftime("%Y-%m-%d"),
-        "end_date":   end_date.strftime("%Y-%m-%d"),
+        "end_date":   start_date.strftime("%Y-%m-%d"),  # same day — Open-Meteo end_date is inclusive, using start avoids double-day fetch
         "timezone":   "UTC",
     }
     if OPEN_METEO_DAILY_PARAMS:
