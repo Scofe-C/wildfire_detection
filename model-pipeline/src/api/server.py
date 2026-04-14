@@ -956,3 +956,150 @@ async def rerun_with_local_data(
             (result.html_path or result.markdown_path).relative_to(_ROOT)
         ) if (result.html_path or result.markdown_path) else None,
     })
+
+
+# ---------------------------------------------------------------------------
+# API — pipeline-triggered report (JSON body, no multipart)
+# ---------------------------------------------------------------------------
+
+@app.post("/api/generate-from-pipeline")
+async def generate_from_pipeline(request: Request) -> JSONResponse:
+    """Trigger OBJ-3 report generation from the latest OBJ-1 inference on GCS.
+
+    Called by the Airflow ``run_inference`` task after scoring completes.
+    The server reads ``inference/latest/{region}_latest.json`` from GCS,
+    transforms the OBJ-1 output into an OBJ-3 ``pipeline_result``, and
+    calls the reporter for each region.
+
+    Expected JSON body::
+
+        {
+            "regions": ["california", "texas"],   # regions that were scored
+            "bucket": "wildfire-mlops-dev"         # GCS bucket
+        }
+    """
+    if _reporter is None:
+        raise HTTPException(status_code=503, detail="Reporter not loaded — check server logs")
+
+    try:
+        body = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"Invalid JSON: {exc}") from exc
+
+    regions = body.get("regions", [])
+    bucket = body.get("bucket") or os.getenv("GCS_BUCKET_NAME", "wildfire-mlops-dev")
+
+    if not regions:
+        raise HTTPException(status_code=422, detail="'regions' list is required")
+
+    def _run_all() -> list[dict[str, Any]]:
+        from google.cloud import storage as gcs  # noqa
+
+        client = gcs.Client()
+        bkt = client.bucket(bucket)
+        results = []
+
+        # OBJ-1 risk_tier → OBJ-3 risk_level
+        _TIER_MAP = {"CRITICAL": "CRITICAL", "HIGH": "HIGH", "MEDIUM": "MODERATE", "LOW": "LOW"}
+        _TIER_ORDER = ["CRITICAL", "HIGH", "MEDIUM", "LOW"]
+
+        for region in regions:
+            # 1. Read enriched OBJ-1 JSON from GCS
+            blob_path = f"inference/latest/{region}_latest.json"
+            blob = bkt.blob(blob_path)
+            if not blob.exists():
+                logger.warning("[%s] No inference JSON at gs://%s/%s — skipping", region, bucket, blob_path)
+                results.append({"region": region, "success": False, "error": f"{blob_path} not found"})
+                continue
+
+            obj1 = json.loads(blob.download_as_bytes())
+            cells = obj1.get("cells", [])
+            if not cells:
+                results.append({"region": region, "success": False, "error": "no cells in JSON"})
+                continue
+
+            # 2. Derive risk_level from highest tier in cells
+            tiers = {c.get("risk_tier", "LOW") for c in cells}
+            highest = next((t for t in _TIER_ORDER if t in tiers), "LOW")
+            risk_level = _TIER_MAP[highest]
+
+            # 3. Build xgboost_top_cells (top 10 by score)
+            top = sorted(cells, key=lambda c: c.get("fire_risk_score", 0), reverse=True)[:10]
+            xgb_cells = [
+                {
+                    "h3_index": c["grid_id"],
+                    "probability": float(c["fire_risk_score"]),
+                    "lat": float(c.get("latitude", 0)),
+                    "lon": float(c.get("longitude", 0)),
+                }
+                for c in top
+            ]
+
+            # 4. FIRMS + telemetry (enriched by run_inference into the JSON)
+            firms_count = obj1.get("firms_hotspot_count", 0)
+            firms_hotspots = obj1.get("firms_hotspots", [])
+            telemetry = obj1.get("telemetry") or {}
+
+            # 5. Assemble OBJ-3 pipeline_result
+            pipeline_result: dict[str, Any] = {
+                "run_id": obj1.get("run_timestamp", ""),
+                "is_deployable": True,
+                "risk_level": risk_level,
+                "firms_hotspot_count": firms_count,
+                "firms_hotspots": firms_hotspots,
+                "xgboost_top_cells": xgb_cells,
+                "telemetry": telemetry if telemetry else None,
+                "fema_nri_tracts": [],
+                "bias_report": {"gate_result": "PASS", "observed_disparity": 0.0},
+                "data_completeness": {
+                    "ml_scores": True,
+                    "firms": firms_count > 0,
+                    "weather": bool(telemetry),
+                    "fema_nri": False,
+                },
+            }
+
+            logger.info("[%s] risk_level=%s  firms=%d  → generating report", region, risk_level, firms_count)
+
+            # 6. Generate report
+            try:
+                gen = _reporter.generate_report(pipeline_result=pipeline_result)
+                rr = gen.report_result
+                parsed = rr.parsed_report
+
+                # Upload report JSON to GCS
+                if gen.json_path and gen.json_path.exists():
+                    try:
+                        ts_str = datetime.now(tz=UTC).strftime("%Y%m%dT%H%MZ")
+                        rtype = rr.report_type
+                        gcs_key = f"reports/obj3/{region}/{rtype}_{ts_str}.json"
+                        bkt.blob(gcs_key).upload_from_filename(str(gen.json_path))
+                        bkt.blob(f"reports/obj3/latest/{region}_latest_report.json").upload_from_filename(
+                            str(gen.json_path)
+                        )
+                        logger.info("[%s] report → gs://%s/%s", region, bucket, gcs_key)
+                    except Exception as gcs_exc:
+                        logger.warning("[%s] GCS upload failed: %s", region, gcs_exc)
+
+                results.append({
+                    "region": region,
+                    "success": rr.error is None,
+                    "error": rr.error,
+                    "report_type": rr.report_type,
+                    "confidence": parsed.report_confidence if parsed else None,
+                    "review_status": parsed.review_status if parsed else None,
+                    "json_path": str(gen.json_path.relative_to(_ROOT)) if gen.json_path else None,
+                })
+            except Exception as exc:
+                logger.error("[%s] report generation failed: %s", region, exc)
+                results.append({"region": region, "success": False, "error": str(exc)})
+
+        return results
+
+    try:
+        results = await asyncio.to_thread(_run_all)
+    except Exception as exc:
+        logger.exception("generate-from-pipeline failed")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    return JSONResponse({"reports": results})

@@ -30,6 +30,7 @@ x-airflow-common-env: &airflow-common-env
   AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "true"
 
   FIRMS_MAP_KEY: ${FIRMS_MAP_KEY:-your_firms_api_key_here}
+  GEMINI_API_KEY: ${GEMINI_API_KEY:-}
   GCS_BUCKET_NAME: ${GCS_BUCKET_NAME:-wildfire-mlops-dev}
   GOOGLE_CLOUD_PROJECT: ${GOOGLE_CLOUD_PROJECT:-}
   SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}
@@ -139,6 +140,28 @@ services:
       interval: 30s
       timeout: 10s
       retries: 10
+
+  # OBJ-3 disaster report server (Gemini LLM)
+  obj3-dashboard:
+    build:
+      context: ../model-pipeline
+      dockerfile: Dockerfile
+      target: dashboard
+    image: wildfire-obj3-dashboard:local
+    environment:
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GOOGLE_APPLICATION_CREDENTIALS: /app/gcp-key.json
+      GOOGLE_CLOUD_PROJECT: ${GOOGLE_CLOUD_PROJECT:-}
+      GCS_BUCKET_NAME: ${GCS_BUCKET_NAME:-wildfire-mlops-dev}
+    volumes:
+      - ${GCP_KEY_PATH:-./gcp-key.json}:/app/gcp-key.json:ro
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail http://localhost:8000/api/status || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
 
 volumes:
   postgres-data:

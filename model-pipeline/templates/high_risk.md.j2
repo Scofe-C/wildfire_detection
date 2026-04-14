@@ -21,9 +21,9 @@
 
 | H3 Index | Risk Score | Latitude | Longitude |
 |----------|-----------|----------|-----------|
-{% for cell in top_risk_cells %}
+{%- for cell in top_risk_cells %}
 | `{{ cell.h3_index }}` | {{ "%.2f"|format(cell.risk_score) }} | {{ cell.lat }} | {{ cell.lon }} |
-{% endfor %}
+{%- endfor %}
 
 ## Contributing Factors
 

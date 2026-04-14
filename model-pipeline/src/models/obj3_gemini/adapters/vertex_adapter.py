@@ -108,9 +108,11 @@ class VertexAdapter(LLMAdapter):
         if not context_bundle.corpus_ref and context_bundle.corpus_text:
             system_instruction += "\n\n--- REFERENCE CORPUS ---\n" + context_bundle.corpus_text
 
-        # Build generation config
+        # Build generation config — Vertex AI does NOT allow system_instruction
+        # alongside cached_content, so omit it when using the cache (the system
+        # prompt is already baked into the cached content).
         gen_config = types.GenerateContentConfig(
-            system_instruction=system_instruction,
+            system_instruction=system_instruction if not context_bundle.corpus_ref else None,
             response_mime_type="application/json",
             response_schema=schema,
             temperature=0.0,
