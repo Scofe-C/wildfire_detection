@@ -1149,9 +1149,9 @@ def _print_realtime(results: dict):
 
         # ── Fire behavior ─────────────────────────────────────────────────
         dom = r.get("dominant_factor", "unknown")
-        wind_ms = inputs.get("wind_speed_10m_ms", 0)
-        wind_kmh = wind_ms * 3.6 if wind_ms else 0
-        wind_dir = inputs.get("wind_from_direction_deg", 0)
+        wind_ms = inputs.get("wind_speed_10m_ms", 0) or 0
+        wind_kmh = wind_ms * 3.6
+        wind_dir = inputs.get("wind_from_direction_deg") or inputs.get("wind_direction_10m")
         rh = inputs.get("relative_humidity_pct", 0)
         dfmc = r.get("dead_fuel_moisture_pct", 0)
         crown_prob = mc.get("crown_fire_probability", 0) if mc else 0
@@ -1159,18 +1159,14 @@ def _print_realtime(results: dict):
         print(f"\n  Fire behavior:")
         print(f"    direction     : {h_dir:.1f} deg ({dom})")
         print(f"    intensity     : {r['byram_intensity_kwm']:.1f} kW/m ({r['crown_fire_status']})")
-        print(f"    wind          : {wind_kmh:.1f} km/h from {wind_dir:.0f} deg")
+        wind_str = f"{wind_kmh:.1f} km/h from {wind_dir:.0f} deg" if wind_kmh > 0 and wind_dir is not None else "N/A (no wind data for this cell)"
+        print(f"    wind          : {wind_str}")
         print(f"    moisture      : DFMC={dfmc:.1f}% (RH={rh:.0f}%)")
         print(f"    crown status  : {r['crown_fire_status']} (prob {crown_prob:.1%})")
 
-        # ── Monte Carlo spread forecast ───────────────────────────────────
-        n_sims = mc.get("n_simulations", 100) if mc else 100
-        horizon = mc.get("horizon_hours", 6) if mc else 6
-        print(f"\n  Monte Carlo spread forecast (N={n_sims}, {horizon:.0f}h horizon):")
-        print(f"    speed p50     : {mc_p50:.4f} km/h")
-        print(f"    speed p90     : {mc_p90:.4f} km/h (worst-case)")
+        # ── Spread forecast ───────────────────────────────────────────────
+        print(f"\n  Spread forecast:")
         print(f"    hybrid speed  : {h_speed:.4f} km/h (40% det + 60% MC p90)")
-
         print(f"\n    Distance projection:")
         for hr in [1, 2, 3, 6]:
             dist = h_speed * hr
