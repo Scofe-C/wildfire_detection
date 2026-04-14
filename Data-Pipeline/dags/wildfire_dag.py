@@ -1106,10 +1106,11 @@ with DAG(
         scored_regions = list(inference_xcom.keys())
         try:
             import requests as _req
+            _res_km = context["params"].get("resolution_km", DEFAULT_RESOLUTION_KM)
             resp = _req.post(
                 f"{obj3_url}/api/generate-from-pipeline",
-                json={"regions": scored_regions, "bucket": bucket},
-                timeout=180,
+                json={"regions": scored_regions, "bucket": bucket, "resolution_km": _res_km},
+                timeout=300,
             )
             if resp.status_code == 200:
                 logger.info("OBJ-3 trigger OK: %s", resp.json())
