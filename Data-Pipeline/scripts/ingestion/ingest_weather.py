@@ -437,6 +437,10 @@ def _batch_fetch_open_meteo(
     for idx, batch in enumerate(batches):
         logger.info("  Processing batch %d/%d (%d cells)", idx + 1, len(batches), len(batch))
 
+        # Reset backoff between batches — stale failure count from a previous
+        # batch causes the *first* retry of the next batch to sleep 120s+.
+        limiter._consecutive_failures = 0
+
         weather_df = _fetch_open_meteo_batch(
             batch=batch,
             start_date=start_dt,
@@ -457,6 +461,10 @@ def _batch_fetch_open_meteo(
             continue
 
         logger.warning("  Open-Meteo batch %d failed — checking NWS fallback.", idx + 1)
+
+        # Cooldown after a fully-failed batch before trying the next one.
+        # Open-Meteo free tier resets burst window after ~60s.
+        time.sleep(10)
 
         if not nws_available:
             failed_cells.extend(batch["grid_id"].astype(str).tolist())
@@ -539,7 +547,7 @@ def _fetch_open_meteo_batch(
         "longitude":  lons,
         "hourly":     ",".join(OPEN_METEO_HOURLY_PARAMS),
         "start_date": start_date.strftime("%Y-%m-%d"),
-        "end_date":   start_date.strftime("%Y-%m-%d"),  # same day — Open-Meteo end_date is inclusive, using start avoids double-day fetch
+        "end_date":   end_date.strftime("%Y-%m-%d"),
         "timezone":   "UTC",
     }
     if OPEN_METEO_DAILY_PARAMS:
