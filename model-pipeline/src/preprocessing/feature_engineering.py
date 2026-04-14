@@ -179,6 +179,13 @@ def apply_log1p(df: pd.DataFrame) -> pd.DataFrame:
     for precipitation/soil moisture due to floating point).
     """
     df = df.copy()
+    # Median-impute vpd and fire_weather_index before log1p to avoid log(NaN)
+    for col in ("vpd", "fire_weather_index"):
+        if col in df.columns and df[col].isna().any():
+            med = df[col].median()
+            n = int(df[col].isna().sum())
+            df[col] = df[col].fillna(med)
+            logger.warning("Pre-log1p median imputation: filled %d NaN in '%s' with %.4f", n, col, med)
     for col in LOG1P_COLS:
         if col in df.columns:
             df[col] = np.log1p(df[col].clip(lower=0))

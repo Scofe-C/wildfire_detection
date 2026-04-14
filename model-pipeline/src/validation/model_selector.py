@@ -40,10 +40,12 @@ def validate_model(
     y_true: np.ndarray,
     y_prob: np.ndarray,
     config_path: str | Path | None = None,
+    auc_pr_threshold: float | None = None,
 ) -> tuple[dict[str, Any], bool]:
     config = _load_config(config_path)
     threshold = config["validation"].get("xgb_decision_threshold", 0.365)
-    auc_pr_threshold = config["validation"]["auc_pr_threshold"]
+    if auc_pr_threshold is None:
+        auc_pr_threshold = config["validation"]["auc_pr_threshold"]
 
     metrics = compute_all_metrics(y_true, y_prob, threshold=threshold)
     passed = metrics["auc_pr"] >= auc_pr_threshold
@@ -85,6 +87,7 @@ def select_best_model(
     y_test: "np.ndarray",
     X_test: "pd.DataFrame | None" = None,
     config_path: str | Path | None = None,
+    auc_pr_threshold: float | None = None,
 ) -> tuple[Any, str, dict[str, Any]]:
     """Compare multiple trained models on the test set and return the winner.
 
@@ -112,7 +115,8 @@ def select_best_model(
     import pandas as pd
 
     config = _load_config(config_path)
-    threshold = config["validation"]["auc_pr_threshold"]
+    if auc_pr_threshold is None:
+        auc_pr_threshold = config["validation"]["auc_pr_threshold"]
 
     comparison: dict[str, Any] = {}
     best_name: str | None = None
@@ -127,7 +131,7 @@ def select_best_model(
             model, X_test_model = entry, X_test
         try:
             y_prob = model.predict_proba(X_test_model)
-            metrics, passed = validate_model(np.asarray(y_test), y_prob, config_path)
+            metrics, passed = validate_model(np.asarray(y_test), y_prob, config_path, auc_pr_threshold=auc_pr_threshold)
             comparison[name] = {"metrics": metrics, "passed": passed}
             logger.info(
                 "Model '%s' — AUC-PR: %.4f, passed: %s", name, metrics["auc_pr"], passed
@@ -142,7 +146,7 @@ def select_best_model(
 
     if best_model is None:
         raise RuntimeError(
-            f"All candidate models failed AUC-PR threshold ({threshold}). "
+            f"All candidate models failed AUC-PR threshold ({auc_pr_threshold}). "
             f"Results: { {n: c.get('metrics', {}).get('auc_pr', 'N/A') for n, c in comparison.items()} }. "
             "Trigger rollback to previous production version."
         )

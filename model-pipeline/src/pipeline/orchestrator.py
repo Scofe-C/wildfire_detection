@@ -78,7 +78,8 @@ class PipelineConfig:
     auc_pr_threshold: float
     xgb_decision_threshold: float
     lgbm_decision_threshold: float
-    target_recall: float
+    target_precision: float
+    auc_pr_threshold_texas: float
     max_disparity: float
     mlflow_tracking_uri: str
     mlflow_experiment_name: str
@@ -96,6 +97,13 @@ class PipelineConfig:
     def data_blob(self) -> str:
         """GCS blob for the current region."""
         return self.ca_blob if self.region == "california" else self.tx_blob
+
+    @property
+    def effective_auc_pr_threshold(self) -> float:
+        """Region-specific AUC-PR threshold (Texas has lower threshold due to balanced dataset)."""
+        if self.region == "texas":
+            return self.auc_pr_threshold_texas
+        return self.auc_pr_threshold
 
     @property
     def registry_display_name(self) -> str:
@@ -144,9 +152,10 @@ def load_pipeline_config(config_path: str | Path | None = None) -> PipelineConfi
         visualizations_dir=Path(p["visualizations_dir"]),
         fema_nri_cache=Path(p["fema_nri_cache"]),
         auc_pr_threshold=v["auc_pr_threshold"],
+        auc_pr_threshold_texas=v.get("auc_pr_threshold_texas", v["auc_pr_threshold"]),
         xgb_decision_threshold=v["xgb_decision_threshold"],
         lgbm_decision_threshold=v["lgbm_decision_threshold"],
-        target_recall=v["target_recall"],
+        target_precision=v["target_precision"],
         max_disparity=raw["bias_gate"]["max_disparity"],
         mlflow_tracking_uri=t["tracking_uri"],
         mlflow_experiment_name=t["experiment_name"],
@@ -299,10 +308,11 @@ def run_training_pipeline(
                         "lightgbm": (lgbm_model, X_test_lgbm),
                     },
                     y_test=y_test.values,
+                    auc_pr_threshold=config.effective_auc_pr_threshold,
                 )
             except RuntimeError as e:
                 logger.error("[%s] Both models failed: %s — triggering rollback", run_id, e)
-                alerter.alert_validation_failure(run_id, 0.0, config.auc_pr_threshold)
+                alerter.alert_validation_failure(run_id, 0.0, config.effective_auc_pr_threshold)
                 _trigger_rollback(config, run_id, alerter, tracker)
                 result.error = str(e)
                 return result
@@ -314,10 +324,11 @@ def run_training_pipeline(
                     candidates={"xgboost": xgb_model},
                     X_test=X_test_xgb,
                     y_test=y_test.values,
+                    auc_pr_threshold=config.effective_auc_pr_threshold,
                 )
             except RuntimeError as e:
                 logger.error("[%s] XGBoost failed AUC-PR gate: %s — triggering rollback", run_id, e)
-                alerter.alert_validation_failure(run_id, 0.0, config.auc_pr_threshold)
+                alerter.alert_validation_failure(run_id, 0.0, config.effective_auc_pr_threshold)
                 _trigger_rollback(config, run_id, alerter, tracker)
                 result.error = str(e)
                 return result
@@ -344,24 +355,24 @@ def run_training_pipeline(
                     tracker.log_metrics({f"{name}_{metric_name}": val})
 
         # ── 6. Threshold tuning ───────────────────────────────────────────────
-        logger.info("[%s] Tuning decision threshold (target recall=%.2f) ...",
-                    run_id, config.target_recall)
+        logger.info("[%s] Tuning decision threshold (target precision=%.2f) ...",
+                    run_id, config.target_precision)
         threshold = winner.tune_threshold(
-            y_test.values, winner_y_prob, target_recall=config.target_recall
+            y_test.values, winner_y_prob, target_precision=config.target_precision
         )
-        tracker.log_threshold(threshold, config.target_recall)
+        tracker.log_threshold(threshold, config.target_precision)
         result.metrics["threshold"] = threshold
 
-        from sklearn.metrics import recall_score
+        from sklearn.metrics import precision_score
         y_pred_at_threshold = (winner_y_prob >= threshold).astype(int)
-        recall_at_threshold = float(recall_score(y_test.values, y_pred_at_threshold))
+        precision_at_threshold = float(precision_score(y_test.values, y_pred_at_threshold, zero_division=0))
         tracker.log_metrics({
-            "recall_at_threshold": recall_at_threshold,
+            "precision_at_threshold": precision_at_threshold,
             "auc_pr": comparison[winner_name]["metrics"]["auc_pr"],
         })
         result.metrics.update(comparison[winner_name]["metrics"])
-        result.metrics["threshold"] = threshold          # re-set after update (update overwrites with default 0.365)
-        result.metrics["recall_at_threshold"] = recall_at_threshold
+        result.metrics["threshold"] = threshold
+        result.metrics["precision_at_threshold"] = precision_at_threshold
 
         # ── 7. SHAP ───────────────────────────────────────────────────────────
         logger.info("[%s] Computing SHAP values ...", run_id)

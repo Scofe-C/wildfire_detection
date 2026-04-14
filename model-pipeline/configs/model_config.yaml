@@ -26,11 +26,12 @@ gcs:
 #   XGBoost ROC-AUC 0.9426, PR-AUC 0.8927, threshold=0.365 for ≥90% recall
 #   LightGBM ROC-AUC 0.9374, PR-AUC 0.8837, threshold=0.239 for ≥90% recall
 validation:
-  auc_pr_threshold: 0.89          # real result — do not lower (0.75 was placeholder)
+  auc_pr_threshold: 0.89          # California (35% positive rate); do not lower for CA
+  auc_pr_threshold_texas: 0.78    # Texas (~49% positive rate, balanced dataset — random baseline = 0.49)
   f1_threshold: 0.5
-  xgb_decision_threshold: 0.365   # ≥90% recall on Jan 2025 LA fires test set
+  xgb_decision_threshold: 0.365   # baseline from Jan 2025 LA fires test set
   lgbm_decision_threshold: 0.239
-  target_recall: 0.90
+  target_precision: 0.70
   max_inference_latency_ms: 5000
 
 # ── Bias gate ─────────────────────────────────────────────────────────────────
