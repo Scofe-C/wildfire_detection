@@ -518,22 +518,23 @@ def task_validate_schema(**context):
     resolution_km = context["params"].get("resolution_km", DEFAULT_RESOLUTION_KM)
 
     passed, results = run_validation(fused_df, registry, resolution_km=resolution_km)
-    validation_results = {"passed": passed, "issues": results.get("issues", [])}
+    errors = results.get("errors", [])
+    warnings = results.get("warnings", [])
+    validation_results = {"passed": passed, "errors": errors, "warnings": warnings,
+                          "issues": errors + warnings}
 
-    if validation_results["issues"]:
-        logger.warning(
-            f"Validation issues ({len(validation_results['issues'])}): "
-            + "; ".join(validation_results["issues"][:5])
+    if errors:
+        logger.error(
+            f"Validation ERRORS ({len(errors)}): " + "; ".join(errors[:5])
         )
-    else:
+    if warnings:
+        logger.info(
+            f"Validation warnings ({len(warnings)}): " + "; ".join(warnings[:5])
+        )
+    if not errors and not warnings:
         logger.info("Schema validation passed — all checks OK")
 
     context["ti"].xcom_push(key="validation_results", value=validation_results)
-
-    if not validation_results["passed"]:
-        logger.warning(
-            f"Schema validation issues (non-fatal): {validation_results['issues'][:5]}"
-        )
 
 
 def task_detect_anomalies(**context):

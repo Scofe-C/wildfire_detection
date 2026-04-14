@@ -13,8 +13,6 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Literal
 
-logger = logging.getLogger(__name__)
-
 from src.models.obj3_gemini.state_machine import (
     AdminToggle,
     EmergencySubState,

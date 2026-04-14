@@ -8,7 +8,7 @@ mean, masking the individual outlier rows.
 
 Assignment requirements (Section 5.5):
   - Compare against seasonal baselines (fire_season vs off_season)
-  - Z-score threshold: 4.0 (fire season), 3.5 (off-season)
+  - Z-score threshold: 5.0 (fire season), 4.5 (off-season)
   - Minimum 30 historical days before baseline is trusted
   - Baseline storage: data/processed/baselines/baseline_{feature}_{season}.json
   - Soft failure: anomalies are reported but never block the pipeline

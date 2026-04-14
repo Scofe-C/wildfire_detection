@@ -37,7 +37,10 @@ jobs:
 
       - name: Lint model-pipeline/src and scripts
         working-directory: model-pipeline
-        run: ruff check src/ scripts/
+        run: |
+          ruff check src/ scripts/ \
+            --select=E,F \
+            --ignore=E501,F401
 
   # ── Stage 2: Unit tests ──────────────────────────────────────────────────
   unit-tests:

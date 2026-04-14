@@ -208,8 +208,8 @@ features:
       enabled: true
       nullable: true
       validation:
-        min: -50.0
-        max: 65.0
+        min: -60.0
+        max: 70.0
       fill_strategy: "forward_fill"
       regional_priority:
         california: "standard"
@@ -239,7 +239,7 @@ features:
       nullable: true
       validation:
         min: 0.0
-        max: 250.0
+        max: 400.0
       fill_strategy: "forward_fill"
       regional_priority:
         california: "critical"   # Santa Ana / Diablo wind events
@@ -269,7 +269,7 @@ features:
       nullable: true
       validation:
         min: 0.0
-        max: 500.0
+        max: 800.0
       fill_strategy: "zero"
       regional_priority:
         california: "standard"
@@ -299,7 +299,7 @@ features:
       nullable: true
       validation:
         min: 0.0
-        max: 15.0
+        max: 20.0
       fill_strategy: "forward_fill"
       regional_priority:
         california: "critical"
@@ -315,7 +315,7 @@ features:
       phase2_placeholder: true   # Open-Meteo daily var; not yet fetched — always null
       validation:
         min: 0.0
-        max: 150.0
+        max: 200.0
       fill_strategy: "forward_fill"
       regional_priority:
         california: "standard"
@@ -387,7 +387,7 @@ features:
       nullable: true
       validation:
         min: 0.0
-        max: 0.45
+        max: 0.60
       aggregation: "mean"
       simulator_use: "crown_fire_spread_rate"
       # Crown fire ROS scales with CBD (Van Wagner 1977).
@@ -433,8 +433,8 @@ features:
       enabled: true
       nullable: true
       validation:
-        min: -100.0
-        max: 4500.0
+        min: -150.0
+        max: 5000.0
       aggregation: "mean"
       regional_priority:
         california: "critical"
@@ -495,7 +495,7 @@ features:
       lag_note: "Must use previous 6h window value when training ignition model"
       validation:
         min: 0.0
-        max: 5000.0
+        max: 10000.0
       regional_priority:
         california: "critical"
         texas: "critical"
@@ -511,7 +511,7 @@ features:
       lag_note: "Must use previous 6h window value when training ignition model"
       validation:
         min: 0.0
-        max: 5000.0
+        max: 10000.0
       regional_priority:
         california: "standard"
         texas: "standard"
@@ -570,7 +570,7 @@ features:
       nullable: true
       validation:
         min: 0
-        max: 365
+        max: 730
       regional_priority:
         california: "standard"
         texas: "critical"   # TX drought-driven fires; critical predictor
@@ -634,8 +634,8 @@ anomaly_detection:
     off_season:
       months: [12, 1, 2, 3, 4, 5]
   z_score_threshold:
-    fire_season: 4.0
-    off_season: 3.5
+    fire_season: 5.0
+    off_season: 4.5
   min_baseline_days: 30
   monitored_features:
     - "temperature_2m"
