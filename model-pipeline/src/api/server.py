@@ -462,7 +462,6 @@ async def generate_report(
     # ML outputs
     propagator_summary: str | None = Form(None),
     xgboost_cells_json: str | None = Form(None),
-    cell2fire_summary: str | None = Form(None),
     obj2_simulation_json: str | None = Form(None),
     # Operator input
     operator_notes: str | None = Form(None),
@@ -547,7 +546,6 @@ async def generate_report(
         "firms_hotspot_count": firms_hotspot_count,
         "firms_hotspots": [],
         "xgboost_top_cells": xgboost_top_cells,
-        "cell2fire_geojson": cell2fire_summary,
         "obj2_simulation": obj2_sim,
         "propagator_summary": propagator_summary,
         "telemetry": telemetry or None,

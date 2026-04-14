@@ -85,7 +85,7 @@ def build_spread_geojson(
                                       None if spread rate is zero.
     model                string       Always "python_rothermel" — identifies
                                       this as the pure-Python Rothermel
-                                      implementation, not Cell2Fire C++.
+                                      implementation.
     simulation_id        string       Links to MLflow run for audit trail.
     fire_intensity_kW_m  float        Alias of byram_intensity_kwm (TDD name).
     """
@@ -261,7 +261,7 @@ def build_spread_geojson(
             # Honest scope note — documented in TDD Section 13
             "disclaimer": (
                 "Physics-based fire behavior index computed with pure-Python "
-                "Rothermel (1972) at H3 resolution. Not Cell2Fire C++ output. "
+                "Rothermel (1972) at H3 resolution. "
                 "Spatial spread predictions have high uncertainty at this resolution."
             ),
         },

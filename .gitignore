@@ -39,3 +39,6 @@ Thumbs.db
 
 # Local testing only
 wildfire_local_test_dag.py
+
+startup_plan.md
+summary.md

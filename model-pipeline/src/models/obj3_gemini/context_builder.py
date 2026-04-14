@@ -304,17 +304,6 @@ def build_ml_block(
     else:
         sections.append("\n## Bias Gate Result: not run (no bias evaluation available)")
 
-    # Priority 5: Cell2Fire (lowest priority, often large)
-    c2f = pipeline_result.get("cell2fire_geojson")
-    if c2f:
-        c2f_lines = ["\n## Cell2Fire Spread Model (top-10)"]
-        if isinstance(c2f, list):
-            for feat in c2f[:10]:
-                c2f_lines.append(f"- {json.dumps(feat)}")
-        else:
-            c2f_lines.append(str(c2f)[:2000])
-        sections.append("\n".join(c2f_lines))
-
     # Assemble with priority-aware truncation
     block = ""
     for section in sections:

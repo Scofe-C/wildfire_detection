@@ -244,7 +244,6 @@ def build_pipeline_result(
         "firms_hotspot_count": len(firms_hotspots),
         "firms_hotspots": firms_hotspots,
         "xgboost_top_cells": xgboost_top_cells,
-        "cell2fire_geojson": None,
         "obj2_simulation": obj2_simulation,
         "propagator_summary": propagator_summary,
         "telemetry": telemetry or None,

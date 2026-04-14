@@ -6,7 +6,6 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from src.models.obj2_spread.exceptions import Cell2FireError
 from src.models.obj2_spread.weather import (
     format_weather_csv,
     validate_weather_df,
@@ -29,8 +28,8 @@ def valid_weather_df():
 
 
 @pytest.fixture
-def cell2fire_named_df():
-    """Weather DataFrame already using Cell2Fire column names."""
+def short_named_df():
+    """Weather DataFrame already using short column names (ws/wd/tmp/rh)."""
     return pd.DataFrame({
         "datetime": pd.date_range("2025-01-07 18:00", periods=3, freq="h"),
         "ws":  [18.0, 22.5, 25.0],
@@ -72,9 +71,9 @@ class TestFormatWeatherCsv:
         result = pd.read_csv(out, parse_dates=["datetime"])
         assert result["datetime"].is_monotonic_increasing
 
-    def test_accepts_cell2fire_column_names(self, cell2fire_named_df, tmp_path):
+    def test_accepts_short_column_names(self, short_named_df, tmp_path):
         out = tmp_path / "weather.csv"
-        format_weather_csv(cell2fire_named_df, out)
+        format_weather_csv(short_named_df, out)
         result = pd.read_csv(out)
         assert set(result.columns) == {"datetime", "ws", "wd", "tmp", "rh"}
 
@@ -85,7 +84,7 @@ class TestFormatWeatherCsv:
             "temperature_2m": [18.0],
             "relative_humidity_2m": [12],
         })
-        with pytest.raises(Cell2FireError, match="No timestamp column"):
+        with pytest.raises(ValueError, match="No timestamp column"):
             format_weather_csv(df, tmp_path / "weather.csv")
 
     def test_raises_on_missing_weather_columns(self, tmp_path):
@@ -94,7 +93,7 @@ class TestFormatWeatherCsv:
             "wind_speed_10m": [18.0],
             # missing temperature and RH
         })
-        with pytest.raises(Cell2FireError, match="Missing weather columns"):
+        with pytest.raises(ValueError, match="Missing weather columns"):
             format_weather_csv(df, tmp_path / "weather.csv")
 
     def test_returns_path(self, valid_weather_df, tmp_path):

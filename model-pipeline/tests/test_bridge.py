@@ -130,7 +130,7 @@ class TestBuildPipelineResult:
         result = build_pipeline_result(obj1_predictions, obj1_input)
         required_keys = {
             "run_id", "is_deployable", "risk_level", "firms_hotspot_count",
-            "firms_hotspots", "xgboost_top_cells", "cell2fire_geojson",
+            "firms_hotspots", "xgboost_top_cells",
             "obj2_simulation", "propagator_summary", "telemetry",
             "fema_nri_tracts", "bias_report", "metrics", "source_status",
         }

@@ -11,7 +11,6 @@
     {"h3_index": "8928308280fffff", "probability": 0.23, "lat": 37.4, "lon": -119.5},
     {"h3_index": "8928308281fffff", "probability": 0.18, "lat": 37.5, "lon": -119.6}
   ],
-  "cell2fire_geojson": null,
   "propagator_summary": null,
   "firms_hotspot_count": 0,
   "telemetry": {

@@ -1,7 +1,7 @@
 """
-Raster utilities for Cell2Fire.
+Raster utilities for fire spread simulation.
 
-Handles GeoTIFF clipping to AOI and parsing Cell2Fire output grids
+Handles GeoTIFF clipping to AOI and parsing output grids
 into burn probability arrays.
 """
 from __future__ import annotations
@@ -10,8 +10,6 @@ import logging
 from pathlib import Path
 
 import numpy as np
-
-from .exceptions import Cell2FireError
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +41,7 @@ def clip_raster_to_aoi(
 
     Raises
     ------
-    Cell2FireError
+    ValueError
         If the clip produces an empty raster.
     """
     import rasterio
@@ -58,7 +56,7 @@ def clip_raster_to_aoi(
         data = src.read(1, window=window)
 
         if data.size == 0 or data.shape[0] == 0 or data.shape[1] == 0:
-            raise Cell2FireError(
+            raise ValueError(
                 f"Clip produced empty raster. "
                 f"Bounds {bounds} may be outside raster extent {src.bounds}. "
                 f"Raster CRS: {src.crs}."
@@ -108,15 +106,15 @@ def parse_burn_probability(
     output_dir: Path,
     n_simulations: int,
 ) -> np.ndarray:
-    """Read Cell2Fire output grids and compute per-cell burn probability.
+    """Read simulation output grids and compute per-cell burn probability.
 
-    Cell2Fire writes one CSV grid per simulation under output/Grids/Grids1/.
+    Expects one CSV grid per simulation under output/Grids/Grids1/.
     Burn probability = fraction of simulations where each cell burned.
 
     Parameters
     ----------
     output_dir : Path
-        Cell2Fire --output-folder path.
+        Simulation --output-folder path.
     n_simulations : int
         Number of simulations run (denominator).
 
@@ -127,7 +125,7 @@ def parse_burn_probability(
 
     Raises
     ------
-    Cell2FireError
+    ValueError
         If no output grid files are found.
     """
     grids_dir = output_dir / "Grids" / "Grids1"
@@ -136,9 +134,9 @@ def parse_burn_probability(
 
     grid_files = sorted(grids_dir.glob("ForestGrid*.csv"))
     if not grid_files:
-        raise Cell2FireError(
+        raise ValueError(
             f"No output grids found in {grids_dir}. "
-            "Check that Cell2Fire ran with --grids flag."
+            "Check that the simulation ran with --grids flag."
         )
 
     logger.info("Parsing %d grid files from %s", len(grid_files), grids_dir)
@@ -164,7 +162,7 @@ def parse_burn_probability(
             burn_count += burned
 
     if burn_count is None:
-        raise Cell2FireError("All grid files failed to parse.")
+        raise ValueError("All grid files failed to parse.")
 
     burn_prob = burn_count / max(n_simulations, 1)
     logger.info(

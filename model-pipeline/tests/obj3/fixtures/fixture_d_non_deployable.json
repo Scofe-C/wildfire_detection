@@ -5,7 +5,6 @@
   "firms_hotspot_count": 0,
   "metrics": { "auc_pr": 0.55, "f1": 0.48, "fnr": 0.35 },
   "xgboost_top_cells": [],
-  "cell2fire_geojson": null,
   "propagator_summary": null,
   "telemetry": {
     "temperature_max": 22.0,

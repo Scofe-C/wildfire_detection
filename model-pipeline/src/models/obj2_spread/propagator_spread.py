@@ -1,17 +1,12 @@
 """
 OBJ-2 (Secondary) — PROPAGATOR Fire Spread (DEMO ONLY)
 =======================================================
-Mediterranean fire spread model used **only** for comparison against
-Cell2Fire. NOT calibrated for US vegetation — every output carries
-a disclaimer.
+Mediterranean fire spread model for demonstration purposes.
+NOT calibrated for US vegetation — every output carries a disclaimer.
 
 PROPAGATOR uses a simplified physics model designed for Mediterranean
-shrubland. We include it to demonstrate that Cell2Fire (calibrated
-for North American fuels via LANDFIRE FBFM40) outperforms a model
-built for a different ecosystem, validating the Cell2Fire choice.
-
-The FBFM40 → Mediterranean crosswalk maps 40 US fuel types to the
-7 Mediterranean fuel classes PROPAGATOR expects. This mapping is
+shrubland. The FBFM40 → Mediterranean crosswalk maps 40 US fuel types
+to the 7 Mediterranean fuel classes PROPAGATOR expects. This mapping is
 inherently lossy — another reason this is demo-only.
 
 Owner: Ibrahim (OBJ-2)
@@ -118,8 +113,7 @@ class PropagatorSpread(BaseModel):
     """PROPAGATOR Mediterranean fire spread model — DEMO ONLY.
 
     Every output includes the DISCLAIMER string. This model exists
-    solely for comparison against Cell2Fire to validate our choice
-    of a North American fuel model.
+    for demonstration purposes only and is not calibrated for US fuels.
 
     Usage::
 
@@ -179,8 +173,8 @@ class PropagatorSpread(BaseModel):
         implementation uses a **simplified analytical approximation**
         of the Rothermel spread rate with Mediterranean fuel parameters.
 
-        This is sufficient for the demo comparison (showing Cell2Fire
-        outperforms on US fuel types).
+        This is sufficient for the demo comparison of spread behavior
+        across different fuel model calibrations.
 
         Parameters
         ----------
@@ -259,11 +253,8 @@ class PropagatorSpread(BaseModel):
         return result
 
     def validate(self, X: pd.DataFrame, y: pd.Series) -> dict[str, float]:
-        """Validate PROPAGATOR against actual burn data.
-
-        Expected to underperform Cell2Fire on US data.
-        """
-        from src.models.obj2_spread.cell2fire_spread import compute_dice_coefficient
+        """Validate PROPAGATOR against actual burn data."""
+        from src.models.obj2_spread.evaluation import compute_dice_coefficient
         from src.validation.metrics import compute_all_metrics
 
         predictions = self.predict(X)

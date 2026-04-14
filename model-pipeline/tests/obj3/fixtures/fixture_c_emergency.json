@@ -8,7 +8,6 @@
     { "h3_index": "8928308280fffff", "probability": 0.92, "lat": 34.1, "lon": -118.3 },
     { "h3_index": "8928308281fffff", "probability": 0.88, "lat": 34.2, "lon": -118.4 }
   ],
-  "cell2fire_geojson": "{\"type\": \"FeatureCollection\", \"features\": []}",
   "propagator_summary": "Fire spreading NE at 2.3 mph, 150 acres estimated.",
   "telemetry": {
     "temperature_max": 41.0,

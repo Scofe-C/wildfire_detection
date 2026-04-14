@@ -1,5 +1,5 @@
 """
-Evaluation metrics for Cell2Fire spread simulation.
+Evaluation metrics for fire spread simulation.
 
 Primary metric  : Buffered IoU (15% buffer, threshold sweep)
 Secondary metric: Dice coefficient (legacy, kept for backwards compat)
@@ -76,7 +76,7 @@ def compute_buffered_iou(
     Parameters
     ----------
     pred_burn_prob : np.ndarray
-        2D array of burn probabilities from Cell2Fire.
+        2D array of burn probabilities from the spread simulator.
     actual_perimeter_gdf : gpd.GeoDataFrame
         Actual fire perimeter polygon(s).
     transform : rasterio.Affine
@@ -182,7 +182,7 @@ def find_best_threshold(
     Parameters
     ----------
     pred_burn_prob : np.ndarray
-        2D burn probability array from Cell2Fire.
+        2D burn probability array from the spread simulator.
     actual_perimeter_gdf : gpd.GeoDataFrame
         Actual fire perimeter.
     transform : rasterio.Affine

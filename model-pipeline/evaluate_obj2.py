@@ -1348,8 +1348,7 @@ def main(
                 # ── Step 4: Monte Carlo N=100 weather perturbations ──────────
                 # Runs the same Rothermel physics 100 times with perturbed
                 # weather (wind speed ±25%, wind direction ±25°, RH ±8%,
-                # temp ±2.5°C) to produce burn probabilities per neighbour cell
-                # — equivalent to Cell2Fire stochastic output, no binary needed.
+                # temp ±2.5°C) to produce burn probabilities per neighbour cell.
                 logger.info("Running Monte Carlo N=100 from %s …", ign_id)
                 mc_result = sim.simulate_monte_carlo(
                     df, ign_id, ign_prob,
@@ -1418,7 +1417,6 @@ def main(
                     simulation_id=ts,
                 )
                 save_spread_geojson(spread_geojson, rt_dir)
-                rt_entry["cell2fire_geojson"] = spread_geojson["features"]
 
                 # Clean operational output — the format shown to operators / LLM
                 op_out = _format_operational_output(result, res_km, ign_prob)

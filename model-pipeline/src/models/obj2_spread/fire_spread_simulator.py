@@ -598,8 +598,7 @@ class PythonFireSpreadSimulator:
     ---------
     simulate()             — single deterministic run (one weather state)
     simulate_monte_carlo() — N=100 perturbed-weather runs → burn probabilities
-                             (equivalent to Cell2Fire's stochastic output but
-                              without the C++ binary dependency)
+                             (stochastic output, no external binary dependency)
 
     Example
     -------
@@ -906,11 +905,10 @@ class PythonFireSpreadSimulator:
     ) -> dict[str, Any]:
         """Monte Carlo fire spread — N perturbed-weather runs → burn probabilities.
 
-        Equivalent to Cell2Fire's stochastic simulation but fully in Python with
-        no C++ binary dependency.  Each of the N runs uses the same Rothermel +
-        Van Wagner + Anderson physics as ``simulate()``, but with weather inputs
-        randomly perturbed around the observed values using physically motivated
-        distributions.
+        Fully Python-based stochastic simulation with no external binary dependency.
+        Each of the N runs uses the same Rothermel + Van Wagner + Anderson physics
+        as ``simulate()``, but with weather inputs randomly perturbed around the
+        observed values using physically motivated distributions.
 
         Perturbation distributions
         --------------------------
@@ -1177,7 +1175,7 @@ class PythonFireSpreadSimulator:
             "direction_uncertainty_deg": round(dir_std,  1),
             # ── Crown fire ────────────────────────────────────────────────
             "crown_fire_probability": round(crown_prob, 4),
-            # ── Burn probabilities — Cell2Fire-equivalent output ──────────
+            # ── Burn probabilities ────────────────────────────────────────
             "neighbor_burn_probabilities": {
                 k: round(v, 4) for k, v in nb_burn_probs.items()
             },
