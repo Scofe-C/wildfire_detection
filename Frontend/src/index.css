@@ -1,0 +1,53 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  background: #080c14;
+  color: #e2e8f0;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+
+::-webkit-scrollbar-track {
+  background: #0d1117;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #253348;
+  border-radius: 2px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #374151;
+}
+
+/* Severity glow effects for critical / warning states */
+.glow-critical {
+  box-shadow: 0 0 0 1px rgba(255, 51, 51, 0.22), 0 0 16px rgba(255, 51, 51, 0.11);
+}
+.glow-warning {
+  box-shadow: 0 0 0 1px rgba(255, 107, 0, 0.22), 0 0 16px rgba(255, 107, 0, 0.10);
+}
+
+/* Font mono utility for JetBrains Mono */
+.font-mono {
+  font-family: 'JetBrains Mono', 'Fira Code', monospace !important;
+}
