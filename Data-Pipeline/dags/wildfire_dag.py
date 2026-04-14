@@ -920,25 +920,6 @@ with DAG(
             fused_df = _pd.read_parquet(fused_ml_path)
             logger.info("run_inference: read %d rows from XCom path %s", len(fused_df), fused_ml_path)
 
-        # Save FIRMS aggregates per region BEFORE dropping pipeline-only cols
-        # (active_fire_count, mean_frp, max_confidence get dropped for ML scoring
-        #  but OBJ-3 needs them for the state-machine FIRMS hotspot gate)
-        firms_by_region = {}
-        if "active_fire_count" in fused_df.columns and "region" in fused_df.columns:
-            for _r in fused_df["region"].dropna().unique():
-                _rdf = fused_df[fused_df["region"] == _r]
-                _count = int(_rdf["active_fire_count"].sum())
-                _hotspots = []
-                if _count > 0 and "mean_frp" in _rdf.columns:
-                    for _, _row in _rdf[_rdf["active_fire_count"] > 0].iterrows():
-                        _hotspots.append({
-                            "lat": float(_row.get("latitude", 0)),
-                            "lon": float(_row.get("longitude", 0)),
-                            "frp": float(_row.get("mean_frp", 0)),
-                            "confidence": float(_row.get("max_confidence", 80)),
-                        })
-                firms_by_region[_r] = {"count": _count, "hotspots": _hotspots}
-
         drop_cols = [c for c in _PIPELINE_ONLY_COLS if c in fused_df.columns]
         if drop_cols:
             fused_df = fused_df.drop(columns=drop_cols)
@@ -957,7 +938,6 @@ with DAG(
 
         all_scored = []
         all_critical = []
-        inference_xcom = {}  # {region -> enriched inference dict} — written to GCS + XCom
 
         for region in fused_df["region"].dropna().unique():
             logger.info("run_inference: scoring region=%s", region)
@@ -1014,44 +994,6 @@ with DAG(
             logger.info("[%s] flagged=%d  CRITICAL=%d  max_score=%.4f",
                         region, n_flagged, n_crit, float(scored_df["fire_risk_score"].max()))
 
-            # Build cells_list once — reused by GCS write
-            _cell_cols = ["grid_id", "fire_risk_score", "fire_risk_flag", "risk_tier"] + (
-                ["latitude", "longitude"] if "latitude" in scored_df.columns else []
-            )
-            cells_list = scored_df[_cell_cols].to_dict(orient="records")
-
-            # Weather telemetry from region_df (weather cols survive the drop)
-            _telemetry = {}
-            if "temperature_2m" in region_df.columns:
-                _telemetry["temperature_max"] = round(float(region_df["temperature_2m"].max()), 2)
-            if "wind_speed_10m" in region_df.columns:
-                _telemetry["wind_speed_mph"] = round(float(region_df["wind_speed_10m"].mean() * 0.6214), 2)
-            if "relative_humidity_2m" in region_df.columns:
-                _telemetry["relative_humidity"] = round(float(region_df["relative_humidity_2m"].mean()), 2)
-            if "soil_moisture_0_to_7cm" in region_df.columns:
-                _telemetry["soil_moisture"] = round(float(region_df["soil_moisture_0_to_7cm"].mean()), 4)
-
-            _firms = firms_by_region.get(region, {"count": 0, "hotspots": []})
-
-            # Enriched JSON — single source of truth for OBJ-3 server
-            region_payload = {
-                "run_timestamp": run_timestamp.isoformat(),
-                "model_version": "production",
-                "threshold": threshold,
-                "region": region,
-                "cells": cells_list,
-                "summary": {
-                    "total_cells":      len(scored_df),
-                    "flagged_cells":    n_flagged,
-                    "max_risk_score":   float(scored_df["fire_risk_score"].max()),
-                    "risk_tier_counts": scored_df["risk_tier"].value_counts().to_dict(),
-                },
-                "firms_hotspot_count": _firms["count"],
-                "firms_hotspots":      _firms["hotspots"],
-                "telemetry":           _telemetry,
-            }
-            inference_xcom[region] = region_payload
-
             try:
                 from google.cloud import storage as _gcs
                 client = _gcs.Client()
@@ -1066,8 +1008,25 @@ with DAG(
                     f"inference/region={region}/year={year}/month={month}/inference_{ts_str}.parquet"
                 ).upload_from_string(buf.getvalue(), content_type="application/octet-stream")
 
+                cells_list = scored_df[[
+                    "grid_id", "fire_risk_score", "fire_risk_flag", "risk_tier",
+                ] + (["latitude", "longitude"] if "latitude" in scored_df.columns else [])
+                ].to_dict(orient="records")
+
                 bkt.blob(f"inference/latest/{region}_latest.json").upload_from_string(
-                    json.dumps(region_payload, indent=2),
+                    json.dumps({
+                        "run_timestamp": run_timestamp.isoformat(),
+                        "model_version": "production",
+                        "threshold": threshold,
+                        "region": region,
+                        "cells": cells_list,
+                        "summary": {
+                            "total_cells":      len(scored_df),
+                            "flagged_cells":    n_flagged,
+                            "max_risk_score":   float(scored_df["fire_risk_score"].max()),
+                            "risk_tier_counts": scored_df["risk_tier"].value_counts().to_dict(),
+                        },
+                    }, indent=2),
                     content_type="application/json",
                 )
                 logger.info("[%s] GCS write complete", region)
@@ -1098,26 +1057,8 @@ with DAG(
             except Exception as exc:
                 logger.warning("Slack alert failed (non-blocking): %s", exc)
 
-        context["ti"].xcom_push(key="inference_results", value=inference_xcom)
         logger.info("run_inference complete — %d regions, %d CRITICAL cells",
                     len(all_scored), len(all_critical))
-
-        # ── Trigger OBJ-3 server (non-blocking) ──────────────────────────────
-        obj3_url = os.environ.get("OBJ3_DASHBOARD_URL", "http://obj3-dashboard:8000")
-        scored_regions = list(inference_xcom.keys())
-        try:
-            import requests as _req
-            resp = _req.post(
-                f"{obj3_url}/api/generate-from-pipeline",
-                json={"regions": scored_regions, "bucket": bucket},
-                timeout=180,
-            )
-            if resp.status_code == 200:
-                logger.info("OBJ-3 trigger OK: %s", resp.json())
-            else:
-                logger.warning("OBJ-3 trigger returned %d: %s", resp.status_code, resp.text[:500])
-        except Exception as exc:
-            logger.warning("OBJ-3 trigger failed (non-blocking): %s", exc)
 
     run_inference = PythonOperator(
         task_id="run_inference",

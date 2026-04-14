@@ -181,9 +181,6 @@ body {
 .btn-primary:disabled { opacity: 0.4; cursor: not-allowed; }
 .btn-ghost { background: transparent; color: var(--text-2); border: 1px solid var(--border); }
 .btn-ghost:hover { background: var(--panel); color: var(--text); }
-.btn-accent { background: #1d4ed8; color: #fff; }
-.btn-accent:hover:not(:disabled) { background: #1e40af; }
-.btn-accent:disabled { opacity: 0.4; cursor: not-allowed; }
 .btn-sm { padding: 5px 11px; font-size: 11px; }
 
 /* ── Badges ── */

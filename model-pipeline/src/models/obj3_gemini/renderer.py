@@ -117,34 +117,10 @@ def render_html(
     return tmpl.render(**report.model_dump())
 
 
-_REPORT_CSS = """\
-body { font-family: -apple-system, 'Segoe UI', Roboto, sans-serif; max-width: 860px; margin: 0 auto; padding: 32px 24px; color: #1a1a1a; line-height: 1.6; }
-h1 { font-size: 1.6em; border-bottom: 2px solid #c2410c; padding-bottom: 8px; color: #1a1a1a; }
-h2 { font-size: 1.25em; margin-top: 28px; color: #292524; }
-h3 { font-size: 1.05em; color: #44403c; }
-hr { border: none; border-top: 1px solid #e7e5e4; margin: 20px 0; }
-table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 0.9em; }
-th { background: #292524; color: #fff; padding: 8px 12px; text-align: left; font-weight: 600; }
-td { padding: 8px 12px; border-bottom: 1px solid #e7e5e4; }
-tr:hover td { background: #fafaf9; }
-code { background: #f5f5f4; padding: 2px 6px; border-radius: 4px; font-size: 0.85em; }
-blockquote { border-left: 3px solid #c2410c; margin: 12px 0; padding: 8px 16px; background: #fffbeb; color: #78350f; }
-ul { padding-left: 20px; }
-li { margin-bottom: 6px; }
-strong { color: #1c1917; }
-"""
-
-
-def markdown_to_html(md_str: str, *, styled: bool = True) -> str:
-    """Convert a Markdown string to styled HTML via ``python-markdown``."""
+def markdown_to_html(md_str: str) -> str:
+    """Convert a Markdown string to HTML via ``python-markdown``."""
     import markdown
-    body = markdown.markdown(md_str, extensions=["tables", "fenced_code"])
-    if not styled:
-        return body
-    return (
-        "<!DOCTYPE html><html><head><meta charset='utf-8'>"
-        f"<style>{_REPORT_CSS}</style></head><body>{body}</body></html>"
-    )
+    return markdown.markdown(md_str, extensions=["tables", "fenced_code"])
 
 
 def render_pdf(html_str: str, css_string: str = "") -> bytes:

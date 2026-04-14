@@ -396,7 +396,6 @@
       </div>
       <div style="flex:1"></div>
       <div id="statusPills" style="display:flex;gap:8px;align-items:center"></div>
-      <button class="btn btn-accent btn-sm" id="pipelineBtn" onclick="triggerPipelineReport()">⚡ Run Pipeline Report</button>
       <a href="/generate" class="btn btn-primary btn-sm">+ New Report</a>
     </header>
 
@@ -692,36 +691,6 @@ function reviewBadge(s) {
 
 function truncateId(id) {
   return id && id.length > 16 ? id.slice(0, 16) + '…' : (id || '—');
-}
-
-// ── Trigger pipeline report from latest GCS inference ──
-async function triggerPipelineReport() {
-  const btn = document.getElementById('pipelineBtn');
-  const origText = btn.textContent;
-  btn.textContent = '⚡ Generating...';
-  btn.disabled = true;
-  try {
-    const resp = await fetch('/api/generate-from-pipeline', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({regions: ['california', 'texas']}),
-    });
-    const data = await resp.json();
-    if (!resp.ok) {
-      alert('Pipeline report failed: ' + (data.detail || resp.statusText));
-      return;
-    }
-    const reports = data.reports || [];
-    const ok = reports.filter(r => r.success).length;
-    const fail = reports.filter(r => !r.success).length;
-    alert(`Pipeline reports: ${ok} generated, ${fail} failed.`);
-    await loadReports();
-  } catch (e) {
-    alert('Request failed: ' + e.message);
-  } finally {
-    btn.textContent = origText;
-    btn.disabled = false;
-  }
 }
 
 // ── Load reports ──
