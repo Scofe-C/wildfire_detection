@@ -97,7 +97,7 @@ class TestSchemaLoading:
         cfg = Path(__file__).resolve().parents[1] / "configs" / "feature_schema.yaml"
         if cfg.exists():
             s = load_schema(cfg)
-            assert s.version == "1.0.0"
+            assert s.version == "2.0.0"
             assert len(s.features) > 0
 
     def test_missing_file(self):
