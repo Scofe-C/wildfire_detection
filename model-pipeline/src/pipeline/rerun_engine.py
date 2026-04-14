@@ -305,29 +305,38 @@ class RerunEngine:
         df: pd.DataFrame,
         predictions: pd.DataFrame,
     ) -> dict[str, Any] | None:
-        """Run fire spread simulation on the highest-risk cell.
+        """Run Rothermel fire spread simulation on the highest-risk cell (OBJ-1 output).
 
-        Returns the simulation result dict, or None if the OBJ-2 binary/module
-        is unavailable in this environment.
+        Uses PythonFireSpreadSimulator (Rothermel 1972) with the full fused
+        feature DataFrame so the simulator can resolve neighbour terrain/fuel.
+        Also applies CBH physical clamp to prevent false crown fire from
+        imputed low values.
+
+        Returns the simulation result dict, or None on failure.
         """
-        highest_risk_idx = predictions["fire_risk_score"].idxmax()
-        top_row = df.loc[highest_risk_idx]
-
         try:
-            from src.models.obj2_propagator.propagator import PropagatorSpread  # type: ignore[import]
+            from src.models.obj2_spread.fire_spread_simulator import PythonFireSpreadSimulator
 
-            sim = PropagatorSpread()
-            result = sim.run(
-                grid_id=str(top_row.get("grid_id", "unknown")),
-                wind_speed=float(top_row.get("wind_speed_10m", 0)),
-                wind_direction=float(top_row.get("wind_direction_10m", 0)),
-                temperature=float(top_row.get("temperature_2m", 20)),
-                relative_humidity=float(top_row.get("relative_humidity_2m", 30)),
+            # Clamp CBH to prevent false crown fire (imputed median = 0.175m)
+            if "canopy_base_height_m" in df.columns:
+                df = df.copy()
+                df["canopy_base_height_m"] = df["canopy_base_height_m"].clip(lower=2.0)
+
+            # Pick ignition cell: highest OBJ-1 fire_risk_score
+            highest_risk_idx = predictions["fire_risk_score"].idxmax()
+            ign_id = str(df.loc[highest_risk_idx, "grid_id"])
+            ign_prob = float(predictions.loc[highest_risk_idx, "fire_risk_score"])
+
+            sim = PythonFireSpreadSimulator()
+            result = sim.simulate(df, ign_id, ign_prob)
+            logger.info(
+                "OBJ-2 simulation: cell=%s prob=%.3f speed=%.4f km/h dir=%.1f° crown=%s",
+                ign_id, ign_prob,
+                result.get("spread_speed_kmh", 0),
+                result.get("spread_direction_deg", 0),
+                result.get("crown_fire_status", "?"),
             )
             return result
-        except ImportError:
-            logger.info("OBJ-2 propagator not available — skipping spread simulation")
-            return None
         except Exception as e:
             logger.warning("OBJ-2 simulation failed (non-blocking): %s", e)
             return None
