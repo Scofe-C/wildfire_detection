@@ -1458,25 +1458,7 @@ def main(
                 _save_prediction(rt_dir, "fire_behavior.json", result)
                 _save_prediction(rt_dir, "threatened_analysis.json", ta)
                 _save_prediction(rt_dir, "input_quality.json", iq)
-                _save_prediction(rt_dir, "propagation.json", {
-                    "hours_simulated": spread["hours_simulated"],
-                    "total_burned": spread["total_burned"],
-                    "burned_cells": spread["burned_cells"],
-                    "timeline": spread["timeline"],
-                })
-                _save_prediction(rt_dir, "monte_carlo.json", mc_result)
-
-                # ── Spread GeoJSON (TDD Section 6.4 + success criterion) ────
-                # Produces TDD-required fields: spread_probability,
-                # time_to_arrival_min, model, simulation_id, fire_intensity_kW_m
-                # simulation_id ties this GeoJSON to the MLflow run (ts = run ts)
-                spread_geojson = build_spread_geojson(
-                    result, spread,
-                    resolution_km=res_km,
-                    simulation_id=ts,
-                )
-                save_spread_geojson(spread_geojson, rt_dir)
-                rt_entry["cell2fire_geojson"] = spread_geojson["features"]
+                _save_prediction(rt_dir, "monte_carlo.json", result)
 
                 # Clean operational output — the format shown to operators / LLM
                 op_out = _format_operational_output(result, res_km, ign_prob)
