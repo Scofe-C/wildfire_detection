@@ -307,7 +307,7 @@ _PHYSICAL_CLAMPS: dict[str, tuple[float, float]] = {
     "canopy_cover_pct":     (0.0,   100.0),
     "slope_degrees":        (0.0,    90.0),
     "aspect_degrees":       (0.0,   360.0),
-    "canopy_base_height_m": (0.0,    50.0),
+    "canopy_base_height_m": (2.0,    50.0),  # <2m is shrub, not canopy — prevents false crown fire
     "canopy_bulk_density":  (0.0,     0.5),  # >0.5 kg/m³ is unrealistic
     "elevation_m":          (0.0,  4500.0),  # Mt Whitney = 4421m
 }
@@ -411,49 +411,58 @@ def _read_and_enrich_22km(path: Path) -> pd.DataFrame:
 def _load_22km() -> pd.DataFrame | None:
     """Load 22km fused parquet, enrich from static, impute remaining NaN.
 
-    Three-tier priority — picks the freshest available data:
+    Priority — always picks the freshest available data:
 
-    Tier 1  smoke_test/fused_*_22km.parquet      (newest first)
-            Written by run_pipeline_once.py — always most up-to-date.
+    Tier 1  DAG partitioned: 22km/region=*/year=*/month=*/features_*.parquet
+            + fused/22km/region=*/year=*/month=*/fused_*.parquet
+            Real-time deployment pipeline writes here every run.
+            Newest file per region; CA and TX concatenated.
 
-    Tier 2  22km/region=california/…/features_*.parquet  +
-            22km/region=texas/…/features_*.parquet
-            Partitioned export from DAG task_export_to_parquet.
-            Newest file per region; CA and TX are concatenated.
+    Tier 2  smoke_test/fused_*_22km.parquet  (newest first)
+            Written by run_pipeline_once.py — dev/testing fallback.
 
     Tier 3  22km/date=*/features.parquet
-            Legacy flat format — fallback when neither tier 1 nor 2 exists.
+            Legacy flat format — last-resort fallback.
     """
-    # ── Tier 1: smoke_test ─────────────────────────────────────────────────
+    FUSED_22KM_DIR = DATA_PIPELINE / "data" / "processed" / "fused" / "22km"
+
+    # ── Tier 1: DAG partitioned files (freshest from real-time pipeline) ────
+    # Check both processed/22km and processed/fused/22km, pick newest across both
+    region_dfs: list[pd.DataFrame] = []
+    for region in ("california", "texas"):
+        best_file = None
+        best_name = ""
+        for base_dir, glob_pat in [
+            (PROCESSED_22KM_DIR, f"region={region}/**/features_*.parquet"),
+            (FUSED_22KM_DIR, f"region={region}/**/fused_*.parquet"),
+        ]:
+            if base_dir.exists():
+                files = sorted(base_dir.glob(glob_pat), reverse=True)
+                if files and files[0].name > best_name:
+                    best_file = files[0]
+                    best_name = files[0].name
+        if best_file:
+            part_df = pd.read_parquet(best_file)
+            part_df["grid_id"] = part_df["grid_id"].astype(str)
+            region_dfs.append(part_df)
+            logger.info("Loaded 22km (%s): %s (%d rows)", region, best_file, len(part_df))
+    if region_dfs:
+        df = pd.concat(region_dfs, ignore_index=True)
+        logger.info("Combined 22km CA+TX: %d rows total", len(df))
+        return _enrich_and_impute(df, STATIC_22KM)
+
+    # ── Tier 2: smoke_test (dev/testing fallback) ──────────────────────────
     if SMOKE_TEST_DIR.exists():
         candidates = sorted(SMOKE_TEST_DIR.glob("fused_*_22km.parquet"), reverse=True)
         if candidates:
+            logger.info("Using smoke_test fallback: %s", candidates[0].name)
             return _read_and_enrich_22km(candidates[0])
-
-    # ── Tier 2: partitioned region=* files (CA + TX concat, newest per region)
-    region_dfs: list[pd.DataFrame] = []
-    for region in ("california", "texas"):
-        region_dir = PROCESSED_22KM_DIR / f"region={region}"
-        if region_dir.exists():
-            region_files = sorted(region_dir.glob("**/features_*.parquet"), reverse=True)
-            if region_files:
-                part_df = pd.read_parquet(region_files[0])
-                part_df["grid_id"] = part_df["grid_id"].astype(str)
-                region_dfs.append(part_df)
-                logger.info(
-                    "Loaded 22km partitioned (%s): %s (%d rows)",
-                    region, region_files[0].name, len(part_df),
-                )
-    if region_dfs:
-        df = pd.concat(region_dfs, ignore_index=True)
-        logger.info("Combined 22km CA+TX partitioned: %d rows total", len(df))
-        return _enrich_and_impute(df, STATIC_22KM)
 
     # ── Tier 3: legacy flat date= format ────────────────────────────────────
     if PROCESSED_22KM_DIR.exists():
         flat_files = sorted(PROCESSED_22KM_DIR.glob("date=*/features.parquet"), reverse=True)
         if flat_files:
-            logger.info("Falling back to flat 22km parquet: %s", flat_files[0])
+            logger.info("Using legacy flat fallback: %s", flat_files[0])
             return _read_and_enrich_22km(flat_files[0])
 
     logger.warning(
@@ -583,27 +592,51 @@ def simulate_spread_timeseries(
 
 
 def _select_ignition(df: pd.DataFrame) -> tuple[str, float]:
-    """Select ignition cell from FIRMS data or driest cell."""
-    # Priority 1: Active fire detected
+    """Select ignition cell and probability.
+
+    Priority
+    --------
+    1. OBJ-1 fire_risk_score — highest-scored cell (real deployment path).
+       Uses the actual ignition probability from the XGBoost model.
+    2. FIRMS active_fire_count — hottest detected fire cell.
+       Fixed prob=0.30 (no OBJ-1 score available).
+    3. Driest cell (lowest RH) — highest surface risk proxy.
+       Fixed prob=0.15.
+    4. First cell — last resort.
+    """
+    # Priority 1: OBJ-1 fire_risk_score (real pipeline output)
+    if "fire_risk_score" in df.columns:
+        scores = pd.to_numeric(df["fire_risk_score"], errors="coerce")
+        valid = df[scores.notna()]
+        if not valid.empty:
+            best = valid.loc[scores[valid.index].idxmax()]
+            prob = float(scores[valid.index].max())
+            logger.info(
+                "Ignition from OBJ-1: %s (fire_risk_score=%.4f)",
+                best["grid_id"], prob,
+            )
+            return str(best["grid_id"]), prob
+
+    # Priority 2: FIRMS active fire
     if "active_fire_count" in df.columns:
         numeric_count = pd.to_numeric(df["active_fire_count"], errors="coerce").fillna(0)
         fire_df = df[numeric_count > 0].copy()
         if not fire_df.empty:
-            fire_df["_fire_count_num"] = pd.to_numeric(fire_df["active_fire_count"], errors="coerce").fillna(0)
+            fire_df["_fire_count_num"] = numeric_count[fire_df.index]
             best = fire_df.sort_values("_fire_count_num", ascending=False).iloc[0]
             logger.info("Ignition from FIRMS: %s (fire_count=%s)", best["grid_id"], best["active_fire_count"])
             return str(best["grid_id"]), 0.30
 
-    # Priority 2: Driest cell
+    # Priority 3: Driest cell
     if "relative_humidity_2m" in df.columns:
         rh = pd.to_numeric(df["relative_humidity_2m"], errors="coerce")
         valid = df[rh.notna()]
         if not valid.empty:
             driest = valid.loc[rh[valid.index].idxmin()]
-            logger.info("Ignition from driest cell: %s (RH=%s%%)", driest["grid_id"], driest["relative_humidity_2m"])
+            logger.info("Ignition from driest cell: %s (RH=%.1f%%)", driest["grid_id"], driest["relative_humidity_2m"])
             return str(driest["grid_id"]), 0.15
 
-    # Fallback: first cell (guard against empty DataFrame)
+    # Fallback
     if df.empty:
         raise ValueError("Cannot select ignition cell: DataFrame is empty after filtering.")
     return str(df.iloc[0]["grid_id"]), 0.10
@@ -1036,15 +1069,29 @@ def _print_historical(per_fire: list[dict], aggregate: dict):
         print(f"  {f['name']}")
         print(f"{'-'*70}")
         r = f["result"]
-        print(f"  direction  : {r['spread_direction_deg']:.1f} deg")
-        print(f"  speed      : {r['spread_speed_kmh']:.3f} km/h")
+        mc = f.get("monte_carlo")
+
+        # Hybrid output (40% det + 60% MC p90)
+        DET_W, MC_W = 0.4, 0.6
+        det_speed = r['spread_speed_kmh']
+        if mc:
+            mc_p90  = mc.get('spread_speed_kmh_p90', det_speed)
+            h_speed = DET_W * det_speed + MC_W * mc_p90
+            h_dir   = mc.get('dominant_direction_deg', r['spread_direction_deg'])
+        else:
+            mc_p90  = det_speed
+            h_speed = det_speed
+            h_dir   = r['spread_direction_deg']
+
+        print(f"  approach   : HYBRID (40% det + 60% MC p90)")
+        print(f"  direction  : {h_dir:.1f} deg")
+        print(f"  speed      : {h_speed:.3f} km/h")
         print(f"  moisture   : {r['dead_fuel_moisture_pct']:.1f}%")
         print(f"  intensity  : {r['byram_intensity_kwm']:.1f} kW/m")
         print(f"  crown      : {r['crown_fire_status']}")
-        print()
-        for name, check in f["gate"]["per_output"].items():
-            icon = "[PASS]" if check["passed"] else "[FAIL]"
-            print(f"  {icon}  {name}: {check['detail']}")
+        if mc:
+            print(f"  crown prob : {mc.get('crown_fire_probability', 0):.1%}")
+            print(f"  speed p90  : {mc_p90:.3f} km/h (severe-scenario ceiling)")
 
     print("\n" + "=" * 70)
     agg = aggregate
@@ -1069,84 +1116,67 @@ def _print_historical(per_fire: list[dict], aggregate: dict):
 
 
 def _print_realtime(results: dict):
-    """Print real-time evaluation results."""
+    """Print real-time evaluation results — clean demo format."""
     print("\n" + "=" * 70)
     print("  OBJ-2 REAL-TIME PIPELINE EVALUATION")
     print("=" * 70)
 
     for res_km, data in results.items():
-        print(f"\n{'-'*70}")
-        print(f"  {res_km}km resolution")
-        print(f"{'-'*70}")
-
         if data.get("error"):
-            print(f"  [SKIP] {data['error']}")
+            print(f"\n{'-'*70}")
+            print(f"  {res_km}km resolution — [SKIP] {data['error']}")
             continue
 
         r = data["result"]
         mc = data.get("monte_carlo", {})
+        inputs = r.get("inputs_used", {})
 
-        # ── Hybrid output (det_weight=0.4, mc_weight=0.6 on p90) ─────
+        # Hybrid speed (40% deterministic + 60% MC p90)
         DET_W, MC_W = 0.4, 0.6
         det_speed = r['spread_speed_kmh']
+        mc_p50    = mc.get('spread_speed_kmh_p50', det_speed)
         mc_p90    = mc.get('spread_speed_kmh_p90', det_speed)
         h_speed   = DET_W * det_speed + MC_W * mc_p90
         h_dir     = mc.get('dominant_direction_deg', r['spread_direction_deg'])
 
+        fire_detected = r.get("fire_detected", False)
+        status = "ACTIVE FIRE DETECTED" if fire_detected else "No active fire -- risk assessment"
+
+        print(f"\n{'-'*70}")
+        print(f"  {res_km}km resolution -- {status}")
+        print(f"{'-'*70}")
         print(f"  ignition cell : {r['ignition_cell']}")
-        print(f"  approach      : HYBRID (40% deterministic + 60% MC p90)")
-        print(f"  direction     : {h_dir:.1f} deg")
-        print(f"  speed         : {h_speed:.4f} km/h")
-        print(f"  moisture      : {r['dead_fuel_moisture_pct']:.1f}%")
-        print(f"  intensity     : {r['byram_intensity_kwm']:.1f} kW/m")
-        print(f"  crown         : {r['crown_fire_status']}")
-        if mc:
-            print(f"  crown prob    : {mc.get('crown_fire_probability', 0):.1%}")
-            print(f"  speed CI p90  : {mc_p90:.4f} km/h (severe-scenario ceiling)")
 
-        # ── Threatened cells analysis ────────────────────────────────────
-        ta = data.get("threatened_analysis", {})
-        if ta:
-            print(f"\n  Threatened neighbor analysis:")
-            print(f"    burnable neighbors  : {ta.get('n_burnable_neighbors', '?')}/{ta.get('n_total_neighbors', '?')}")
-            print(f"    reachable in 1h     : {ta.get('n_reachable_1h', 0)}")
-            print(f"    max spread rate     : {ta.get('max_spread_rate_kmh', 0):.3f} km/h")
-            t2n = ta.get('time_to_nearest_neighbor_h')
-            print(f"    time to nearest     : {t2n:.1f}h" if t2n else "    time to nearest     : N/A")
-            print(f"    spread cone         : {ta.get('spread_cone_deg', 0):.0f} deg")
+        # ── Fire behavior ─────────────────────────────────────────────────
+        dom = r.get("dominant_factor", "unknown")
+        wind_ms = inputs.get("wind_speed_10m_ms", 0)
+        wind_kmh = wind_ms * 3.6 if wind_ms else 0
+        wind_dir = inputs.get("wind_from_direction_deg", 0)
+        rh = inputs.get("relative_humidity_pct", 0)
+        dfmc = r.get("dead_fuel_moisture_pct", 0)
+        crown_prob = mc.get("crown_fire_probability", 0) if mc else 0
 
-        # ── Input quality ────────────────────────────────────────────────
-        iq = data.get("input_quality", {})
-        if iq:
-            score = iq.get("quality_score", 0)
-            label = "GOOD" if score > 0.75 else "MODERATE" if score > 0.5 else "LOW"
-            print(f"\n  Input quality: {score:.0%} ({label})")
-            for note in iq.get("quality_notes", [])[:3]:
-                print(f"    - {note}")
+        print(f"\n  Fire behavior:")
+        print(f"    direction     : {h_dir:.1f} deg ({dom})")
+        print(f"    intensity     : {r['byram_intensity_kwm']:.1f} kW/m ({r['crown_fire_status']})")
+        print(f"    wind          : {wind_kmh:.1f} km/h from {wind_dir:.0f} deg")
+        print(f"    moisture      : DFMC={dfmc:.1f}% (RH={rh:.0f}%)")
+        print(f"    crown status  : {r['crown_fire_status']} (prob {crown_prob:.1%})")
 
-        # ── Spread propagation ───────────────────────────────────────────
-        sp = data.get("spread_propagation")
-        if sp:
-            print(f"\n  1-hour spread propagation:")
-            print(f"    total cells burned  : {sp['total_burned']}")
-            timeline = sp.get("timeline", [])
-            if timeline:
-                print(f"    {'hour':>6}  {'new cells':>10}  {'total burned':>13}")
-                for entry in timeline:
-                    print(f"    {entry['t_hour']:>6.1f}  {entry['newly_ignited']:>10}  {entry['total_burning']:>13}")
-            else:
-                print("    (fire did not spread beyond ignition cell)")
+        # ── Monte Carlo spread forecast ───────────────────────────────────
+        n_sims = mc.get("n_simulations", 100) if mc else 100
+        horizon = mc.get("horizon_hours", 6) if mc else 6
+        print(f"\n  Monte Carlo spread forecast (N={n_sims}, {horizon:.0f}h horizon):")
+        print(f"    speed p50     : {mc_p50:.4f} km/h")
+        print(f"    speed p90     : {mc_p90:.4f} km/h (worst-case)")
+        print(f"    hybrid speed  : {h_speed:.4f} km/h (40% det + 60% MC p90)")
 
-        # ── Monte Carlo neighbour burn probabilities ─────────────────────
-        if mc:
-            nb_probs = mc.get("neighbor_burn_probabilities", {})
-            if nb_probs:
-                print(f"\n  Neighbour burn probabilities (MC N={mc['n_simulations']}, horizon={mc.get('horizon_hours', 1):.0f}h):")
-                sorted_nb = sorted(nb_probs.items(), key=lambda x: x[1], reverse=True)
-                for cell_id, prob in sorted_nb:
-                    print(f"    {cell_id}  {prob:.1%}")
+        print(f"\n    Distance projection:")
+        for hr in [1, 2, 3, 6]:
+            dist = h_speed * hr
+            print(f"      t={hr}h : {dist:.2f} km")
 
-    print("=" * 70 + "\n")
+    print("\n" + "=" * 70 + "\n")
 
 
 def _print_sensitivity(sensitivity: dict):
@@ -1175,6 +1205,49 @@ def _print_sensitivity(sensitivity: dict):
 
 
 # ---------------------------------------------------------------------------
+# OBJ-3 report generation (OBJ-2 → bridge → OBJ-3)
+# ---------------------------------------------------------------------------
+
+def _generate_obj3_report(
+    df: pd.DataFrame,
+    obj2_result: dict,
+    mode: str,
+    fire_name: str | None = None,
+) -> str | None:
+    """Wire OBJ-2 output through bridge -> OBJ-3 reporter.
+
+    Returns path to generated report, or None on failure.
+    """
+    try:
+        from pipeline.bridge import build_pipeline_result
+        from models.obj3_gemini.reporter import GeminiDisasterReporter
+
+        # Build OBJ-1-like predictions from fire_risk_score or default
+        prob_col = df["fire_risk_score"] if "fire_risk_score" in df.columns else pd.Series(0.15, index=df.index)
+        predictions = pd.DataFrame({
+            "prediction": (prob_col >= 0.365).astype(int),
+            "probability": prob_col,
+        })
+
+        pipeline_result = build_pipeline_result(
+            obj1_predictions=predictions,
+            obj1_input=df,
+            obj2_simulation=obj2_result,
+        )
+
+        config_path = Path(__file__).parent / "configs" / "reporting_config.yaml"
+        reporter = GeminiDisasterReporter()
+        reporter.load_model(config_path)
+        gen = reporter.generate_report(pipeline_result=pipeline_result)
+        report_path = gen.get("json_path") or gen.get("markdown_path")
+        logger.info("OBJ-3 report generated: %s", report_path)
+        return report_path
+    except Exception as exc:
+        logger.error("OBJ-3 report generation failed: %s", exc)
+        return None
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -1184,6 +1257,7 @@ def main(
     fire_ids: list[str] | None = None,
     skip_sensitivity: bool = False,
     output_dir: str = "reports/evaluation",
+    generate_report: bool = False,
 ) -> dict[str, Any]:
     """Run the full OBJ-2 evaluation."""
     sim = PythonFireSpreadSimulator()
@@ -1220,8 +1294,18 @@ def main(
 
             # Honest threatened cell analysis
             ta = analyze_threatened_cells(result)
-            prop_honesty = compute_propagation_honesty(result)
             iq = compute_input_quality(result)
+
+            # Monte Carlo for hybrid output
+            try:
+                mc_result = sim.simulate_monte_carlo(
+                    df, ign_id, fire["ignition_prob"],
+                    n_simulations=100,
+                    horizon_hours=1.0,
+                )
+            except Exception as mc_exc:
+                logger.warning("MC failed for %s: %s — using deterministic only", fire["fire_id"], mc_exc)
+                mc_result = None
 
             entry = {
                 "fire_id": fire["fire_id"],
@@ -1233,10 +1317,11 @@ def main(
                 ]},
                 "gate": gate,
                 "threatened_analysis": ta,
-                "propagation_honesty": prop_honesty,
                 "input_quality": iq,
+                "monte_carlo": mc_result,
                 "latency_ms": round(elapsed_ms, 1),
                 "ground_truth": asdict(fire["ground_truth"]),
+                "_full_result": result,
             }
             per_fire_results.append(entry)
 
@@ -1266,35 +1351,40 @@ def main(
         _print_historical(per_fire_results, aggregate)
         _log_historical_metrics(tracker, per_fire_results, aggregate)
 
+        # ── OBJ-3 report generation (--report flag) ─────────────────────
+        if generate_report and per_fire_results:
+            top_fire = per_fire_results[0]
+            fire_data = fires[0]
+            syn_df, _ = _make_df(fire_data["lat"], fire_data["lon"], fire_data["conditions"])
+            rpt = _generate_obj3_report(syn_df, top_fire.get("_full_result", top_fire["result"]), mode="historical")
+            if rpt:
+                print(f"  OBJ-3 Report: {rpt}")
+
         if all_sensitivity:
             first_fire_id = list(all_sensitivity.keys())[0]
             _print_sensitivity(all_sensitivity[first_fire_id])
 
     # ── Real-time evaluation ─────────────────────────────────────────────
     if mode in ("all", "realtime"):
-        # Team lead requirement: run at 22km only.
-        # _select_ignition_22km() is reserved for deployment when OBJ-1
-        # passes its top grid_id — at that point call:
-        #   ign_id, ign_prob = _select_ignition_22km(df, obj1_grid_id, obj1_prob)
+        # Team lead: OBJ-2 simulator only runs at 22km (active/emergency mode).
+        # 64km quiet mode does NOT trigger the simulator.
         if resolutions is None:
             resolutions = [22]
 
+        # Filter out non-22km resolutions
+        valid_res = [r for r in resolutions if r == 22]
+        skipped = [r for r in resolutions if r != 22]
+        for s in skipped:
+            logger.warning("Resolution %dkm skipped — simulator only runs in active/emergency mode (22km)", s)
+
         rt_results = {}
 
-        for res_km in resolutions:
-            logger.info("Real-time evaluation: %dkm", res_km)
+        for res_km in valid_res:
+            logger.info("Real-time evaluation: %dkm (active/emergency mode)", res_km)
 
-            if res_km == 22:
-                df = _load_22km()
-            elif res_km == 64:
-                df = _load_64km()
-            else:
-                logger.warning("Resolution %dkm not supported — use 22 or 64", res_km)
-                rt_results[str(res_km)] = {"error": f"Resolution {res_km}km not supported. Use 22 or 64."}
-                continue
-
+            df = _load_22km()
             if df is None:
-                rt_results[str(res_km)] = {"error": "No data available"}
+                rt_results[str(res_km)] = {"error": "No 22km data available"}
                 continue
 
             # Filter to California for consistency
@@ -1310,15 +1400,13 @@ def main(
                 if not valid_fuel.empty:
                     df = valid_fuel
 
-            # Select ignition cell from 22km parquet
-            # (FIRMS hotspot → driest cell → first cell)
+            # Select ignition cell: FIRMS hotspot → driest cell → first cell
             ign_id, ign_prob = _select_ignition(df)
 
             try:
                 # ── Step 1: single-cell fire behavior ────────────────────────
                 result = sim.simulate(df, ign_id, ign_prob)
 
-                # Pass fire_detected flag so sanity check 3 is meaningful
                 fire_row = df[df["grid_id"] == ign_id]
                 fire_detected = (
                     bool(fire_row["fire_detected_binary"].iloc[0])
@@ -1328,46 +1416,49 @@ def main(
                 result["fire_detected"] = fire_detected
                 result["input_rh_pct"] = result.get("inputs_used", {}).get("relative_humidity_pct")
 
-                sanity = sanity_check_output(result)
-
-                # ── Step 2: honest threatened cell analysis ──────────────────
-                # horizon_hours=1.0 matches the 1-hour propagation window
+                # ── Step 2: threatened cell analysis ─────────────────────────
                 ta = analyze_threatened_cells(result, horizon_hours=1.0)
-                prop_honesty = compute_propagation_honesty(result)
                 iq = compute_input_quality(result)
+                sanity = sanity_check_output(result)
+                prop_honesty = compute_propagation_honesty(
+                    result, intercell_km=25.0 if res_km == 22 else 93.0
+                )
 
-                # ── Step 3: time-stepped propagation (1-hour horizon) ────────
-                # Team lead requirement: 1-hour window at 22km.
-                # At 25km intercell distance, any fire reaching a neighbor
-                # within 1h would need rate ≥ 25 km/h — correctly rare.
-                logger.info("Running 1-hour spread propagation from %s …", ign_id)
+                # ── Step 3: multi-hour propagation (1h, 2h, 3h, ... 6h) ─────
+                # At 22km (intercell ~25km), fire reaching a neighbor within 1h
+                # needs rate >= 25 km/h — only extreme fires (Santa Ana).
+                # Show hourly steps so operators see progression over time.
+                PROPAGATION_HOURS = 6
+                logger.info("Running %dh spread propagation from %s …", PROPAGATION_HOURS, ign_id)
                 spread = simulate_spread_timeseries(
-                    df, ign_id, ign_prob, hours=1.0, timestep_h=1.0, sim=sim
+                    df, ign_id, ign_prob,
+                    hours=float(PROPAGATION_HOURS),
+                    timestep_h=1.0,
+                    sim=sim,
                 )
 
                 # ── Step 4: Monte Carlo N=100 weather perturbations ──────────
-                # Runs the same Rothermel physics 100 times with perturbed
-                # weather (wind speed ±25%, wind direction ±25°, RH ±8%,
-                # temp ±2.5°C) to produce burn probabilities per neighbour cell.
                 logger.info("Running Monte Carlo N=100 from %s …", ign_id)
                 mc_result = sim.simulate_monte_carlo(
                     df, ign_id, ign_prob,
                     n_simulations=100,
-                    horizon_hours=1.0,    # 1h window → threshold = intercell_km/1h
+                    horizon_hours=float(PROPAGATION_HOURS),
                 )
 
                 rt_entry = {
                     "ignition_cell": ign_id,
                     "ignition_prob": ign_prob,
                     "n_rows": len(df),
-                    "result": {k: result[k] for k in [
-                        "ignition_cell", "spread_direction_deg", "spread_speed_kmh",
-                        "dead_fuel_moisture_pct", "byram_intensity_kwm",
-                        "crown_fire_status", "dominant_factor",
-                    ]},
-                    "sanity": sanity,
+                    "result": {
+                        **{k: result[k] for k in [
+                            "ignition_cell", "spread_direction_deg", "spread_speed_kmh",
+                            "dead_fuel_moisture_pct", "byram_intensity_kwm",
+                            "crown_fire_status", "dominant_factor",
+                        ]},
+                        "inputs_used": result.get("inputs_used", {}),
+                        "fire_detected": result.get("fire_detected", False),
+                    },
                     "threatened_analysis": ta,
-                    "propagation_honesty": prop_honesty,
                     "input_quality": iq,
                     "spread_propagation": {
                         "hours_simulated":  spread["hours_simulated"],
@@ -1389,6 +1480,9 @@ def main(
                         "neighbor_burn_probabilities": mc_result["neighbor_burn_probabilities"],
                         "max_neighbor_burn_probability": mc_result["max_neighbor_burn_probability"],
                     },
+                    # Internal refs for OBJ-3 report generation (not serialized)
+                    "_full_result": result,
+                    "_df": df,
                 }
                 rt_results[str(res_km)] = rt_entry
 
@@ -1396,8 +1490,6 @@ def main(
                 rt_dir = PRED_REALTIME / f"{res_km}km" / ts
                 _save_prediction(rt_dir, "fire_behavior.json", result)
                 _save_prediction(rt_dir, "threatened_analysis.json", ta)
-                _save_prediction(rt_dir, "propagation_honesty.json", prop_honesty)
-                _save_prediction(rt_dir, "sanity_checks.json", sanity)
                 _save_prediction(rt_dir, "input_quality.json", iq)
                 _save_prediction(rt_dir, "propagation.json", {
                     "hours_simulated": spread["hours_simulated"],
@@ -1417,6 +1509,7 @@ def main(
                     simulation_id=ts,
                 )
                 save_spread_geojson(spread_geojson, rt_dir)
+                rt_entry["cell2fire_geojson"] = spread_geojson["features"]
 
                 # Clean operational output — the format shown to operators / LLM
                 op_out = _format_operational_output(result, res_km, ign_prob)
@@ -1430,6 +1523,22 @@ def main(
         report["realtime"] = rt_results
         _print_realtime(rt_results)
         _log_realtime_metrics(tracker, rt_results)
+
+        # ── OBJ-3 report generation (--report flag) ─────────────────────
+        if generate_report:
+            for res_km_str, rt_data in rt_results.items():
+                if rt_data.get("error"):
+                    continue
+                # Use the full simulate() result (has all keys context_builder needs)
+                obj2_sim = rt_data.get("_full_result")
+                if obj2_sim:
+                    rpt = _generate_obj3_report(
+                        rt_data.get("_df", pd.DataFrame()),
+                        obj2_sim,
+                        mode="realtime",
+                    )
+                    if rpt:
+                        print(f"  OBJ-3 Report: {rpt}")
 
     # ── FIRMS temporal validation ────────────────────────────────────────
     if mode == "firms_validation":
@@ -1523,6 +1632,10 @@ if __name__ == "__main__":
         "--output-dir", default="reports/evaluation",
         help="Directory for JSON report output",
     )
+    parser.add_argument(
+        "--report", action="store_true",
+        help="Generate OBJ-3 disaster report after evaluation (OBJ-2 -> bridge -> OBJ-3)",
+    )
     args = parser.parse_args()
 
     report = main(
@@ -1531,6 +1644,7 @@ if __name__ == "__main__":
         fire_ids=args.fires,
         skip_sensitivity=args.skip_sensitivity,
         output_dir=args.output_dir,
+        generate_report=args.report,
     )
 
     # Exit code based on historical gate (if run)
