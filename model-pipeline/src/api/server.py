@@ -964,17 +964,17 @@ async def rerun_with_local_data(
 
 @app.post("/api/generate-from-pipeline")
 async def generate_from_pipeline(request: Request) -> JSONResponse:
-    """Trigger OBJ-3 report generation from the latest OBJ-1 inference on GCS.
+    """OBJ-1 → OBJ-2 → OBJ-3 pipeline: read inference + fused from GCS,
+    run fire spread simulation, generate disaster report.
 
     Called by the Airflow ``run_inference`` task or the dashboard button.
-    Reads ``inference/latest/{region}_latest.json`` from GCS, transforms
-    OBJ-1 output into an OBJ-3 ``pipeline_result``, and generates a report.
 
     Expected JSON body::
 
         {
             "regions": ["california", "texas"],
-            "bucket": "wildfire-mlops-123"       # optional, defaults to env
+            "bucket": "wildfire-mlops-123",       # optional
+            "resolution_km": 64                    # optional, default 64
         }
     """
     if _reporter is None:
@@ -987,11 +987,15 @@ async def generate_from_pipeline(request: Request) -> JSONResponse:
 
     regions = body.get("regions", [])
     bucket = body.get("bucket") or os.getenv("GCS_BUCKET_NAME", "wildfire-mlops-123")
+    resolution_km = body.get("resolution_km", 64)
 
     if not regions:
         raise HTTPException(status_code=422, detail="'regions' list is required")
 
     def _run_all() -> list[dict[str, Any]]:
+        import io as _io  # noqa
+
+        import pandas as pd  # noqa
         from google.cloud import storage as gcs  # noqa
 
         client = gcs.Client()
@@ -1002,6 +1006,7 @@ async def generate_from_pipeline(request: Request) -> JSONResponse:
         _TIER_ORDER = ["CRITICAL", "HIGH", "MEDIUM", "LOW"]
 
         for region in regions:
+            # ── Step 1: Read OBJ-1 inference JSON from GCS ────────────────
             blob_path = f"inference/latest/{region}_latest.json"
             blob = bkt.blob(blob_path)
             if not blob.exists():
@@ -1015,6 +1020,7 @@ async def generate_from_pipeline(request: Request) -> JSONResponse:
                 results.append({"region": region, "success": False, "error": "no cells in JSON"})
                 continue
 
+            # ── Step 2: Derive risk level, top cells, FIRMS, telemetry ────
             tiers = {c.get("risk_tier", "LOW") for c in cells}
             highest = next((t for t in _TIER_ORDER if t in tiers), "LOW")
             risk_level = _TIER_MAP[highest]
@@ -1034,6 +1040,50 @@ async def generate_from_pipeline(request: Request) -> JSONResponse:
             firms_hotspots = obj1.get("firms_hotspots", [])
             telemetry = obj1.get("telemetry") or {}
 
+            # ── Step 3: Read fused parquet from GCS for OBJ-2 ─────────────
+            obj2_result = None
+            fused_prefix = f"data/processed/fused/{resolution_km}km/region={region}/"
+            try:
+                fused_blobs = sorted(
+                    bkt.list_blobs(prefix=fused_prefix),
+                    key=lambda b: b.name,
+                    reverse=True,
+                )
+                fused_blob = next((b for b in fused_blobs if b.name.endswith(".parquet")), None)
+
+                if fused_blob:
+                    logger.info("[%s] Loading fused parquet: gs://%s/%s", region, bucket, fused_blob.name)
+                    fused_df = pd.read_parquet(_io.BytesIO(fused_blob.download_as_bytes()))
+
+                    # ── Step 4: Run OBJ-2 on highest-risk cell ────────────
+                    top_cell = top[0]  # highest fire_risk_score
+                    ign_id = top_cell["grid_id"]
+                    ign_prob = float(top_cell["fire_risk_score"])
+
+                    try:
+                        from src.models.obj2_spread.fire_spread_simulator import PythonFireSpreadSimulator
+
+                        # Clamp CBH to prevent false crown fire
+                        if "canopy_base_height_m" in fused_df.columns:
+                            fused_df["canopy_base_height_m"] = fused_df["canopy_base_height_m"].clip(lower=2.0)
+
+                        sim = PythonFireSpreadSimulator()
+                        obj2_result = sim.simulate_monte_carlo(fused_df, ign_id, ign_prob)
+                        logger.info(
+                            "[%s] OBJ-2 MC: cell=%s speed=%.3f km/h dir=%.1f° crown=%s",
+                            region, ign_id,
+                            obj2_result.get("spread_speed_kmh", 0),
+                            obj2_result.get("spread_direction_deg", 0),
+                            obj2_result.get("crown_fire_status", "?"),
+                        )
+                    except Exception as obj2_exc:
+                        logger.warning("[%s] OBJ-2 simulation failed (non-blocking): %s", region, obj2_exc)
+                else:
+                    logger.warning("[%s] No fused parquet found at gs://%s/%s", region, bucket, fused_prefix)
+            except Exception as fused_exc:
+                logger.warning("[%s] Failed to load fused parquet: %s", region, fused_exc)
+
+            # ── Step 5: Assemble pipeline_result with OBJ-1 + OBJ-2 ──────
             pipeline_result: dict[str, Any] = {
                 "run_id": obj1.get("run_timestamp", ""),
                 "is_deployable": True,
@@ -1041,19 +1091,25 @@ async def generate_from_pipeline(request: Request) -> JSONResponse:
                 "firms_hotspot_count": firms_count,
                 "firms_hotspots": firms_hotspots,
                 "xgboost_top_cells": xgb_cells,
+                "obj2_simulation": obj2_result,
                 "telemetry": telemetry if telemetry else None,
                 "fema_nri_tracts": [],
                 "bias_report": {"gate_result": "PASS", "observed_disparity": 0.0},
                 "data_completeness": {
                     "ml_scores": True,
+                    "obj2_simulation": obj2_result is not None,
                     "firms": firms_count > 0,
                     "weather": bool(telemetry),
                     "fema_nri": False,
                 },
             }
 
-            logger.info("[%s] risk_level=%s  firms=%d  → generating report", region, risk_level, firms_count)
+            logger.info(
+                "[%s] risk_level=%s  firms=%d  obj2=%s  → generating report",
+                region, risk_level, firms_count, "yes" if obj2_result else "no",
+            )
 
+            # ── Step 6: Call OBJ-3 reporter ───────────────────────────────
             try:
                 gen = _reporter.generate_report(pipeline_result=pipeline_result)
                 rr = gen.report_result
@@ -1079,6 +1135,7 @@ async def generate_from_pipeline(request: Request) -> JSONResponse:
                     "report_type": rr.report_type,
                     "confidence": parsed.report_confidence if parsed else None,
                     "review_status": parsed.review_status if parsed else None,
+                    "obj2_ran": obj2_result is not None,
                     "json_path": str(gen.json_path.relative_to(_ROOT)) if gen.json_path else None,
                 })
             except Exception as exc:
