@@ -26,7 +26,6 @@ from typing import Any
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
 
 _ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_ROOT))
@@ -50,12 +49,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Serve static files
-_DASHBOARD = _ROOT / "dashboard"
-_STATIC = _DASHBOARD / "static"
-_STATIC.mkdir(parents=True, exist_ok=True)
-app.mount("/static", StaticFiles(directory=str(_STATIC)), name="static")
-
 # ---------------------------------------------------------------------------
 # Reporter singleton — loaded once at startup
 # ---------------------------------------------------------------------------
@@ -76,25 +69,6 @@ async def startup_event() -> None:
         logger.error("Reporter failed to load: %s", exc)
         _reporter = None
 
-
-# ---------------------------------------------------------------------------
-# HTML routes
-# ---------------------------------------------------------------------------
-
-@app.get("/", response_class=HTMLResponse)
-async def index() -> HTMLResponse:
-    path = _DASHBOARD / "index.html"
-    if not path.exists():
-        raise HTTPException(status_code=404, detail="index.html not found")
-    return HTMLResponse(path.read_text(encoding="utf-8"))
-
-
-@app.get("/generate", response_class=HTMLResponse)
-async def generate_page() -> HTMLResponse:
-    path = _DASHBOARD / "generate.html"
-    if not path.exists():
-        raise HTTPException(status_code=404, detail="generate.html not found")
-    return HTMLResponse(path.read_text(encoding="utf-8"))
 
 
 # ---------------------------------------------------------------------------
@@ -144,6 +118,248 @@ async def status() -> JSONResponse:
         "corpus_chunks": corpus_count,
         "timestamp": datetime.now(tz=UTC).isoformat(),
     })
+
+
+# ---------------------------------------------------------------------------
+# API — live data from GCS (powers React frontend)
+# ---------------------------------------------------------------------------
+
+def _gcs_client():
+    """Lazy GCS client — returns (client, bucket) or raises."""
+    from google.cloud import storage as gcs
+    bucket_name = os.getenv("GCS_BUCKET_NAME", "wildfire-mlops-123")
+    client = gcs.Client()
+    return client, client.bucket(bucket_name), bucket_name
+
+
+# Simplified state boundary polygons for point-in-polygon filtering
+# Generous state boundary polygons — padded ~1° beyond actual borders to include
+# H3 cells whose centroids are near the edge. At 64km resolution the hexagons
+# are huge, so a tight polygon drops too many border cells.
+_STATE_POLYGONS: dict[str, list[tuple[float, float]]] = {
+    "california": [
+        (43.0, -125.5), (43.0, -119.0), (39.0, -119.0), (38.5, -113.5),
+        (34.5, -113.5), (33.5, -113.5), (31.5, -114.5), (31.5, -118.0),
+        (32.5, -118.5), (33.5, -119.5), (34.5, -121.5), (36.0, -122.5),
+        (37.5, -123.5), (39.0, -124.5), (40.5, -125.0), (43.0, -125.5),
+    ],
+    "texas": [
+        (37.0, -107.0), (37.0, -99.0), (34.5, -99.0), (33.5, -97.0),
+        (33.0, -95.5), (31.5, -93.0), (29.5, -93.0), (28.0, -95.5),
+        (26.0, -96.5), (25.0, -98.0), (25.5, -99.5), (27.5, -100.5),
+        (29.0, -101.5), (30.5, -104.0), (31.5, -107.0), (37.0, -107.0),
+    ],
+}
+
+
+def _point_in_polygon(lat: float, lon: float, polygon: list[tuple[float, float]]) -> bool:
+    """Ray-casting point-in-polygon test."""
+    n = len(polygon)
+    inside = False
+    j = n - 1
+    for i in range(n):
+        yi, xi = polygon[i]
+        yj, xj = polygon[j]
+        if ((yi > lat) != (yj > lat)) and (lon < (xj - xi) * (lat - yi) / (yj - yi) + xi):
+            inside = not inside
+        j = i
+    return inside
+
+
+def _sanitize_json(obj):
+    """Recursively replace float NaN/inf with None for JSON compliance."""
+    import math
+    if isinstance(obj, dict):
+        return {k: _sanitize_json(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize_json(v) for v in obj]
+    if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
+        return None
+    return obj
+
+
+@app.get("/api/grid-cells")
+async def get_grid_cells(region: str = "california", resolution_km: int = 64) -> JSONResponse:
+    """Return all grid cells with fused features + OBJ-1 inference scores merged.
+
+    Reads the fused parquet (weather, terrain, fuel, FIRMS) and the inference
+    JSON (fire_risk_score, fire_risk_flag, risk_tier) from GCS, joins them by
+    grid_id, and returns a single list of enriched cells.
+    """
+    import asyncio
+    import io as _io
+
+    import pandas as pd
+
+    def _read():
+        _, bkt, bucket_name = _gcs_client()
+
+        # 1. Read fused parquet (full features)
+        prefix = f"data/processed/fused/{resolution_km}km/region={region}/"
+        blobs = sorted(bkt.list_blobs(prefix=prefix), key=lambda b: b.name, reverse=True)
+        parquet_blob = next((b for b in blobs if b.name.endswith(".parquet")), None)
+        if not parquet_blob:
+            return []
+        df = pd.read_parquet(_io.BytesIO(parquet_blob.download_as_bytes()))
+
+        # 2. Read inference JSON (OBJ-1 scores)
+        inf_blob = bkt.blob(f"inference/latest/{region}_latest.json")
+        if inf_blob.exists():
+            inf_data = json.loads(inf_blob.download_as_bytes())
+            scores_df = pd.DataFrame(inf_data.get("cells", []))
+            if not scores_df.empty and "grid_id" in scores_df.columns and "grid_id" in df.columns:
+                # Keep only score columns from inference
+                score_cols = ["grid_id", "fire_risk_score", "fire_risk_flag", "risk_tier"]
+                score_cols = [c for c in score_cols if c in scores_df.columns]
+                scores_df = scores_df[score_cols]
+                # Drop any existing score columns in fused to avoid _x/_y suffixes
+                for col in ["fire_risk_score", "fire_risk_flag", "risk_tier"]:
+                    if col in df.columns:
+                        df = df.drop(columns=[col])
+                df = df.merge(scores_df, on="grid_id", how="left")
+
+        # Deduplicate by grid_id (fused parquet may have multiple timestamps)
+        if "grid_id" in df.columns:
+            df = df.drop_duplicates(subset=["grid_id"], keep="last")
+
+        # Sanitize for JSON: Timestamps → str, NaN/inf → None
+        import math
+        import numpy as np
+        for col in df.columns:
+            if pd.api.types.is_datetime64_any_dtype(df[col]):
+                df[col] = df[col].astype(str).replace("NaT", None)
+        df = df.replace([np.inf, -np.inf], np.nan)
+        df = df.where(df.notna(), None)
+        records = df.to_dict(orient="records")
+
+        # Add H3 hex boundaries + filter by state polygon
+        import h3
+        state_poly = _STATE_POLYGONS.get(region)
+        filtered = []
+        for row in records:
+            for k, v in row.items():
+                if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+                    row[k] = None
+            gid = row.get("grid_id")
+            lat = row.get("latitude") or row.get("lat") or 0
+            lon = row.get("longitude") or row.get("lon") or 0
+            # Tag cells as inside/outside state (frontend can use this for styling)
+            row["in_state"] = bool(state_poly and _point_in_polygon(lat, lon, state_poly)) if state_poly else True
+            # Add actual H3 hex boundary
+            if gid:
+                try:
+                    boundary = h3.cell_to_boundary(gid)
+                    row["hex_boundary"] = [[round(p[0], 5), round(p[1], 5)] for p in boundary]
+                except Exception:
+                    pass
+            filtered.append(row)
+        return filtered
+
+    try:
+        cells = await asyncio.to_thread(_read)
+        return JSONResponse({"region": region, "resolution_km": resolution_km, "cells": cells, "count": len(cells)})
+    except Exception as exc:
+        logger.warning("grid-cells failed: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.get("/api/predictions")
+async def get_predictions(region: str = "california") -> JSONResponse:
+    """Return latest OBJ-1 inference scores from GCS."""
+    import asyncio
+
+    def _read():
+        _, bkt, _ = _gcs_client()
+        blob = bkt.blob(f"inference/latest/{region}_latest.json")
+        if not blob.exists():
+            return None
+        return _sanitize_json(json.loads(blob.download_as_bytes()))
+
+    try:
+        data = await asyncio.to_thread(_read)
+        if data is None:
+            raise HTTPException(status_code=404, detail=f"No predictions for region '{region}'")
+        return JSONResponse(data)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning("predictions failed: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.get("/api/spread-simulations")
+async def get_spread_simulations(region: str = "california") -> JSONResponse:
+    """Return full OBJ-2 Monte Carlo fire spread simulation from GCS.
+
+    Returns ignition cell, spread speed/direction, crown fire status,
+    burn probabilities for neighbor cells, and all physics inputs.
+    """
+    import asyncio
+
+    def _read():
+        _, bkt, _ = _gcs_client()
+        # Primary: dedicated simulation JSON (written by generate-from-pipeline)
+        blob = bkt.blob(f"simulation/latest/{region}_latest.json")
+        if blob.exists():
+            return _sanitize_json(json.loads(blob.download_as_bytes()))
+        # Fallback: extract from OBJ-3 report
+        report_blob = bkt.blob(f"reports/obj3/latest/{region}_latest_report.json")
+        if report_blob.exists():
+            report = json.loads(report_blob.download_as_bytes())
+            return {
+                "spread_summary": report.get("spread_summary"),
+                "fire_behavior": report.get("fire_behavior"),
+                "report_type": report.get("report_type"),
+                "generated_at": report.get("generated_at"),
+                "fallback": True,
+            }
+        return None
+
+    try:
+        data = await asyncio.to_thread(_read)
+        if data is None:
+            raise HTTPException(status_code=404, detail=f"No spread simulation for region '{region}'")
+        return JSONResponse({"region": region, "simulation": data})
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning("spread-simulations failed: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.get("/api/pipeline/status")
+async def get_pipeline_status() -> JSONResponse:
+    """Return pipeline metadata — regions, last inference timestamps, resolution."""
+    import asyncio
+
+    def _read():
+        _, bkt, bucket_name = _gcs_client()
+        regions_status = {}
+        for region in ["california", "texas"]:
+            blob = bkt.blob(f"inference/latest/{region}_latest.json")
+            if blob.exists():
+                data = _sanitize_json(json.loads(blob.download_as_bytes()))
+                regions_status[region] = {
+                    "last_inference": data.get("run_timestamp"),
+                    "total_cells": data.get("summary", {}).get("total_cells", 0),
+                    "flagged_cells": data.get("summary", {}).get("flagged_cells", 0),
+                    "max_risk_score": data.get("summary", {}).get("max_risk_score", 0),
+                    "risk_tier_counts": data.get("summary", {}).get("risk_tier_counts", {}),
+                    "firms_hotspot_count": data.get("firms_hotspot_count", 0),
+                }
+        return {
+            "dag_id": "wildfire_data_pipeline",
+            "schedule": "0 */6 * * *",
+            "regions": regions_status,
+            "gcs_bucket": bucket_name,
+        }
+
+    try:
+        data = await asyncio.to_thread(_read)
+        return JSONResponse(data)
+    except Exception as exc:
+        logger.warning("pipeline-status failed: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -1076,6 +1292,23 @@ async def generate_from_pipeline(request: Request) -> JSONResponse:
                             obj2_result.get("spread_direction_deg", 0),
                             obj2_result.get("crown_fire_status", "?"),
                         )
+                        # Save raw OBJ-2 output to GCS for frontend consumption
+                        if obj2_result:
+                            try:
+                                # Strip large arrays (all 100 per-run values) to keep JSON small
+                                obj2_for_gcs = {k: v for k, v in obj2_result.items()
+                                                if k not in ("spread_speed_kmh_all", "direction_deg_all",
+                                                             "crown_status_all", "byram_intensity_kwm_all")}
+                                obj2_for_gcs["region"] = region
+                                obj2_for_gcs["run_timestamp"] = obj1.get("run_timestamp", "")
+                                bkt.blob(f"simulation/latest/{region}_latest.json").upload_from_string(
+                                    json.dumps(obj2_for_gcs, indent=2, default=str),
+                                    content_type="application/json",
+                                )
+                                logger.info("[%s] OBJ-2 simulation → gs://%s/simulation/latest/%s_latest.json", region, bucket, region)
+                            except Exception as sim_gcs_exc:
+                                logger.warning("[%s] OBJ-2 GCS save failed: %s", region, sim_gcs_exc)
+
                     except Exception as obj2_exc:
                         logger.warning("[%s] OBJ-2 simulation failed (non-blocking): %s", region, obj2_exc)
                 else:

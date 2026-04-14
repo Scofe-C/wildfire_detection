@@ -163,5 +163,21 @@ services:
       timeout: 10s
       retries: 5
 
+  # React frontend (nginx serves static + proxies /api to backend)
+  frontend:
+    build:
+      context: ../Frontend
+      dockerfile: Dockerfile
+    image: wildfire-frontend:local
+    ports:
+      - "3000:3000"
+    depends_on:
+      - obj3-dashboard
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:3000/ || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
 volumes:
   postgres-data:

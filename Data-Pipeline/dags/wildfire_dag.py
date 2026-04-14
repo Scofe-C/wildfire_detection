@@ -887,8 +887,17 @@ with DAG(
             "canopy_base_height_m", "canopy_bulk_density", "evt_national_class",
         ]
 
-        def assign_risk_tier(score: float) -> str:
-            for tier, lower in [("CRITICAL", 0.65), ("HIGH", 0.365), ("MEDIUM", 0.15)]:
+        # Region-specific risk tier thresholds — California raised to reduce
+        # false CRITICAL flags; Texas slightly raised from baseline.
+        _TIER_THRESHOLDS = {
+            "california": [("CRITICAL", 0.80), ("HIGH", 0.50), ("MEDIUM", 0.20)],
+            "texas":      [("CRITICAL", 0.75), ("HIGH", 0.45), ("MEDIUM", 0.18)],
+        }
+        _DEFAULT_TIERS = [("CRITICAL", 0.65), ("HIGH", 0.365), ("MEDIUM", 0.15)]
+
+        def assign_risk_tier(score: float, region: str = "") -> str:
+            tiers = _TIER_THRESHOLDS.get(region, _DEFAULT_TIERS)
+            for tier, lower in tiers:
                 if score >= lower:
                     return tier
             return "LOW"
@@ -1004,7 +1013,7 @@ with DAG(
             scored_df["timestamp"]       = run_timestamp
             scored_df["fire_risk_score"] = y_prob
             scored_df["fire_risk_flag"]  = (y_prob >= threshold).astype(int)
-            scored_df["risk_tier"]       = [assign_risk_tier(s) for s in y_prob]
+            scored_df["risk_tier"]       = [assign_risk_tier(s, region) for s in y_prob]
             scored_df["model_version"]   = "production"
             scored_df["threshold_used"]  = threshold
 
