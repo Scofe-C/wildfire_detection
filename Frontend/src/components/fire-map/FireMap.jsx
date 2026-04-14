@@ -5,7 +5,7 @@ import {
   Pencil, Save, Download, X, EyeOff, Navigation, Layers, BarChart3,
 } from 'lucide-react';
 import 'leaflet/dist/leaflet.css';
-import { MapContainer, TileLayer, Polygon, Polyline, CircleMarker, Tooltip, Marker, useMap } from 'react-leaflet';
+import { MapContainer, TileLayer, Polygon, Polyline, CircleMarker, Tooltip, Marker, GeoJSON, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import { useTheme } from '../ui/ThemeProvider';
 import { CALIFORNIA_CELLS_ENRICHED, TEXAS_CELLS_ENRICHED, getRiskTier } from '../../data/mockGridData';
@@ -14,6 +14,7 @@ import {
   hexBoundary, compassLabel,
   riskColor, moistureColor, intensityColor, windSpeedOpacity,
   deriveCrownFire, TIER_COLORS,
+  CA_OUTLINE, TX_OUTLINE,
   generateFireZoomCells,
 } from './mapHelpers';
 
@@ -42,12 +43,40 @@ function Row({ icon: I, label, value, unit }) {
   return <div className="flex items-center justify-between py-[3px]"><span className="flex items-center gap-1.5 text-text-muted"><I className="w-3 h-3"/><span className="text-[10px] font-mono">{label}</span></span><span className="text-[10px] font-mono text-text-primary">{value}{unit?` ${unit}`:''}</span></div>;
 }
 
+const US_STATES_URL = 'https://raw.githubusercontent.com/PublicaMundi/MappingAPI/master/data/geojson/us-states.json';
+const MONITORING_STATES = new Set(['California', 'Texas']);
+
+// ─── Create a lower pane for state boundaries (so hex cells stay on top) ─────
+function StatesPane() {
+  const map = useMap();
+  useEffect(() => {
+    if (!map.getPane('statesPane')) {
+      map.createPane('statesPane');
+      map.getPane('statesPane').style.zIndex = 350;
+    }
+  }, [map]);
+  return null;
+}
+
 // ─── Fly to selected cell ─────────────────────────────────────────────────────
 function FlyTo({ lat, lon }) {
   const map = useMap();
   useEffect(() => {
     if (lat != null && lon != null) map.flyTo([lat, lon], Math.max(map.getZoom(), 7), { duration: 0.6 });
   }, [lat, lon, map]);
+  return null;
+}
+
+// ─── Fly to GeoJSON feature bounds ────────────────────────────────────────────
+function FlyToBounds({ geojson, name }) {
+  const map = useMap();
+  useEffect(() => {
+    if (!geojson || !name) return;
+    const feature = geojson.features.find(f => f.properties.name === name);
+    if (!feature) return;
+    const layer = L.geoJSON(feature);
+    map.flyToBounds(layer.getBounds().pad(0.1), { duration: 0.8 });
+  }, [geojson, name, map]);
   return null;
 }
 
@@ -117,9 +146,9 @@ function LayerBar({ layers, setLayers, stats, resolution, setResolution }) {
 function Legend({ layers }) {
   return (
     <div className="absolute bottom-6 left-3 z-[1000] flex items-center gap-4 px-3 py-1.5 bg-surface-1/90 backdrop-blur-md border border-border-subtle rounded-xl shadow-xl">
-      {layers.colorLayer==='risk'&&<div className="flex items-center gap-2">{['CRITICAL','HIGH','MEDIUM','LOW'].map(t=><div key={t} className="flex items-center gap-1"><div className="w-2.5 h-2.5 rounded-sm" style={{background:TIER_COLORS[t].fill}}/><span className="text-[9px] font-mono text-text-muted">{t}</span></div>)}</div>}
-      {layers.colorLayer==='moisture'&&<div className="flex items-center gap-1"><div className="w-16 h-2 rounded" style={{background:'linear-gradient(90deg,#78350f,#d97706,#a3e635,#047857)'}}/><span className="text-[9px] font-mono text-text-muted">Dry→Wet</span></div>}
-      {layers.colorLayer==='intensity'&&<div className="flex items-center gap-1"><div className="w-16 h-2 rounded" style={{background:'linear-gradient(90deg,#422006,#fbbf24,#ef4444,#7c3aed)'}}/><span className="text-[9px] font-mono text-text-muted">FRP</span></div>}
+      {layers.colorLayer==='risk'&&<><div className="flex items-center gap-1"><div className="w-24 h-2 rounded" style={{background:'linear-gradient(90deg,#22c55e,#4ade80,#a3e635,#eab308,#f59e0b,#f97316,#ef4444,#dc2626,#991b1b)'}}/></div><div className="flex items-center gap-2 ml-1">{[['LOW','#22c55e'],['MED','#eab308'],['HIGH','#f97316'],['CRIT','#ef4444']].map(([l,c])=><div key={l} className="flex items-center gap-1"><div className="w-2 h-2 rounded-sm" style={{background:c}}/><span className="text-[9px] font-mono text-text-muted">{l}</span></div>)}</div></>}
+      {layers.colorLayer==='moisture'&&<div className="flex items-center gap-1"><div className="w-24 h-2 rounded" style={{background:'linear-gradient(90deg,#78350f,#92400e,#b45309,#d97706,#a3e635,#22c55e,#059669,#047857)'}}/><span className="text-[9px] font-mono text-text-muted">Dry→Wet</span></div>}
+      {layers.colorLayer==='intensity'&&<div className="flex items-center gap-1"><div className="w-24 h-2 rounded" style={{background:'linear-gradient(90deg,#422006,#fef3c7,#fbbf24,#f97316,#ef4444,#b91c1c,#7c3aed)'}}/><span className="text-[9px] font-mono text-text-muted">FRP (MW)</span></div>}
       <div className="flex items-center gap-1"><div className="w-2.5 h-2.5 rounded-full border-2 border-red-500 animate-pulse"/><span className="text-[9px] font-mono text-text-muted">Fire</span></div>
       {layers.wind&&<div className="flex items-center gap-1"><Wind className="w-3 h-3 text-sky-100/70"/><span className="text-[9px] font-mono text-text-muted">Wind</span></div>}
       {layers.spread&&<div className="flex items-center gap-1"><div className="w-5 h-1" style={{borderBottom:'2px dashed #fb923c'}}/><span className="text-[9px] font-mono text-text-muted">Spread</span></div>}
@@ -182,7 +211,7 @@ function DetailPanel({ cellId, allCells, edits, setEdits, onNavigate }) {
         <div className="px-4 py-3 border-b border-border-subtle">
           <div className="flex items-center gap-1.5 mb-2"><Activity className="w-3 h-3 text-accent-blue"/><span className="text-[10px] font-mono font-semibold text-text-secondary uppercase tracking-wider">Ignition Risk</span></div>
           <div className="flex justify-between items-center mb-1"><span className="text-[10px] font-mono text-text-muted">P(ignition)</span><span className={`text-[14px] font-mono font-bold ${TIER_COLORS[tier].text}`}>{(merged.fire_risk_score*100).toFixed(1)}%</span></div>
-          <div className="h-2 bg-surface-3 rounded-full overflow-hidden"><div className="h-full rounded-full transition-all duration-500" style={{width:`${merged.fire_risk_score*100}%`,background:`linear-gradient(90deg,${TIER_COLORS.LOW.fill},${TIER_COLORS[tier].fill})`,boxShadow:`0 0 8px ${TIER_COLORS[tier].glow}`}}/></div>
+          <div className="h-2 bg-surface-3 rounded-full overflow-hidden"><div className="h-full rounded-full transition-all duration-500" style={{width:`${merged.fire_risk_score*100}%`,background:'linear-gradient(90deg,#22c55e,#a3e635,#eab308,#f59e0b,#f97316,#ef4444,#dc2626)',boxShadow:`0 0 8px ${TIER_COLORS[tier].glow}`}}/></div>
         </div>
         <div className="px-4 py-3 border-b border-border-subtle">
           <div className="flex items-center gap-1.5 mb-2"><Thermometer className="w-3 h-3 text-accent-orange"/><span className="text-[10px] font-mono font-semibold text-text-secondary uppercase tracking-wider">Weather</span></div>
@@ -213,7 +242,14 @@ export default function FireMap({ onNavigate }) {
   const isDark = theme === 'dark';
   const [layers, setLayers] = useState({ colorLayer: 'risk', wind: true, crown: false, spread: false });
   const [sel, setSel] = useState(null);
+  const [activeRegion, setActiveRegion] = useState(null);
+  const [statesGeo, setStatesGeo] = useState(null);
   const [res, setRes] = useState('64km');
+
+  // Fetch US states GeoJSON once
+  useEffect(() => {
+    fetch(US_STATES_URL).then(r => r.json()).then(setStatesGeo).catch(() => {});
+  }, []);
   const [edits, setEdits] = useState(() => { try { return JSON.parse(localStorage.getItem('fireMapEdits')||'{}'); } catch { return {}; } });
 
   const allCells = useMemo(() => {
@@ -247,12 +283,55 @@ export default function FireMap({ onNavigate }) {
       {/* Map area */}
       <div className="flex-1 relative min-w-0">
         <MapContainer center={DEFAULT_CENTER} zoom={DEFAULT_ZOOM} zoomControl={false}
+          minZoom={3}
           style={{ height: '100%', width: '100%', background: isDark ? '#0c1117' : '#f5f1eb' }}
           className="rounded-none">
 
           <TileLayer key={theme} url={TILES[theme] || TILES.dark} attribution={TILE_ATTR} maxZoom={18} />
+          <StatesPane />
 
-          {/* Fly to selected cell */}
+          {/* Mask everything outside CA & TX */}
+          <Polygon positions={[
+            [[-90, -180], [-90, 180], [90, 180], [90, -180]],
+            CA_OUTLINE.map(([lat, lon]) => [lat, lon]),
+            TX_OUTLINE.map(([lat, lon]) => [lat, lon]),
+          ]} pathOptions={{
+            color: 'transparent', weight: 0,
+            fillColor: isDark ? '#0c1117' : '#e8e4dd',
+            fillOpacity: isDark ? 0.55 : 0.5,
+          }} interactive={false} />
+
+          {/* All US states — clickable, selected one lights up */}
+          {statesGeo && (
+            <GeoJSON
+              key={`states-${activeRegion || 'none'}-${theme}`}
+              data={statesGeo}
+              style={(feature) => {
+                const name = feature.properties.name;
+                const isActive = activeRegion === name;
+                const isMonitored = MONITORING_STATES.has(name);
+                return {
+                  pane: 'statesPane',
+                  color: isActive ? (isDark ? '#60a5fa' : '#2563eb') : isMonitored ? (isDark ? 'rgba(96,165,250,0.3)' : 'rgba(37,99,235,0.2)') : (isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.08)'),
+                  weight: isActive ? 2.5 : isMonitored ? 1.2 : 0.5,
+                  fillColor: isActive ? (isDark ? '#60a5fa' : '#3b82f6') : 'transparent',
+                  fillOpacity: isActive ? (isDark ? 0.15 : 0.1) : 0,
+                };
+              }}
+              onEachFeature={(feature, layer) => {
+                const name = feature.properties.name;
+                layer.on('click', () => setActiveRegion(prev => prev === name ? null : name));
+                layer.bindTooltip(name, {
+                  sticky: false,
+                  direction: 'center',
+                  className: isDark ? 'leaflet-tooltip-dark' : 'leaflet-tooltip-light',
+                });
+              }}
+            />
+          )}
+
+          {/* Fly to region or cell */}
+          <FlyToBounds geojson={statesGeo} name={activeRegion} />
           {selCell && <FlyTo lat={selCell.lat} lon={selCell.lon} />}
 
           {/* Hex cells */}
