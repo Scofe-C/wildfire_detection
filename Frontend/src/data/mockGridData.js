@@ -1,6 +1,8 @@
-// Mock H3 grid cell data derived from Data-Pipeline/ and model-pipeline/ structures.
-// Grid is 55 cells at 64km resolution: ~35 CA + ~20 TX (as defined in fuse_features.py).
-// Risk tiers map directly to model-pipeline/configs/model_config.yaml thresholds:
+// Mock H3 grid cell data — full fused feature schema (35 columns).
+// Matches Data-Pipeline/data/processed/fused/ output + model-pipeline inference.
+// Grid is ~55 cells at 64km resolution: ~35 CA + ~20 TX.
+//
+// Risk tiers map to model-pipeline/configs/model_config.yaml thresholds:
 //   CRITICAL: fire_risk_score >= 0.65
 //   HIGH:     fire_risk_score >= 0.365
 //   MEDIUM:   fire_risk_score >= 0.15
@@ -20,7 +22,66 @@ export function getRiskTier(score) {
   return 'LOW';
 }
 
-// California grid cells (H3 resolution 2, ~35 cells)
+// ─── Extended features per cell ──────────────────────────────────────────────
+// Keys align with Data-Pipeline schema_config.yaml:
+//   wind_direction_10m (°), precipitation (mm), soil_moisture_0_to_7cm (m³/m³),
+//   canopy_cover_pct (%), canopy_base_height_m (m), canopy_bulk_density (kg/m³),
+//   vegetation_type, slope_degrees (°), aspect_degrees (°),
+//   mean_frp (MW), dominant_fuel_fraction (0-1)
+
+const EXT = {
+  // ── California ──
+  '8228e9ffffffffff': { wind_direction_10m: 270, precipitation: 0.0, soil_moisture_0_to_7cm: 0.12, canopy_cover_pct: 15, canopy_base_height_m: 8.2, canopy_bulk_density: 0.04, vegetation_type: 'Shrubland',      slope_degrees: 2.4,  aspect_degrees: 180, mean_frp: 0,     dominant_fuel_fraction: 0.72 },
+  '822897ffffffffff': { wind_direction_10m: 315, precipitation: 1.2, soil_moisture_0_to_7cm: 0.28, canopy_cover_pct: 22, canopy_base_height_m: 10.0,canopy_bulk_density: 0.06, vegetation_type: 'Mixed Forest',   slope_degrees: 4.1,  aspect_degrees: 225, mean_frp: 0,     dominant_fuel_fraction: 0.58 },
+  '8228a7ffffffffff': { wind_direction_10m: 200, precipitation: 2.8, soil_moisture_0_to_7cm: 0.35, canopy_cover_pct: 8,  canopy_base_height_m: 12.0,canopy_bulk_density: 0.02, vegetation_type: 'Agriculture',    slope_degrees: 0.8,  aspect_degrees: 90,  mean_frp: 0,     dominant_fuel_fraction: 0.45 },
+  '8228b7ffffffffff': { wind_direction_10m: 190, precipitation: 1.4, soil_moisture_0_to_7cm: 0.32, canopy_cover_pct: 5,  canopy_base_height_m: 14.0,canopy_bulk_density: 0.01, vegetation_type: 'Agriculture',    slope_degrees: 0.5,  aspect_degrees: 120, mean_frp: 0,     dominant_fuel_fraction: 0.40 },
+  '8228c7ffffffffff': { wind_direction_10m: 245, precipitation: 0.0, soil_moisture_0_to_7cm: 0.18, canopy_cover_pct: 28, canopy_base_height_m: 6.5, canopy_bulk_density: 0.08, vegetation_type: 'Chaparral',      slope_degrees: 18.2, aspect_degrees: 210, mean_frp: 0,     dominant_fuel_fraction: 0.68 },
+  '8228d7ffffffffff': { wind_direction_10m: 290, precipitation: 0.0, soil_moisture_0_to_7cm: 0.06, canopy_cover_pct: 12, canopy_base_height_m: 7.0, canopy_bulk_density: 0.03, vegetation_type: 'Chaparral',      slope_degrees: 14.8, aspect_degrees: 195, mean_frp: 0,     dominant_fuel_fraction: 0.74 },
+  '8228e1ffffffffff': { wind_direction_10m: 310, precipitation: 0.0, soil_moisture_0_to_7cm: 0.05, canopy_cover_pct: 34, canopy_base_height_m: 4.2, canopy_bulk_density: 0.09, vegetation_type: 'Chaparral',      slope_degrees: 22.4, aspect_degrees: 170, mean_frp: 42.8,  dominant_fuel_fraction: 0.81 },
+  '8228f1ffffffffff': { wind_direction_10m: 275, precipitation: 0.0, soil_moisture_0_to_7cm: 0.08, canopy_cover_pct: 30, canopy_base_height_m: 5.8, canopy_bulk_density: 0.07, vegetation_type: 'Chaparral',      slope_degrees: 16.5, aspect_degrees: 240, mean_frp: 0,     dominant_fuel_fraction: 0.76 },
+  '82281bffffffffff': { wind_direction_10m: 270, precipitation: 0.0, soil_moisture_0_to_7cm: 0.04, canopy_cover_pct: 52, canopy_base_height_m: 2.8, canopy_bulk_density: 0.14, vegetation_type: 'Conifer Forest', slope_degrees: 28.4, aspect_degrees: 200, mean_frp: 124.6, dominant_fuel_fraction: 0.85 },
+  '82282bffffffffff': { wind_direction_10m: 220, precipitation: 0.4, soil_moisture_0_to_7cm: 0.24, canopy_cover_pct: 45, canopy_base_height_m: 5.4, canopy_bulk_density: 0.11, vegetation_type: 'Mixed Forest',   slope_degrees: 12.1, aspect_degrees: 160, mean_frp: 0,     dominant_fuel_fraction: 0.62 },
+  '82283bffffffffff': { wind_direction_10m: 210, precipitation: 3.2, soil_moisture_0_to_7cm: 0.38, canopy_cover_pct: 58, canopy_base_height_m: 6.2, canopy_bulk_density: 0.12, vegetation_type: 'Conifer Forest', slope_degrees: 15.4, aspect_degrees: 145, mean_frp: 0,     dominant_fuel_fraction: 0.71 },
+  '82284bffffffffff': { wind_direction_10m: 255, precipitation: 0.2, soil_moisture_0_to_7cm: 0.16, canopy_cover_pct: 35, canopy_base_height_m: 4.8, canopy_bulk_density: 0.10, vegetation_type: 'Conifer Forest', slope_degrees: 32.1, aspect_degrees: 280, mean_frp: 0,     dominant_fuel_fraction: 0.67 },
+  '82285bffffffffff': { wind_direction_10m: 240, precipitation: 0.0, soil_moisture_0_to_7cm: 0.14, canopy_cover_pct: 48, canopy_base_height_m: 3.6, canopy_bulk_density: 0.12, vegetation_type: 'Mixed Forest',   slope_degrees: 20.8, aspect_degrees: 190, mean_frp: 0,     dominant_fuel_fraction: 0.70 },
+  '82286bffffffffff': { wind_direction_10m: 180, precipitation: 0.0, soil_moisture_0_to_7cm: 0.02, canopy_cover_pct: 2,  canopy_base_height_m: 20.0,canopy_bulk_density: 0.00, vegetation_type: 'Desert Scrub',   slope_degrees: 1.2,  aspect_degrees: 0,   mean_frp: 0,     dominant_fuel_fraction: 0.30 },
+  '82287bffffffffff': { wind_direction_10m: 45,  precipitation: 0.0, soil_moisture_0_to_7cm: 0.03, canopy_cover_pct: 38, canopy_base_height_m: 2.4, canopy_bulk_density: 0.15, vegetation_type: 'Chaparral',      slope_degrees: 25.6, aspect_degrees: 175, mean_frp: 284.2, dominant_fuel_fraction: 0.88 },
+  '82288bffffffffff': { wind_direction_10m: 260, precipitation: 0.0, soil_moisture_0_to_7cm: 0.07, canopy_cover_pct: 10, canopy_base_height_m: 9.0, canopy_bulk_density: 0.03, vegetation_type: 'Grassland',      slope_degrees: 3.8,  aspect_degrees: 150, mean_frp: 0,     dominant_fuel_fraction: 0.55 },
+  '82289bffffffffff': { wind_direction_10m: 195, precipitation: 5.8, soil_moisture_0_to_7cm: 0.42, canopy_cover_pct: 62, canopy_base_height_m: 7.8, canopy_bulk_density: 0.13, vegetation_type: 'Conifer Forest', slope_degrees: 24.2, aspect_degrees: 310, mean_frp: 0,     dominant_fuel_fraction: 0.75 },
+  '8228aabfffffffff': { wind_direction_10m: 230, precipitation: 0.8, soil_moisture_0_to_7cm: 0.26, canopy_cover_pct: 55, canopy_base_height_m: 5.0, canopy_bulk_density: 0.11, vegetation_type: 'Conifer Forest', slope_degrees: 22.8, aspect_degrees: 250, mean_frp: 0,     dominant_fuel_fraction: 0.69 },
+  '8228abbfffffffff': { wind_direction_10m: 185, precipitation: 1.0, soil_moisture_0_to_7cm: 0.30, canopy_cover_pct: 6,  canopy_base_height_m: 13.0,canopy_bulk_density: 0.02, vegetation_type: 'Agriculture',    slope_degrees: 1.0,  aspect_degrees: 100, mean_frp: 0,     dominant_fuel_fraction: 0.42 },
+  '8228acbfffffffff': { wind_direction_10m: 340, precipitation: 0.0, soil_moisture_0_to_7cm: 0.15, canopy_cover_pct: 32, canopy_base_height_m: 4.5, canopy_bulk_density: 0.09, vegetation_type: 'Mixed Forest',   slope_degrees: 10.4, aspect_degrees: 185, mean_frp: 0,     dominant_fuel_fraction: 0.64 },
+  // ── Texas ──
+  '8244d9ffffffffff': { wind_direction_10m: 165, precipitation: 4.2, soil_moisture_0_to_7cm: 0.34, canopy_cover_pct: 18, canopy_base_height_m: 11.0,canopy_bulk_density: 0.05, vegetation_type: 'Mixed Forest',   slope_degrees: 1.2,  aspect_degrees: 90,  mean_frp: 0,     dominant_fuel_fraction: 0.48 },
+  '8244e9ffffffffff': { wind_direction_10m: 180, precipitation: 1.4, soil_moisture_0_to_7cm: 0.20, canopy_cover_pct: 25, canopy_base_height_m: 8.0, canopy_bulk_density: 0.06, vegetation_type: 'Woodland',       slope_degrees: 5.8,  aspect_degrees: 200, mean_frp: 0,     dominant_fuel_fraction: 0.55 },
+  '8244f9ffffffffff': { wind_direction_10m: 195, precipitation: 0.8, soil_moisture_0_to_7cm: 0.16, canopy_cover_pct: 14, canopy_base_height_m: 9.5, canopy_bulk_density: 0.04, vegetation_type: 'Shrubland',      slope_degrees: 3.4,  aspect_degrees: 170, mean_frp: 0,     dominant_fuel_fraction: 0.52 },
+  '824409ffffffffff': { wind_direction_10m: 175, precipitation: 2.0, soil_moisture_0_to_7cm: 0.22, canopy_cover_pct: 20, canopy_base_height_m: 10.0,canopy_bulk_density: 0.05, vegetation_type: 'Woodland',       slope_degrees: 2.8,  aspect_degrees: 140, mean_frp: 0,     dominant_fuel_fraction: 0.50 },
+  '824419ffffffffff': { wind_direction_10m: 190, precipitation: 0.6, soil_moisture_0_to_7cm: 0.18, canopy_cover_pct: 16, canopy_base_height_m: 9.0, canopy_bulk_density: 0.04, vegetation_type: 'Grassland',      slope_degrees: 2.2,  aspect_degrees: 160, mean_frp: 0,     dominant_fuel_fraction: 0.60 },
+  '824429ffffffffff': { wind_direction_10m: 210, precipitation: 0.0, soil_moisture_0_to_7cm: 0.04, canopy_cover_pct: 4,  canopy_base_height_m: 15.0,canopy_bulk_density: 0.01, vegetation_type: 'Desert Scrub',   slope_degrees: 1.8,  aspect_degrees: 220, mean_frp: 38.4,  dominant_fuel_fraction: 0.35 },
+  '824439ffffffffff': { wind_direction_10m: 250, precipitation: 0.0, soil_moisture_0_to_7cm: 0.03, canopy_cover_pct: 3,  canopy_base_height_m: 18.0,canopy_bulk_density: 0.00, vegetation_type: 'Desert Scrub',   slope_degrees: 4.2,  aspect_degrees: 260, mean_frp: 0,     dominant_fuel_fraction: 0.28 },
+  '824449ffffffffff': { wind_direction_10m: 220, precipitation: 0.0, soil_moisture_0_to_7cm: 0.02, canopy_cover_pct: 8,  canopy_base_height_m: 5.5, canopy_bulk_density: 0.03, vegetation_type: 'Desert Scrub',   slope_degrees: 8.4,  aspect_degrees: 190, mean_frp: 312.8, dominant_fuel_fraction: 0.38 },
+  '824459ffffffffff': { wind_direction_10m: 200, precipitation: 0.0, soil_moisture_0_to_7cm: 0.06, canopy_cover_pct: 3,  canopy_base_height_m: 20.0,canopy_bulk_density: 0.00, vegetation_type: 'Grassland',      slope_degrees: 0.8,  aspect_degrees: 180, mean_frp: 0,     dominant_fuel_fraction: 0.82 },
+  '824469ffffffffff': { wind_direction_10m: 155, precipitation: 2.4, soil_moisture_0_to_7cm: 0.28, canopy_cover_pct: 10, canopy_base_height_m: 12.0,canopy_bulk_density: 0.02, vegetation_type: 'Grassland',      slope_degrees: 0.6,  aspect_degrees: 110, mean_frp: 0,     dominant_fuel_fraction: 0.70 },
+  '824479ffffffffff': { wind_direction_10m: 145, precipitation: 3.8, soil_moisture_0_to_7cm: 0.30, canopy_cover_pct: 12, canopy_base_height_m: 11.0,canopy_bulk_density: 0.03, vegetation_type: 'Shrubland',      slope_degrees: 1.0,  aspect_degrees: 100, mean_frp: 0,     dominant_fuel_fraction: 0.48 },
+  '824489ffffffffff': { wind_direction_10m: 215, precipitation: 0.0, soil_moisture_0_to_7cm: 0.05, canopy_cover_pct: 2,  canopy_base_height_m: 20.0,canopy_bulk_density: 0.00, vegetation_type: 'Grassland',      slope_degrees: 0.4,  aspect_degrees: 200, mean_frp: 18.2,  dominant_fuel_fraction: 0.85 },
+  '824499ffffffffff': { wind_direction_10m: 205, precipitation: 0.0, soil_moisture_0_to_7cm: 0.08, canopy_cover_pct: 6,  canopy_base_height_m: 14.0,canopy_bulk_density: 0.01, vegetation_type: 'Grassland',      slope_degrees: 2.0,  aspect_degrees: 175, mean_frp: 0,     dominant_fuel_fraction: 0.72 },
+  '8244a9ffffffffff': { wind_direction_10m: 235, precipitation: 0.0, soil_moisture_0_to_7cm: 0.04, canopy_cover_pct: 8,  canopy_base_height_m: 10.0,canopy_bulk_density: 0.02, vegetation_type: 'Shrubland',      slope_degrees: 3.2,  aspect_degrees: 215, mean_frp: 86.4,  dominant_fuel_fraction: 0.58 },
+};
+
+// ─── Annotations for cells with notable conditions ───────────────────────────
+
+const NOTES = {
+  '82287bffffffffff': 'DIABLO WIND EVENT — Active fire spreading NE toward Santa Barbara. Evacuation order issued for Santa Ynez valley. Spot fires confirmed at 2 locations downwind.',
+  '824449ffffffffff': 'ISOLATED TERRAIN FIRE — Access limited to aerial support only. SW wind driving spread NE toward Permian Basin. Local ranchers reported rapid grass fire growth.',
+  '82281bffffffffff': 'SANTA ANA CONDITIONS — Precautionary monitoring. No confirmed ignition but extreme fire weather. FBFM 9 chaparral fuel load at critical moisture deficit.',
+  '8228e1ffffffffff': 'Spot fire observed 2km NE of main Santa Barbara perimeter. Ground crew deployed. Canopy torching reported in isolated groves.',
+  '824429ffffffffff': 'Permian Basin grassland fire. Low fuel load but high wind driving rapid lateral spread. Oil infrastructure in potential path.',
+  '8244a9ffffffffff': 'Border region fire activity. Coordination with MX fire services underway. High FRP readings suggest intense surface fire.',
+  '824489ffffffffff': 'Staked Plains grass fire. Flat terrain allows unimpeded spread. Lubbock county issued burn ban.',
+};
+
+// ─── California grid cells (H3 res-2, ~64km) ────────────────────────────────
+
 export const CALIFORNIA_CELLS = [
   { grid_id: '8228e9ffffffffff', lat: 34.05, lon: -118.24, name: 'Los Angeles Basin',    fire_risk_score: 0.14, temperature_2m: 22.1, relative_humidity_2m: 38.2, wind_speed_10m: 12.4, vpd: 1.82, fire_weather_index: 18.4, fuel_model_fbfm40: 'FBFM 9',  elevation_m: 86,   active_fire_count: 0, fire_detected_binary: 0 },
   { grid_id: '822897ffffffffff', lat: 37.33, lon: -121.89, name: 'Bay Area / South Bay',  fire_risk_score: 0.08, temperature_2m: 14.2, relative_humidity_2m: 72.1, wind_speed_10m: 8.2,  vpd: 0.61, fire_weather_index: 6.2,  fuel_model_fbfm40: 'FBFM 2',  elevation_m: 15,   active_fire_count: 0, fire_detected_binary: 0 },
@@ -44,7 +105,8 @@ export const CALIFORNIA_CELLS = [
   { grid_id: '8228acbfffffffff', lat: 38.52, lon: -123.01, name: 'Sonoma / Napa',         fire_risk_score: 0.23, temperature_2m: 13.4, relative_humidity_2m: 61.8, wind_speed_10m: 12.4, vpd: 0.84, fire_weather_index: 13.8, fuel_model_fbfm40: 'FBFM 5',  elevation_m: 184,  active_fire_count: 0, fire_detected_binary: 0 },
 ];
 
-// Texas grid cells (H3 resolution 2, ~20 cells)
+// ─── Texas grid cells ────────────────────────────────────────────────────────
+
 export const TEXAS_CELLS = [
   { grid_id: '8244d9ffffffffff', lat: 29.76, lon: -95.37, name: 'Houston',                fire_risk_score: 0.07, temperature_2m: 18.4, relative_humidity_2m: 72.4, wind_speed_10m: 14.2, vpd: 0.72, fire_weather_index: 8.4,  fuel_model_fbfm40: 'FBFM 1', elevation_m: 15,  active_fire_count: 0, fire_detected_binary: 0 },
   { grid_id: '8244e9ffffffffff', lat: 30.27, lon: -97.74, name: 'Austin',                  fire_risk_score: 0.16, temperature_2m: 19.8, relative_humidity_2m: 54.2, wind_speed_10m: 16.8, vpd: 1.21, fire_weather_index: 14.8, fuel_model_fbfm40: 'FBFM 2', elevation_m: 148, active_fire_count: 0, fire_detected_binary: 0 },
@@ -61,3 +123,33 @@ export const TEXAS_CELLS = [
   { grid_id: '824499ffffffffff', lat: 31.46, lon: -100.44, name: 'San Angelo',             fire_risk_score: 0.29, temperature_2m: 20.4, relative_humidity_2m: 34.4, wind_speed_10m: 18.8, vpd: 2.08, fire_weather_index: 22.4, fuel_model_fbfm40: 'FBFM 2', elevation_m: 564, active_fire_count: 0, fire_detected_binary: 0 },
   { grid_id: '8244a9ffffffffff', lat: 28.70, lon: -100.49, name: 'Laredo / Eagle Pass',    fire_risk_score: 0.48, temperature_2m: 27.4, relative_humidity_2m: 20.4, wind_speed_10m: 22.4, vpd: 3.84, fire_weather_index: 44.8, fuel_model_fbfm40: 'FBFM 2', elevation_m: 182, active_fire_count: 2, fire_detected_binary: 0 },
 ];
+
+// ─── Merge extended features + notes into cell arrays ────────────────────────
+
+function enrichCell(cell) {
+  const ext = EXT[cell.grid_id] || {};
+  return {
+    ...cell,
+    wind_direction_10m: ext.wind_direction_10m ?? 180,
+    precipitation: ext.precipitation ?? 0,
+    soil_moisture_0_to_7cm: ext.soil_moisture_0_to_7cm ?? 0.15,
+    canopy_cover_pct: ext.canopy_cover_pct ?? 10,
+    canopy_base_height_m: ext.canopy_base_height_m ?? 10,
+    canopy_bulk_density: ext.canopy_bulk_density ?? 0.03,
+    vegetation_type: ext.vegetation_type ?? 'Unknown',
+    slope_degrees: ext.slope_degrees ?? 2,
+    aspect_degrees: ext.aspect_degrees ?? 0,
+    mean_frp: ext.mean_frp ?? 0,
+    dominant_fuel_fraction: ext.dominant_fuel_fraction ?? 0.5,
+    ndvi: null,
+    cumulative_wind_run_24h: +(cell.wind_speed_10m * 24).toFixed(1),
+    drought_index_proxy: +Math.max(0, Math.min(1, (cell.temperature_2m / 40) - (cell.relative_humidity_2m / 200) + (cell.vpd / 5))).toFixed(3),
+    data_quality_flag: 0,
+    notes: NOTES[cell.grid_id] || null,
+  };
+}
+
+// Re-export enriched arrays (backward-compatible — all original fields preserved)
+const _CA = CALIFORNIA_CELLS.map(enrichCell);
+const _TX = TEXAS_CELLS.map(enrichCell);
+export { _CA as CALIFORNIA_CELLS_ENRICHED, _TX as TEXAS_CELLS_ENRICHED };

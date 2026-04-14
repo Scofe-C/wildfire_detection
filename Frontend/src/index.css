@@ -2,52 +2,187 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ═══════════════════════════════════════════════════════════════
+   Theme System — Warm Command design language
+   Two themes: warm-dark (default) and warm-light (OBJ-3 style)
+   Toggle via data-theme="light" on <html>
+   ═══════════════════════════════════════════════════════════════ */
+
 :root {
+  /* Surfaces — warm espresso dark */
+  --surface-0: #0d0a07;
+  --surface-1: #1a1614;
+  --surface-2: #292524;
+  --surface-3: #3d3834;
+
+  /* Borders */
+  --border-subtle: #44403c;
+  --border-default: #57534e;
+
+  /* Text */
+  --text-primary: #f5f1eb;
+  --text-secondary: #a8a29e;
+  --text-muted: #78716c;
+
+  /* Misc */
+  --dot-grid-opacity: 0.06;
+  --shadow: 0 1px 3px rgba(28, 25, 23, 0.25);
+  --shadow-lg: 0 8px 24px rgba(28, 25, 23, 0.40);
+  --scrollbar-track: #1a1614;
+  --scrollbar-thumb: #44403c;
+
   color-scheme: dark;
 }
 
-* {
-  box-sizing: border-box;
+[data-theme="light"] {
+  --surface-0: #f5f1eb;
+  --surface-1: #ffffff;
+  --surface-2: #ece7df;
+  --surface-3: #e3ddd4;
+
+  --border-subtle: #d4cdc3;
+  --border-default: #bfb7ab;
+
+  --text-primary: #1c1917;
+  --text-secondary: #57534e;
+  --text-muted: #a8a29e;
+
+  --dot-grid-opacity: 0.18;
+  --shadow: 0 1px 3px rgba(28, 25, 23, 0.06);
+  --shadow-lg: 0 8px 24px rgba(28, 25, 23, 0.10);
+  --scrollbar-track: #ece7df;
+  --scrollbar-thumb: #d4cdc3;
+
+  color-scheme: light;
 }
+
+/* ── Reset ── */
+*, *::before, *::after { box-sizing: border-box; }
 
 body {
   margin: 0;
   padding: 0;
-  font-family: 'Inter', system-ui, -apple-system, sans-serif;
-  background: #080c14;
-  color: #e2e8f0;
+  font-family: 'DM Sans', system-ui, -apple-system, sans-serif;
+  background: var(--surface-0);
+  color: var(--text-primary);
+  font-size: 14px;
+  line-height: 1.6;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* Scrollbar styling */
-::-webkit-scrollbar {
-  width: 5px;
-  height: 5px;
-}
+/* ── Scrollbar ── */
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: var(--scrollbar-track); }
+::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border-radius: 2px; }
+::-webkit-scrollbar-thumb:hover { background: var(--border-default); }
 
-::-webkit-scrollbar-track {
-  background: #0d1117;
-}
-
-::-webkit-scrollbar-thumb {
-  background: #253348;
-  border-radius: 2px;
-}
-
-::-webkit-scrollbar-thumb:hover {
-  background: #374151;
-}
-
-/* Severity glow effects for critical / warning states */
+/* ── Severity glow effects ── */
 .glow-critical {
-  box-shadow: 0 0 0 1px rgba(255, 51, 51, 0.22), 0 0 16px rgba(255, 51, 51, 0.11);
+  box-shadow: 0 0 0 1px rgba(220, 38, 38, 0.22), 0 0 16px rgba(220, 38, 38, 0.11);
 }
 .glow-warning {
-  box-shadow: 0 0 0 1px rgba(255, 107, 0, 0.22), 0 0 16px rgba(255, 107, 0, 0.10);
+  box-shadow: 0 0 0 1px rgba(234, 88, 12, 0.22), 0 0 16px rgba(234, 88, 12, 0.10);
+}
+.glow-accent {
+  box-shadow: 0 0 0 1px rgba(194, 65, 12, 0.22), 0 0 12px rgba(194, 65, 12, 0.10);
 }
 
-/* Font mono utility for JetBrains Mono */
-.font-mono {
-  font-family: 'JetBrains Mono', 'Fira Code', monospace !important;
+/* ── Dot-grid background (OBJ-3 style) ── */
+.bg-dot-grid {
+  background-image: radial-gradient(
+    circle,
+    rgba(168, 162, 158, var(--dot-grid-opacity)) 1px,
+    transparent 1px
+  );
+  background-size: 22px 22px;
+}
+
+/* ── Typography utilities ── */
+.font-display { font-family: 'Outfit', system-ui, sans-serif !important; }
+.font-mono { font-family: 'JetBrains Mono', 'Fira Code', monospace !important; }
+
+/* ── Animations ── */
+@keyframes fadeSlideUp {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.animate-fade-up { animation: fadeSlideUp 0.5s ease both; }
+.animate-fade-up-1 { animation: fadeSlideUp 0.5s ease 60ms both; }
+.animate-fade-up-2 { animation: fadeSlideUp 0.5s ease 120ms both; }
+.animate-fade-up-3 { animation: fadeSlideUp 0.5s ease 180ms both; }
+
+/* ── Leaflet overrides (dark theme) ── */
+
+.leaflet-tooltip-dark {
+  background: rgba(13, 10, 7, 0.92) !important;
+  border: 1px solid rgba(68, 64, 60, 0.6) !important;
+  color: #f5f1eb !important;
+  border-radius: 8px !important;
+  padding: 6px 10px !important;
+  font-family: 'JetBrains Mono', monospace !important;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5) !important;
+  backdrop-filter: blur(8px);
+}
+.leaflet-tooltip-dark::before {
+  border-top-color: rgba(13, 10, 7, 0.92) !important;
+}
+
+.leaflet-tooltip-light {
+  background: rgba(255, 255, 255, 0.95) !important;
+  border: 1px solid rgba(212, 205, 195, 0.6) !important;
+  color: #1c1917 !important;
+  border-radius: 8px !important;
+  padding: 6px 10px !important;
+  font-family: 'JetBrains Mono', monospace !important;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12) !important;
+}
+.leaflet-tooltip-light::before {
+  border-top-color: rgba(255, 255, 255, 0.95) !important;
+}
+
+/* Light mode Leaflet overrides */
+[data-theme="light"] .leaflet-control-zoom a {
+  background: rgba(255, 255, 255, 0.92) !important;
+  color: #57534e !important;
+  border-color: rgba(212, 205, 195, 0.5) !important;
+}
+[data-theme="light"] .leaflet-control-zoom a:hover {
+  background: #fff !important;
+  color: #1c1917 !important;
+}
+[data-theme="light"] .leaflet-control-attribution {
+  background: rgba(255, 255, 255, 0.8) !important;
+  color: #a8a29e !important;
+}
+[data-theme="light"] .leaflet-control-attribution a { color: #57534e !important; }
+
+/* Dark zoom controls */
+.leaflet-control-zoom a {
+  background: rgba(26, 22, 20, 0.9) !important;
+  color: #a8a29e !important;
+  border-color: rgba(68, 64, 60, 0.5) !important;
+  backdrop-filter: blur(8px);
+}
+.leaflet-control-zoom a:hover {
+  background: rgba(41, 37, 36, 0.95) !important;
+  color: #f5f1eb !important;
+}
+
+/* Dark attribution */
+.leaflet-control-attribution {
+  background: rgba(13, 10, 7, 0.7) !important;
+  color: #78716c !important;
+  font-size: 9px !important;
+  backdrop-filter: blur(4px);
+}
+.leaflet-control-attribution a { color: #a8a29e !important; }
+
+/* Fire pulse ring animation */
+.fire-pulse-ring {
+  animation: firePulse 2s ease-in-out infinite;
+}
+@keyframes firePulse {
+  0%, 100% { stroke-opacity: 0.8; stroke-width: 2; }
+  50% { stroke-opacity: 0.15; stroke-width: 1; }
 }

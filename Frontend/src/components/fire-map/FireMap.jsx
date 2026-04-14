@@ -1,643 +1,336 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import {
-  Layers, Flame, Wind, Thermometer, Droplets, Activity,
-  AlertTriangle, FileText, ChevronRight, Info, Crosshair, MapPin,
+  Flame, Wind, Thermometer, Droplets, Activity, TreePine,
+  FileText, ChevronRight, Info, Crosshair, MapPin, Mountain,
+  Pencil, Save, Download, X, EyeOff, Navigation, Layers, BarChart3,
 } from 'lucide-react';
-import { CALIFORNIA_CELLS, TEXAS_CELLS, getRiskTier } from '../../data/mockGridData';
-import { OBJ1_PREDICTIONS, OBJ2_SPREAD, MAP_META } from '../../data/mockMapData';
+import 'leaflet/dist/leaflet.css';
+import { MapContainer, TileLayer, Polygon, Polyline, CircleMarker, Tooltip, Marker, useMap } from 'react-leaflet';
+import L from 'leaflet';
+import { useTheme } from '../ui/ThemeProvider';
+import { CALIFORNIA_CELLS_ENRICHED, TEXAS_CELLS_ENRICHED, getRiskTier } from '../../data/mockGridData';
+import { OBJ2_SPREAD } from '../../data/mockMapData';
+import {
+  hexBoundary, compassLabel,
+  riskColor, moistureColor, intensityColor, windSpeedOpacity,
+  deriveCrownFire, TIER_COLORS,
+  generateFireZoomCells,
+} from './mapHelpers';
 
-// ─── Color helpers ────────────────────────────────────────────────────────────
-const TIER_CFG = {
-  CRITICAL: { fill: '#ff3333', stroke: '#ff3333', glow: 'rgba(255,51,51,0.5)',  label: 'CRITICAL', text: 'text-risk-critical' },
-  HIGH:     { fill: '#ff6b00', stroke: '#ff6b00', glow: 'rgba(255,107,0,0.4)',  label: 'HIGH',     text: 'text-risk-high'     },
-  MEDIUM:   { fill: '#fbbf24', stroke: '#fbbf24', glow: 'rgba(251,191,36,0.3)', label: 'MEDIUM',   text: 'text-risk-medium'   },
-  LOW:      { fill: '#00e676', stroke: '#00e676', glow: 'rgba(0,230,118,0.25)', label: 'LOW',      text: 'text-risk-low'      },
+// ─── Config ───────────────────────────────────────────────────────────────────
+const TILES = {
+  dark:  'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
+  light: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
 };
+const TILE_ATTR = '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> &copy; <a href="https://carto.com/">CARTO</a>';
+const DEFAULT_CENTER = [33.5, -108];
+const DEFAULT_ZOOM = 5;
 
-const SPREAD_FILL  = 'rgba(255,107,0,0.18)';
-const SPREAD_STR   = '#ff6b00';
-const SOURCE_FILL  = 'rgba(255,51,51,0.25)';
-
-// ─── Map projection ───────────────────────────────────────────────────────────
-// Simple linear lat/lon → SVG pixel projection for each region panel.
-const CA_BOUNDS = { minLat: 32.2, maxLat: 42.2, minLon: -124.8, maxLon: -113.8 };
-const TX_BOUNDS = { minLat: 25.4, maxLat: 37.0, minLon: -107.2, maxLon: -92.8  };
-
-function project(lat, lon, bounds, w, h) {
-  const x = ((lon - bounds.minLon) / (bounds.maxLon - bounds.minLon)) * w;
-  const y = ((bounds.maxLat - lat) / (bounds.maxLat - bounds.minLat)) * h;
-  return { x, y };
+function hexFill(cell, layer) {
+  if (layer === 'moisture')  return moistureColor(cell.relative_humidity_2m);
+  if (layer === 'intensity') return intensityColor(cell.mean_frp || 0);
+  return riskColor(cell.fire_risk_score);
 }
+function hexRadius(cell) { return cell._isSubcell ? 10 : 32; }
 
-// ─── Simplified state outlines ────────────────────────────────────────────────
-// Approximate [lat, lon] boundary polygons for geographic context only.
-// Not surveyed data — sufficient for visual orientation at 64km grid resolution.
-const CA_OUTLINE = [
-  [42.0,-124.2],[41.4,-124.1],[40.4,-124.4],[39.8,-123.8],
-  [38.8,-123.9],[38.3,-123.1],[37.9,-122.7],[37.5,-122.4],
-  [37.2,-122.2],[36.6,-121.9],[35.7,-121.3],[35.0,-120.9],
-  [34.5,-120.5],[34.1,-119.5],[33.8,-118.5],[33.4,-117.9],
-  [32.7,-117.2],[32.5,-117.1],[32.5,-114.7],[33.0,-114.6],
-  [34.0,-114.6],[35.2,-114.6],[36.0,-114.7],[37.0,-114.0],
-  [38.0,-114.1],[39.0,-114.1],[40.0,-114.1],[41.0,-114.0],
-  [42.0,-114.1],[42.0,-124.2],
-];
-const TX_OUTLINE = [
-  [36.5,-103.0],[36.5,-100.0],[34.0,-100.0],[33.8,-96.5],
-  [33.4,-94.0],[31.0,-94.0],[30.0,-93.8],[29.5,-93.9],
-  [28.7,-95.7],[27.8,-97.4],[26.2,-97.3],[26.5,-99.1],
-  [28.3,-100.3],[29.2,-101.2],[29.8,-103.3],[30.0,-104.6],
-  [31.0,-105.3],[31.8,-106.5],[32.0,-106.6],[32.0,-103.0],
-  [36.5,-103.0],
-];
-
-// Reference cities for geographic orientation
-const CA_CITIES = [
-  { name: 'Los Angeles',   lat: 34.05, lon: -118.24 },
-  { name: 'San Francisco', lat: 37.77, lon: -122.42 },
-  { name: 'Santa Barbara', lat: 34.42, lon: -119.70 },
-];
-const TX_CITIES = [
-  { name: 'Austin',  lat: 30.27, lon: -97.74  },
-  { name: 'Dallas',  lat: 32.78, lon: -96.80  },
-  { name: 'El Paso', lat: 31.78, lon: -106.40 },
-];
-
-// ─── Sub-components ───────────────────────────────────────────────────────────
+// ─── Small UI ─────────────────────────────────────────────────────────────────
 function RiskBadge({ tier }) {
-  const cfg = TIER_CFG[tier] || TIER_CFG.LOW;
-  return (
-    <span className={`text-[9px] font-mono font-semibold px-1.5 py-0.5 rounded border leading-none
-      ${tier === 'CRITICAL' ? 'bg-risk-critical/20 text-risk-critical border-risk-critical/40' :
-        tier === 'HIGH'     ? 'bg-risk-high/20 text-risk-high border-risk-high/40' :
-        tier === 'MEDIUM'   ? 'bg-risk-medium/20 text-risk-medium border-risk-medium/40' :
-                              'bg-risk-low/20 text-risk-low border-risk-low/40'}`}>
-      {tier}
-    </span>
-  );
+  const c = { CRITICAL:'bg-risk-critical/20 text-risk-critical border-risk-critical/40', HIGH:'bg-risk-high/20 text-risk-high border-risk-high/40', MEDIUM:'bg-risk-medium/20 text-risk-medium border-risk-medium/40', LOW:'bg-risk-low/20 text-risk-low border-risk-low/40' }[tier];
+  return <span className={`text-[9px] font-mono font-semibold px-1.5 py-0.5 rounded border leading-none ${c}`}>{tier}</span>;
+}
+function Row({ icon: I, label, value, unit }) {
+  return <div className="flex items-center justify-between py-[3px]"><span className="flex items-center gap-1.5 text-text-muted"><I className="w-3 h-3"/><span className="text-[10px] font-mono">{label}</span></span><span className="text-[10px] font-mono text-text-primary">{value}{unit?` ${unit}`:''}</span></div>;
 }
 
-function FeatureRow({ icon: Icon, label, value, unit }) {
+// ─── Fly to selected cell ─────────────────────────────────────────────────────
+function FlyTo({ lat, lon }) {
+  const map = useMap();
+  useEffect(() => {
+    if (lat != null && lon != null) map.flyTo([lat, lon], Math.max(map.getZoom(), 7), { duration: 0.6 });
+  }, [lat, lon, map]);
+  return null;
+}
+
+// ─── Wind arrow icon factory ──────────────────────────────────────────────────
+function makeWindIcon(dir, speed, dark = true) {
+  const rot = (dir + 180) % 360;
+  const op = windSpeedOpacity(speed);
+  const color = dark ? '#e0f2fe' : '#1e3a5f';
+  return L.divIcon({
+    html: `<div style="transform:rotate(${rot}deg);opacity:${op};width:22px;height:22px">
+      <svg viewBox="0 0 22 22" width="22" height="22">
+        <line x1="11" y1="18" x2="11" y2="5" stroke="${color}" stroke-width="2.2" stroke-linecap="round"/>
+        <polygon points="11,2 7.5,8 14.5,8" fill="${color}"/>
+      </svg></div>`,
+    className: '',
+    iconSize: [22, 22],
+    iconAnchor: [11, 11],
+  });
+}
+
+// ─── Crown badge icon factory ─────────────────────────────────────────────────
+function makeCrownIcon(type) {
+  const color = type === 'active' ? '#ef4444' : '#f59e0b';
+  return L.divIcon({
+    html: `<div style="background:#111;border:1.5px solid ${color};border-radius:50%;width:16px;height:16px;display:flex;align-items:center;justify-content:center;color:${color};font-size:9px;font-weight:bold;font-family:monospace">${type === 'active' ? 'A' : 'P'}</div>`,
+    className: '',
+    iconSize: [16, 16],
+    iconAnchor: [-4, 18],
+  });
+}
+
+// ─── Layer bar ────────────────────────────────────────────────────────────────
+function LayerBar({ layers, setLayers, stats, resolution, setResolution }) {
+  const setColor = k => setLayers(l => ({ ...l, colorLayer: k }));
+  const toggle = k => setLayers(l => ({ ...l, [k]: !l[k] }));
   return (
-    <div className="flex items-center justify-between py-0.5">
-      <div className="flex items-center gap-1.5 text-text-muted">
-        <Icon className="w-3 h-3" />
-        <span className="text-[10px] font-mono">{label}</span>
+    <div className="absolute top-3 left-3 right-[290px] z-[1000] flex items-center justify-between px-3 py-2 bg-surface-1/90 backdrop-blur-md border border-border-subtle rounded-xl shadow-xl">
+      <div className="flex items-center gap-3">
+        <div className="flex bg-surface-2 border border-border-subtle rounded-lg p-0.5 gap-px">
+          {[{k:'risk',I:Activity,l:'Risk'},{k:'moisture',I:Droplets,l:'Moisture'},{k:'intensity',I:BarChart3,l:'Intensity'}].map(({k,I,l})=>(
+            <button key={k} onClick={()=>setColor(k)} className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-mono transition-colors ${layers.colorLayer===k?'bg-surface-0 text-text-primary font-semibold shadow-sm':'text-text-muted hover:text-text-secondary'}`}><I className="w-3 h-3"/>{l}</button>
+          ))}
+        </div>
+        <div className="flex items-center gap-1 pl-3 border-l border-border-subtle">
+          {[{k:'wind',I:Wind,l:'Wind'},{k:'crown',I:TreePine,l:'Crown'},{k:'spread',I:Navigation,l:'Spread'}].map(({k,I,l})=>(
+            <button key={k} onClick={()=>toggle(k)} className={`flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-mono border transition-colors ${layers[k]?'bg-accent-blue/10 text-accent-blue border-accent-blue/30':'text-text-muted border-transparent hover:text-text-secondary'}`}>
+              {layers[k]?<I className="w-3 h-3"/>:<EyeOff className="w-3 h-3 opacity-40"/>}{l}
+            </button>
+          ))}
+        </div>
+        <div className="flex items-center gap-1.5 pl-3 border-l border-border-subtle">
+          {stats.critical>0&&<span className="text-[9px] font-mono px-1.5 py-0.5 rounded border bg-risk-critical/10 text-risk-critical border-risk-critical/30 animate-pulse">{stats.critical} CRIT</span>}
+          {stats.high>0&&<span className="text-[9px] font-mono px-1.5 py-0.5 rounded border bg-risk-high/10 text-risk-high border-risk-high/30">{stats.high} HIGH</span>}
+          {stats.activeFires>0&&<span className="text-[9px] font-mono px-1.5 py-0.5 rounded border bg-risk-critical/10 text-risk-critical border-risk-critical/30"><Flame className="w-2.5 h-2.5 inline mr-0.5"/>{stats.activeFires}</span>}
+        </div>
       </div>
-      <span className="text-[10px] font-mono text-text-primary">{value} {unit}</span>
+      <div className="flex bg-surface-2 border border-border-subtle rounded-lg p-0.5 gap-px">
+        {['64km','22km'].map(r=>(
+          <button key={r} onClick={()=>setResolution(r)} className={`px-2 py-0.5 rounded-md text-[9px] font-mono transition-colors ${resolution===r?'bg-surface-0 text-text-primary font-semibold':'text-text-muted hover:text-text-secondary'}`}>{r}</button>
+        ))}
+      </div>
     </div>
   );
 }
 
-// ─── Map panel (SVG) ──────────────────────────────────────────────────────────
-function RegionMap({ cells, bounds, label, activeLayer, selectedId, spreadData, onSelect, w = 300, h = 320 }) {
-  const PAD = 20;
-  const mapW = w - PAD * 2;
-  const mapH = h - PAD * 2;
-
-  // Geographic context: derive outline + cities from label prop
-  const outline = label === 'California' ? CA_OUTLINE : TX_OUTLINE;
-  const cities  = label === 'California' ? CA_CITIES  : TX_CITIES;
-
-  // Project state outline boundary to SVG pixel coords
-  const outlinePts = useMemo(() =>
-    outline.map(([lat, lon]) => {
-      const { x, y } = project(lat, lon, bounds, mapW, mapH);
-      return `${x + PAD},${y + PAD}`;
-    }).join(' ')
-  , [outline, bounds, mapW, mapH]);
-
-  // Project city reference positions
-  const cityDots = useMemo(() =>
-    cities.map(({ name, lat, lon }) => {
-      const { x, y } = project(lat, lon, bounds, mapW, mapH);
-      return { name, cx: x + PAD, cy: y + PAD };
-    })
-  , [cities, bounds, mapW, mapH]);
-
-  // Determine which cells are in the current spread footprint
-  const spreadCells = useMemo(() => {
-    if (activeLayer !== 'spread') return new Set();
-    const affected = new Set();
-    Object.values(spreadData).forEach(sim => {
-      sim.affected_cells.forEach(id => affected.add(id));
-    });
-    return affected;
-  }, [activeLayer, spreadData]);
-
-  const sourceCells = useMemo(() => {
-    if (activeLayer !== 'spread') return new Set();
-    return new Set(Object.keys(spreadData));
-  }, [activeLayer, spreadData]);
-
-  // Build spread perimeter polygons for cells in this region
-  const perimeterPolys = useMemo(() => {
-    if (activeLayer !== 'spread') return [];
-    return Object.values(spreadData)
-      .filter(sim => cells.some(c => c.grid_id === sim.source_cell))
-      .map(sim => ({
-        id: sim.source_cell,
-        pts: sim.perimeter_coords
-          .map(({ lat, lon }) => {
-            const { x, y } = project(lat, lon, bounds, mapW, mapH);
-            return `${x + PAD},${y + PAD}`;
-          })
-          .join(' '),
-        confidence: sim.confidence,
-      }));
-  }, [activeLayer, spreadData, cells, bounds, mapW, mapH]);
-
+// ─── Legend ────────────────────────────────────────────────────────────────────
+function Legend({ layers }) {
   return (
-    <div className="flex flex-col items-center">
-      <div className="text-[9px] font-mono text-text-muted uppercase tracking-widest mb-1">{label}</div>
-      <svg
-        width={w}
-        height={h}
-        className="bg-surface-2 rounded border border-border-subtle"
-        style={{ cursor: 'crosshair' }}
-      >
-        {/* State boundary fill — subtle geographic context, rendered first */}
-        <polygon
-          points={outlinePts}
-          fill="#1a3a5c"
-          fillOpacity={0.14}
-          stroke="#6b8fa8"
-          strokeWidth={0.7}
-          strokeOpacity={0.3}
-        />
+    <div className="absolute bottom-6 left-3 z-[1000] flex items-center gap-4 px-3 py-1.5 bg-surface-1/90 backdrop-blur-md border border-border-subtle rounded-xl shadow-xl">
+      {layers.colorLayer==='risk'&&<div className="flex items-center gap-2">{['CRITICAL','HIGH','MEDIUM','LOW'].map(t=><div key={t} className="flex items-center gap-1"><div className="w-2.5 h-2.5 rounded-sm" style={{background:TIER_COLORS[t].fill}}/><span className="text-[9px] font-mono text-text-muted">{t}</span></div>)}</div>}
+      {layers.colorLayer==='moisture'&&<div className="flex items-center gap-1"><div className="w-16 h-2 rounded" style={{background:'linear-gradient(90deg,#78350f,#d97706,#a3e635,#047857)'}}/><span className="text-[9px] font-mono text-text-muted">Dry→Wet</span></div>}
+      {layers.colorLayer==='intensity'&&<div className="flex items-center gap-1"><div className="w-16 h-2 rounded" style={{background:'linear-gradient(90deg,#422006,#fbbf24,#ef4444,#7c3aed)'}}/><span className="text-[9px] font-mono text-text-muted">FRP</span></div>}
+      <div className="flex items-center gap-1"><div className="w-2.5 h-2.5 rounded-full border-2 border-red-500 animate-pulse"/><span className="text-[9px] font-mono text-text-muted">Fire</span></div>
+      {layers.wind&&<div className="flex items-center gap-1"><Wind className="w-3 h-3 text-sky-100/70"/><span className="text-[9px] font-mono text-text-muted">Wind</span></div>}
+      {layers.spread&&<div className="flex items-center gap-1"><div className="w-5 h-1" style={{borderBottom:'2px dashed #fb923c'}}/><span className="text-[9px] font-mono text-text-muted">Spread</span></div>}
+    </div>
+  );
+}
 
-        {/* Grid reference lines */}
-        {[0.25, 0.5, 0.75].map(f => (
-          <g key={f}>
-            <line x1={PAD} y1={PAD + mapH * f} x2={PAD + mapW} y2={PAD + mapH * f}
-              stroke="#1e2d3d" strokeWidth={0.5} />
-            <line x1={PAD + mapW * f} y1={PAD} x2={PAD + mapW * f} y2={PAD + mapH}
-              stroke="#1e2d3d" strokeWidth={0.5} />
-          </g>
-        ))}
-
-        {/* City reference labels — geographic orientation, behind hex cells */}
-        {cityDots.map(({ name, cx, cy }) => (
-          <g key={name}>
-            <circle cx={cx} cy={cy} r={1.8} fill="#4a6a80" opacity={0.5} />
-            <text
-              x={cx + 4} y={cy - 2}
-              fontSize="7" fontFamily="monospace"
-              fill="#4a6a80" opacity={0.6}
-              style={{ pointerEvents: 'none', userSelect: 'none' }}
-            >
-              {name}
-            </text>
-          </g>
-        ))}
-
-        {/* Spread perimeter polygons */}
-        {perimeterPolys.map(poly => (
-          <polygon
-            key={poly.id}
-            points={poly.pts}
-            fill={SOURCE_FILL}
-            stroke={SPREAD_STR}
-            strokeWidth={1.2}
-            strokeDasharray="4,2"
-            opacity={0.85}
-          />
-        ))}
-
-        {/* Cells */}
-        {cells.map(cell => {
-          const pred = OBJ1_PREDICTIONS[cell.grid_id];
-          const tier = pred ? pred.tier : getRiskTier(cell.fire_risk_score);
-          const cfg  = TIER_CFG[tier];
-          const { x, y } = project(cell.lat, cell.lon, bounds, mapW, mapH);
-          const cx = x + PAD;
-          const cy = y + PAD;
-          const isSelected = cell.grid_id === selectedId;
-          const isSource   = sourceCells.has(cell.grid_id);
-          const isSpread   = spreadCells.has(cell.grid_id) && !isSource;
-          const isActive   = cell.fire_detected_binary === 1;
-
-          // Hexagon shape via clip/polygon approximation (regular hex)
-          const r = 10;
-          const hexPts = [0,1,2,3,4,5].map(i => {
-            const a = Math.PI / 180 * (60 * i - 30);
-            return `${cx + r * Math.cos(a)},${cy + r * Math.sin(a)}`;
-          }).join(' ');
-
-          return (
-            <g key={cell.grid_id} onClick={() => onSelect(cell.grid_id)} style={{ cursor: 'pointer' }}>
-              {/* Glow ring for critical/selected */}
-              {(tier === 'CRITICAL' || isSelected) && (
-                <polygon
-                  points={hexPts}
-                  fill="none"
-                  stroke={isSelected ? '#60a5fa' : cfg.stroke}
-                  strokeWidth={isSelected ? 2.5 : 1.5}
-                  opacity={0.7}
-                  transform={`scale(1.35) translate(${cx*(1-1.35)/1.35 / 1 }, ${cy*(1-1.35)/1.35 / 1})`}
-                  style={{
-                    transformOrigin: `${cx}px ${cy}px`,
-                    transform: `translate(0,0) scale(1.35)`,
-                  }}
-                />
-              )}
-
-              {/* Spread highlight */}
-              {isSpread && (
-                <circle cx={cx} cy={cy} r={r + 5} fill={SPREAD_FILL} stroke={SPREAD_STR} strokeWidth={0.8} opacity={0.6} />
-              )}
-              {isSource && activeLayer === 'spread' && (
-                <circle cx={cx} cy={cy} r={r + 7} fill={SOURCE_FILL} stroke="#ff3333" strokeWidth={1.2} opacity={0.7} />
-              )}
-
-              {/* Hex body */}
-              <polygon
-                points={hexPts}
-                fill={cfg.fill}
-                fillOpacity={activeLayer === 'spread' && !isSpread && !isSource ? 0.25 : 0.75}
-                stroke={isSelected ? '#60a5fa' : cfg.stroke}
-                strokeWidth={isSelected ? 2 : 0.8}
-              />
-
-              {/* Active fire pulse ring */}
-              {isActive && (
-                <circle cx={cx} cy={cy} r={r + 3} fill="none" stroke="#ff3333" strokeWidth={1.5} opacity={0.6}>
-                  <animate attributeName="r" values={`${r+2};${r+7};${r+2}`} dur="1.8s" repeatCount="indefinite" />
-                  <animate attributeName="opacity" values="0.6;0.1;0.6" dur="1.8s" repeatCount="indefinite" />
-                </circle>
-              )}
-
-              {/* Fire count dot */}
-              {cell.active_fire_count > 0 && (
-                <text x={cx} y={cy + 1} textAnchor="middle" dominantBaseline="middle"
-                  fontSize="7" fontFamily="monospace" fill="#fff" fontWeight="bold">
-                  {cell.active_fire_count}
-                </text>
-              )}
-            </g>
-          );
-        })}
-
-        {/* Region label */}
-        <text x={PAD + 4} y={PAD + 10} fontSize="8" fontFamily="monospace" fill="#3d5a73">{label.toUpperCase()}</text>
-        {/* N arrow */}
-        <text x={w - PAD - 8} y={PAD + 12} fontSize="8" fontFamily="monospace" fill="#3d5a73">N</text>
-        <line x1={w - PAD - 5} y1={PAD + 14} x2={w - PAD - 5} y2={PAD + 22} stroke="#3d5a73" strokeWidth={1} />
-        <polygon points={`${w-PAD-5},${PAD+13} ${w-PAD-8},${PAD+18} ${w-PAD-2},${PAD+18}`} fill="#3d5a73" />
-      </svg>
+// ─── Edit form ────────────────────────────────────────────────────────────────
+function EditForm({ cell, vals, onChange, onSave, onCancel }) {
+  const fields = [
+    {k:'temperature_2m',l:'Temp',u:'°C',s:.1},{k:'relative_humidity_2m',l:'RH',u:'%',s:.1,mn:0,mx:100},
+    {k:'wind_speed_10m',l:'Wind Spd',u:'m/s',s:.1,mn:0},{k:'wind_direction_10m',l:'Wind Dir',u:'°',s:1,mn:0,mx:360},
+    {k:'precipitation',l:'Precip',u:'mm',s:.1,mn:0},{k:'soil_moisture_0_to_7cm',l:'Soil Moist',u:'m³/m³',s:.01,mn:0,mx:.5},
+    {k:'active_fire_count',l:'Fires',u:'',s:1,mn:0},
+  ];
+  return (
+    <div className="px-4 py-3 border-b border-border-subtle bg-accent-blue/5">
+      <div className="flex items-center justify-between mb-2"><span className="text-[10px] font-mono font-semibold text-accent-blue uppercase tracking-wider">Manual Override</span><button onClick={onCancel} className="text-text-muted hover:text-text-primary"><X className="w-3 h-3"/></button></div>
+      <div className="grid grid-cols-2 gap-x-3 gap-y-1.5">
+        {fields.map(f=><label key={f.k} className="flex flex-col gap-0.5"><span className="text-[9px] font-mono text-text-muted">{f.l} <span className="opacity-40">{f.u}</span></span><input type="number" step={f.s} min={f.mn} max={f.mx} value={vals[f.k]??cell[f.k]??''} onChange={e=>onChange(f.k,e.target.value===''?undefined:+e.target.value)} className="w-full bg-surface-2 border border-border-subtle rounded px-1.5 py-1 text-[10px] font-mono text-text-primary focus:border-accent-blue/40 focus:outline-none"/></label>)}
+      </div>
+      <label className="flex flex-col gap-0.5 mt-2"><span className="text-[9px] font-mono text-text-muted">Notes</span><textarea value={vals.notes??cell.notes??''} onChange={e=>onChange('notes',e.target.value||undefined)} rows={2} className="w-full bg-surface-2 border border-border-subtle rounded px-1.5 py-1 text-[10px] font-mono text-text-primary focus:border-accent-blue/40 focus:outline-none resize-none"/></label>
+      <div className="flex gap-2 mt-2">
+        <button onClick={onSave} className="flex-1 flex items-center justify-center gap-1 py-1.5 bg-accent-blue/15 border border-accent-blue/30 rounded text-accent-blue text-[10px] font-mono font-semibold hover:bg-accent-blue/25 transition-colors"><Save className="w-3 h-3"/>Save</button>
+        <button onClick={onCancel} className="flex-1 py-1.5 bg-surface-2 border border-border-subtle rounded text-text-muted text-[10px] font-mono hover:text-text-primary transition-colors">Cancel</button>
+      </div>
     </div>
   );
 }
 
 // ─── Detail panel ─────────────────────────────────────────────────────────────
-function DetailPanel({ cellId, allCells, activeLayer, onNavigate }) {
-  const cell   = allCells.find(c => c.grid_id === cellId);
-  const pred   = cellId ? OBJ1_PREDICTIONS[cellId] : null;
+function DetailPanel({ cellId, allCells, edits, setEdits, onNavigate }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState({});
+  const cell = allCells.find(c => c.grid_id === cellId);
+  const merged = cell ? { ...cell, ...(edits[cellId]||{}) } : null;
   const spread = cellId ? OBJ2_SPREAD[cellId] : null;
-  const tier   = pred ? pred.tier : (cell ? getRiskTier(cell.fire_risk_score) : null);
+  const tier = merged ? getRiskTier(merged.fire_risk_score) : null;
+  const crown = merged ? deriveCrownFire(merged.canopy_cover_pct, merged.canopy_base_height_m, merged.canopy_bulk_density) : 'none';
+  const startEdit = () => { setDraft(edits[cellId]||{}); setEditing(true); };
+  const cancelEdit = () => { setDraft({}); setEditing(false); };
+  const saveEdit = () => { const n={...edits}; const c=Object.fromEntries(Object.entries(draft).filter(([,v])=>v!==undefined)); if(Object.keys(c).length) n[cellId]=c; else delete n[cellId]; setEdits(n); localStorage.setItem('fireMapEdits',JSON.stringify(n)); setEditing(false); };
+  const exportJSON = () => {
+    if(!merged) return;
+    const p={region:merged.lat>36?'california':'texas',grid_ids:[merged.grid_id],features:{temperature_2m:[merged.temperature_2m],relative_humidity_2m:[merged.relative_humidity_2m],wind_speed_10m:[merged.wind_speed_10m],wind_direction_10m:[merged.wind_direction_10m],precipitation:[merged.precipitation],soil_moisture_0_to_7cm:[merged.soil_moisture_0_to_7cm],vpd:[merged.vpd],elevation_m:[merged.elevation_m],slope_degrees:[merged.slope_degrees],aspect_degrees:[merged.aspect_degrees],canopy_cover_pct:[merged.canopy_cover_pct],canopy_base_height_m:[merged.canopy_base_height_m],canopy_bulk_density:[merged.canopy_bulk_density],fuel_model_fbfm40:[merged.fuel_model_fbfm40]},_meta:{exported_at:new Date().toISOString(),source:'fire-map-manual-override'}};
+    const b=new Blob([JSON.stringify(p,null,2)],{type:'application/json'}); const u=URL.createObjectURL(b); const a=document.createElement('a'); a.href=u; a.download=`predict_${merged.grid_id.slice(0,8)}.json`; a.click(); URL.revokeObjectURL(u);
+  };
 
-  if (!cell) {
-    return (
-      <div className="flex flex-col items-center justify-center h-full gap-3 text-text-muted">
-        <Crosshair className="w-8 h-8 opacity-30" />
-        <span className="text-[11px] font-mono text-center leading-relaxed px-4">
-          Click a cell on the map<br />to view details
-        </span>
-      </div>
-    );
-  }
+  if (!cell) return <div className="flex flex-col items-center justify-center h-full gap-4 text-text-muted px-6"><Crosshair className="w-10 h-10 opacity-15"/><span className="text-[11px] text-center leading-relaxed opacity-50">Click a cell on the map<br/>to inspect details</span></div>;
 
   return (
     <div className="flex flex-col h-full overflow-y-auto">
-      {/* Cell header */}
-      <div className={`px-4 py-3 border-b border-border-subtle ${tier === 'CRITICAL' ? 'glow-critical bg-risk-critical/5' : ''}`}>
-        <div className="flex items-start justify-between gap-2 mb-1">
-          <div>
-            <div className="text-text-primary text-xs font-semibold leading-tight">{cell.name}</div>
-            <div className="text-text-muted text-[10px] font-mono mt-0.5">{cell.grid_id}</div>
-          </div>
-          <RiskBadge tier={tier} />
-        </div>
-        <div className="text-[10px] font-mono text-text-muted">
-          {cell.lat.toFixed(2)}°N, {Math.abs(cell.lon).toFixed(2)}°W · {cell.region ?? (cell.lat > 36 ? 'California' : cell.lon < -100 ? 'Texas' : 'California')}
-        </div>
+      <div className={`px-4 py-3 border-b border-border-subtle ${tier==='CRITICAL'?'glow-critical bg-risk-critical/5':''}`}>
+        <div className="flex items-start justify-between gap-2 mb-1"><div><div className="text-text-primary text-[13px] font-semibold leading-tight">{merged.name}</div><div className="text-text-muted text-[9px] font-mono mt-0.5">{merged.grid_id.slice(0,12)}...</div></div><RiskBadge tier={tier}/></div>
+        <div className="text-[10px] font-mono text-text-muted">{merged.lat.toFixed(2)}°N, {Math.abs(merged.lon).toFixed(2)}°W</div>
+        {edits[cellId]&&<div className="mt-1 flex items-center gap-1 text-[9px] font-mono text-purple-400"><Pencil className="w-2.5 h-2.5"/>Overrides active</div>}
       </div>
 
-      {/* OBJ-1 Section */}
-      <div className="px-4 py-3 border-b border-border-subtle">
-        <div className="flex items-center gap-1.5 mb-2">
-          <Activity className="w-3 h-3 text-accent-blue" />
-          <span className="text-[10px] font-mono font-semibold text-text-secondary uppercase tracking-wider">OBJ-1 Ignition Risk</span>
+      {editing ? <EditForm cell={cell} vals={draft} onChange={(k,v)=>setDraft(d=>({...d,[k]:v}))} onSave={saveEdit} onCancel={cancelEdit}/> : <>
+        <div className="px-4 py-3 border-b border-border-subtle">
+          <div className="flex items-center gap-1.5 mb-2"><Activity className="w-3 h-3 text-accent-blue"/><span className="text-[10px] font-mono font-semibold text-text-secondary uppercase tracking-wider">Ignition Risk</span></div>
+          <div className="flex justify-between items-center mb-1"><span className="text-[10px] font-mono text-text-muted">P(ignition)</span><span className={`text-[14px] font-mono font-bold ${TIER_COLORS[tier].text}`}>{(merged.fire_risk_score*100).toFixed(1)}%</span></div>
+          <div className="h-2 bg-surface-3 rounded-full overflow-hidden"><div className="h-full rounded-full transition-all duration-500" style={{width:`${merged.fire_risk_score*100}%`,background:`linear-gradient(90deg,${TIER_COLORS.LOW.fill},${TIER_COLORS[tier].fill})`,boxShadow:`0 0 8px ${TIER_COLORS[tier].glow}`}}/></div>
         </div>
-
-        {pred ? (
-          <>
-            {/* Probability bar */}
-            <div className="mb-2">
-              <div className="flex justify-between items-center mb-1">
-                <span className="text-[10px] font-mono text-text-muted">P(ignition)</span>
-                <span className={`text-sm font-mono font-bold ${TIER_CFG[tier].text}`}>
-                  {(pred.probability * 100).toFixed(1)}%
-                </span>
-              </div>
-              <div className="h-1.5 bg-surface-3 rounded-full overflow-hidden">
-                <div
-                  className="h-full rounded-full transition-all"
-                  style={{
-                    width: `${pred.probability * 100}%`,
-                    background: TIER_CFG[tier].fill,
-                    boxShadow: `0 0 6px ${TIER_CFG[tier].glow}`,
-                  }}
-                />
-              </div>
-            </div>
-
-            {/* Threshold markers */}
-            <div className="flex gap-2 mb-3">
-              {[['CRIT', '65%'], ['HIGH', '36.5%'], ['MED', '15%']].map(([l, v]) => (
-                <span key={l} className="text-[9px] font-mono text-text-muted">{l}:{v}</span>
-              ))}
-            </div>
-
-            {/* Features */}
-            <div className="space-y-0 divide-y divide-border-subtle/40">
-              <FeatureRow icon={Thermometer} label="Temp"     value={pred.features.temperature_2m}      unit="°C" />
-              <FeatureRow icon={Droplets}   label="RH"        value={pred.features.relative_humidity_2m} unit="%"  />
-              <FeatureRow icon={Wind}       label="Wind"      value={pred.features.wind_speed_10m}       unit="m/s" />
-              <FeatureRow icon={Activity}   label="VPD"       value={pred.features.vpd}                  unit="kPa" />
-              <FeatureRow icon={Flame}      label="FWI"       value={pred.features.fire_weather_index}   unit=""   />
-            </div>
-
-            <div className="mt-2 text-[9px] font-mono text-text-muted">
-              model: {pred.model_version}<br />
-              inferred: {pred.inference_ts.replace('T', ' ').slice(0, 19)} UTC
-            </div>
-          </>
-        ) : (
-          <div className="text-[10px] font-mono text-text-muted">No prediction available</div>
-        )}
-      </div>
-
-      {/* Active fire indicator */}
-      {cell.fire_detected_binary === 1 && (
-        <div className="mx-4 my-2 px-2.5 py-2 bg-risk-critical/10 border border-risk-critical/30 rounded glow-critical">
-          <div className="flex items-center gap-1.5">
-            <Flame className="w-3 h-3 text-risk-critical" />
-            <span className="text-[10px] font-mono font-semibold text-risk-critical">
-              ACTIVE FIRE DETECTED — {cell.active_fire_count} thermal anomalies
-            </span>
-          </div>
+        <div className="px-4 py-3 border-b border-border-subtle">
+          <div className="flex items-center gap-1.5 mb-2"><Thermometer className="w-3 h-3 text-accent-orange"/><span className="text-[10px] font-mono font-semibold text-text-secondary uppercase tracking-wider">Weather</span></div>
+          <div className="divide-y divide-border-subtle/30"><Row icon={Thermometer} label="Temperature" value={merged.temperature_2m} unit="°C"/><Row icon={Droplets} label="Humidity" value={merged.relative_humidity_2m} unit="%"/><Row icon={Wind} label="Wind" value={`${merged.wind_speed_10m} m/s ${compassLabel(merged.wind_direction_10m)}`}/><Row icon={Activity} label="VPD" value={merged.vpd} unit="kPa"/><Row icon={Droplets} label="Soil Moisture" value={merged.soil_moisture_0_to_7cm} unit="m³/m³"/></div>
         </div>
-      )}
-
-      {/* OBJ-2 Section */}
-      <div className="px-4 py-3 border-b border-border-subtle">
-        <div className="flex items-center gap-1.5 mb-2">
-          <Wind className="w-3 h-3 text-accent-orange" />
-          <span className="text-[10px] font-mono font-semibold text-text-secondary uppercase tracking-wider">OBJ-2 Spread Sim</span>
+        <div className="px-4 py-3 border-b border-border-subtle">
+          <div className="flex items-center gap-1.5 mb-2"><TreePine className="w-3 h-3 text-green-500"/><span className="text-[10px] font-mono font-semibold text-text-secondary uppercase tracking-wider">Terrain & Canopy</span></div>
+          <div className="divide-y divide-border-subtle/30"><Row icon={Mountain} label="Elevation" value={merged.elevation_m} unit="m"/><Row icon={Activity} label="Slope" value={merged.slope_degrees} unit="°"/><Row icon={TreePine} label="Canopy" value={merged.canopy_cover_pct} unit="%"/><Row icon={Layers} label="Fuel" value={merged.fuel_model_fbfm40}/><Row icon={TreePine} label="Vegetation" value={merged.vegetation_type}/></div>
+          {crown!=='none'&&<div className={`mt-2 px-2.5 py-2 rounded-lg border ${crown==='active'?'bg-risk-critical/8 border-risk-critical/25':'bg-risk-high/8 border-risk-high/25'}`}><span className={`text-[10px] font-mono font-semibold ${crown==='active'?'text-risk-critical':'text-risk-high'}`}>Crown Fire: {crown.toUpperCase()}</span></div>}
         </div>
-
-        {spread ? (
-          <>
-            <div className="grid grid-cols-2 gap-x-3 gap-y-1 mb-2">
-              {[
-                ['Rate',     `${spread.spread_rate_m_per_min} m/min`],
-                ['Area',     `${spread.spread_area_km2} km²`],
-                ['Horizon',  `${spread.time_horizon_hrs}h`],
-                ['Contain.', `${(spread.containment_probability * 100).toFixed(0)}%`],
-                ['Wind',     `${spread.wind_speed_m_s} m/s`],
-                ['Conf.',    `${(spread.confidence * 100).toFixed(0)}%`],
-              ].map(([k, v]) => (
-                <div key={k} className="flex justify-between">
-                  <span className="text-[10px] font-mono text-text-muted">{k}</span>
-                  <span className="text-[10px] font-mono text-text-primary">{v}</span>
-                </div>
-              ))}
-            </div>
-
-            <div className="mb-2">
-              <div className="text-[9px] font-mono text-text-muted mb-1">Affected cells ({spread.affected_cells.length})</div>
-              {spread.affected_cells.map(id => {
-                const ac = allCells.find(c => c.grid_id === id);
-                return (
-                  <div key={id} className="text-[9px] font-mono text-text-secondary leading-relaxed">
-                    {ac ? `· ${ac.name}` : `· ${id.slice(0, 12)}…`}
-                  </div>
-                );
-              })}
-            </div>
-
-            <div className="px-2 py-1.5 bg-status-partial/10 border border-status-partial/25 rounded">
-              <span className="text-[9px] font-mono text-status-partial">
-                MANUAL TRIGGER — Cell2Fire not in Airflow DAG
-              </span>
-            </div>
-
-            {spread.notes && (
-              <div className="mt-2 text-[9px] font-mono text-text-muted leading-relaxed">
-                {spread.notes}
-              </div>
-            )}
-          </>
-        ) : (
-          <div className="text-[10px] font-mono text-text-muted">
-            {cell.fire_detected_binary === 0 && cell.active_fire_count === 0
-              ? 'No active fire — simulation not triggered'
-              : 'Simulation pending manual trigger'}
-          </div>
-        )}
-      </div>
-
-      {/* Actions */}
-      <div className="px-4 py-3 space-y-2">
-        {spread && (
-          <button
-            onClick={() => onNavigate && onNavigate('reports')}
-            className="w-full flex items-center justify-between px-3 py-2 bg-accent-blue/10 border border-accent-blue/30 rounded text-accent-blue hover:bg-accent-blue/20 transition-colors"
-          >
-            <div className="flex items-center gap-1.5">
-              <FileText className="w-3 h-3" />
-              <span className="text-[10px] font-mono font-semibold">View Incident Report</span>
-            </div>
-            <ChevronRight className="w-3 h-3" />
-          </button>
-        )}
-        <button
-          onClick={() => onNavigate && onNavigate('obj2')}
-          className="w-full flex items-center justify-between px-3 py-2 bg-surface-2 border border-border-subtle rounded text-text-secondary hover:text-text-primary hover:bg-surface-3 transition-colors"
-        >
-          <div className="flex items-center gap-1.5">
-            <Wind className="w-3 h-3" />
-            <span className="text-[10px] font-mono">Open Spread Simulator</span>
-          </div>
-          <ChevronRight className="w-3 h-3" />
-        </button>
-      </div>
+        {merged.fire_detected_binary===1&&<div className="mx-4 my-2 px-3 py-2.5 bg-risk-critical/8 border border-risk-critical/25 rounded-lg glow-critical"><div className="flex items-center gap-2"><Flame className="w-3.5 h-3.5 text-risk-critical"/><span className="text-[10px] font-mono font-bold text-risk-critical">ACTIVE FIRE — {merged.active_fire_count} hotspots</span></div>{merged.mean_frp>0&&<div className="text-[9px] font-mono text-text-muted mt-1">FRP: {merged.mean_frp} MW</div>}</div>}
+        {spread&&<div className="px-4 py-3 border-b border-border-subtle"><div className="flex items-center gap-1.5 mb-2"><Navigation className="w-3 h-3 text-accent-orange"/><span className="text-[10px] font-mono font-semibold text-text-secondary uppercase tracking-wider">Spread Sim</span></div><div className="grid grid-cols-2 gap-x-3 gap-y-1">{[['Rate',`${spread.spread_rate_m_per_min} m/min`],['Area',`${spread.spread_area_km2} km²`],['Contain.',`${(spread.containment_probability*100).toFixed(0)}%`],['Wind',`${spread.wind_speed_m_s} m/s ${compassLabel(spread.wind_direction_deg)}`]].map(([k,v])=><div key={k} className="flex justify-between"><span className="text-[10px] font-mono text-text-muted">{k}</span><span className="text-[10px] font-mono text-text-primary">{v}</span></div>)}</div>{spread.notes&&<div className="mt-2 text-[9px] font-mono text-text-muted leading-relaxed">{spread.notes}</div>}</div>}
+        {merged.notes&&<div className="px-4 py-3 border-b border-border-subtle"><div className="flex items-center gap-1.5 mb-1"><Info className="w-3 h-3 text-accent-blue"/><span className="text-[10px] font-mono font-semibold text-text-secondary uppercase tracking-wider">Notes</span></div><div className="text-[10px] font-mono text-text-muted leading-relaxed">{merged.notes}</div></div>}
+        <div className="px-4 py-3 space-y-2">
+          <button onClick={startEdit} className="w-full flex items-center justify-between px-3 py-2.5 bg-accent-blue/8 border border-accent-blue/25 rounded-lg text-accent-blue hover:bg-accent-blue/15 transition-colors"><span className="flex items-center gap-1.5"><Pencil className="w-3 h-3"/><span className="text-[10px] font-mono font-semibold">Edit Features</span></span><ChevronRight className="w-3 h-3"/></button>
+          <button onClick={exportJSON} className="w-full flex items-center justify-between px-3 py-2.5 bg-surface-2 border border-border-subtle rounded-lg text-text-secondary hover:text-text-primary hover:bg-surface-3 transition-colors"><span className="flex items-center gap-1.5"><Download className="w-3 h-3"/><span className="text-[10px] font-mono">Export JSON</span></span><ChevronRight className="w-3 h-3"/></button>
+          {edits[cellId]&&<button onClick={()=>{const n={...edits};delete n[cellId];setEdits(n);localStorage.setItem('fireMapEdits',JSON.stringify(n));}} className="w-full flex items-center justify-center gap-1.5 px-3 py-2 text-text-muted hover:text-risk-critical text-[10px] font-mono transition-colors"><X className="w-3 h-3"/>Reset</button>}
+          {spread&&<button onClick={()=>onNavigate?.('reports')} className="w-full flex items-center justify-between px-3 py-2.5 bg-surface-2 border border-border-subtle rounded-lg text-text-secondary hover:text-text-primary transition-colors"><span className="flex items-center gap-1.5"><FileText className="w-3 h-3"/><span className="text-[10px] font-mono">Incident Report</span></span><ChevronRight className="w-3 h-3"/></button>}
+        </div>
+      </>}
     </div>
   );
 }
 
-// ─── Main component ───────────────────────────────────────────────────────────
+// ─── Main ─────────────────────────────────────────────────────────────────────
 export default function FireMap({ onNavigate }) {
-  const [activeLayer, setActiveLayer] = useState('risk');
-  const [selectedId,  setSelectedId]  = useState(null);
+  const { theme } = useTheme();
+  const isDark = theme === 'dark';
+  const [layers, setLayers] = useState({ colorLayer: 'risk', wind: true, crown: false, spread: false });
+  const [sel, setSel] = useState(null);
+  const [res, setRes] = useState('64km');
+  const [edits, setEdits] = useState(() => { try { return JSON.parse(localStorage.getItem('fireMapEdits')||'{}'); } catch { return {}; } });
 
-  const allCells = useMemo(() => [
-    ...CALIFORNIA_CELLS.map(c => ({ ...c, region: 'california' })),
-    ...TEXAS_CELLS.map(c => ({ ...c, region: 'texas' })),
-  ], []);
+  const allCells = useMemo(() => {
+    const ca = res === '22km' ? generateFireZoomCells(CALIFORNIA_CELLS_ENRICHED, OBJ2_SPREAD) : CALIFORNIA_CELLS_ENRICHED;
+    const tx = res === '22km' ? generateFireZoomCells(TEXAS_CELLS_ENRICHED, OBJ2_SPREAD) : TEXAS_CELLS_ENRICHED;
+    return [...ca.map(c=>({...c,region:'california'})), ...tx.map(c=>({...c,region:'texas'}))];
+  }, [res]);
 
-  const criticalCount = allCells.filter(c => getRiskTier(c.fire_risk_score) === 'CRITICAL').length;
-  const highCount     = allCells.filter(c => getRiskTier(c.fire_risk_score) === 'HIGH').length;
-  const activeFireCells = allCells.filter(c => c.fire_detected_binary === 1).length;
+  const stats = useMemo(() => ({
+    critical: allCells.filter(c=>getRiskTier(c.fire_risk_score)==='CRITICAL').length,
+    high: allCells.filter(c=>getRiskTier(c.fire_risk_score)==='HIGH').length,
+    activeFires: allCells.filter(c=>c.fire_detected_binary===1).length,
+  }), [allCells]);
 
-  function handleSelect(id) {
-    setSelectedId(prev => prev === id ? null : id);
-  }
+  // Spread arrows (source → target polylines)
+  const spreadArrows = useMemo(() => {
+    if (!layers.spread) return [];
+    const map = {}; allCells.forEach(c => { map[c.grid_id] = c; });
+    const arr = [];
+    Object.values(OBJ2_SPREAD).forEach(sim => {
+      const s = map[sim.source_cell]; if (!s) return;
+      sim.affected_cells.forEach(id => { if (id === sim.source_cell) return; const t = map[id]; if (t) arr.push({ key:`${sim.source_cell}-${id}`, from:[s.lat,s.lon], to:[t.lat,t.lon] }); });
+    });
+    return arr;
+  }, [layers.spread, allCells]);
+
+  const selCell = sel ? allCells.find(c => c.grid_id === sel) : null;
 
   return (
     <div className="flex h-full overflow-hidden bg-surface-0">
-      {/* ── Left: Map canvas ── */}
-      <div className="flex-1 flex flex-col overflow-hidden">
-        {/* Toolbar */}
-        <div className="flex items-center justify-between px-4 py-2 bg-surface-1 border-b border-border-subtle flex-shrink-0">
-          <div className="flex items-center gap-3">
-            {/* Layer toggle */}
-            <div className="flex items-center gap-0.5 bg-surface-2 border border-border-subtle rounded p-0.5">
-              {[
-                { id: 'risk',   label: 'OBJ-1 Risk',    icon: Activity },
-                { id: 'spread', label: 'OBJ-2 Spread',  icon: Wind },
-              ].map(({ id, label, icon: Icon }) => (
-                <button
-                  key={id}
-                  onClick={() => setActiveLayer(id)}
-                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-[10px] font-mono transition-colors
-                    ${activeLayer === id
-                      ? 'bg-surface-3 text-text-primary font-semibold'
-                      : 'text-text-muted hover:text-text-secondary'}`}
-                >
-                  <Icon className="w-3 h-3" />
-                  {label}
-                </button>
-              ))}
-            </div>
+      {/* Map area */}
+      <div className="flex-1 relative min-w-0">
+        <MapContainer center={DEFAULT_CENTER} zoom={DEFAULT_ZOOM} zoomControl={false}
+          style={{ height: '100%', width: '100%', background: isDark ? '#0c1117' : '#f5f1eb' }}
+          className="rounded-none">
 
-            {/* Status pills */}
-            <div className="flex items-center gap-1.5">
-              <span className="text-[9px] font-mono px-1.5 py-0.5 rounded border bg-risk-critical/15 text-risk-critical border-risk-critical/35">
-                {criticalCount} CRITICAL
-              </span>
-              <span className="text-[9px] font-mono px-1.5 py-0.5 rounded border bg-risk-high/15 text-risk-high border-risk-high/35">
-                {highCount} HIGH
-              </span>
-              <span className="text-[9px] font-mono px-1.5 py-0.5 rounded border bg-risk-critical/15 text-risk-critical border-risk-critical/35">
-                <Flame className="w-2.5 h-2.5 inline mr-0.5" />
-                {activeFireCells} ACTIVE FIRE
-              </span>
-            </div>
-          </div>
+          <TileLayer key={theme} url={TILES[theme] || TILES.dark} attribution={TILE_ATTR} maxZoom={18} />
 
-          <div className="flex items-center gap-3">
-            {activeLayer === 'spread' && (
-              <div className="flex items-center gap-1.5 px-2 py-1 bg-status-partial/10 border border-status-partial/25 rounded">
-                <Info className="w-2.5 h-2.5 text-status-partial" />
-                <span className="text-[9px] font-mono text-status-partial">Cell2Fire: manual trigger only</span>
-              </div>
-            )}
-            <div className="text-[10px] font-mono text-text-muted">
-              H3 · {MAP_META.grid_resolution_km}km · {MAP_META.mode}
-            </div>
-          </div>
-        </div>
+          {/* Fly to selected cell */}
+          {selCell && <FlyTo lat={selCell.lat} lon={selCell.lon} />}
 
-        {/* Legend */}
-        <div className="flex items-center gap-4 px-4 py-1.5 bg-surface-1 border-b border-border-subtle flex-shrink-0">
-          <span className="text-[9px] font-mono text-text-muted uppercase tracking-wider">Legend:</span>
-          {Object.entries(TIER_CFG).map(([tier, cfg]) => (
-            <div key={tier} className="flex items-center gap-1">
-              <div className="w-2.5 h-2.5 rounded-sm" style={{ background: cfg.fill, opacity: 0.8 }} />
-              <span className="text-[9px] font-mono text-text-muted">{tier}</span>
-            </div>
+          {/* Hex cells */}
+          {allCells.map(cell => {
+            const m = edits[cell.grid_id] ? { ...cell, ...edits[cell.grid_id] } : cell;
+            const fill = hexFill(m, layers.colorLayer);
+            const isSel = cell.grid_id === sel;
+            const boundary = hexBoundary(cell.lat, cell.lon, hexRadius(cell));
+            return (
+              <Polygon key={cell.grid_id} positions={boundary}
+                pathOptions={{
+                  fillColor: fill, fillOpacity: isDark ? 0.7 : 0.6,
+                  color: isSel ? '#3b82f6' : isDark ? 'rgba(0,0,0,0.6)' : 'rgba(0,0,0,0.25)',
+                  weight: isSel ? 3 : 0.8,
+                  opacity: isSel ? 1 : 0.6,
+                }}
+                eventHandlers={{ click: () => setSel(p => p === cell.grid_id ? null : cell.grid_id) }}>
+                <Tooltip sticky className={isDark ? 'leaflet-tooltip-dark' : 'leaflet-tooltip-light'}>
+                  <div className="font-mono">
+                    <div className="text-xs font-semibold">{cell.name}</div>
+                    <div className="text-[10px] opacity-80">
+                      Risk: {(m.fire_risk_score*100).toFixed(0)}% — {getRiskTier(m.fire_risk_score)}
+                      {m.fire_detected_binary===1&&<span className="text-red-400 font-bold ml-1">FIRE</span>}
+                    </div>
+                  </div>
+                </Tooltip>
+              </Polygon>
+            );
+          })}
+
+          {/* Fire pulse rings */}
+          {allCells.filter(c=>c.fire_detected_binary===1).map(c=>(
+            <CircleMarker key={`fp-${c.grid_id}`} center={[c.lat,c.lon]} radius={18}
+              pathOptions={{color:'#ff4400',weight:2,fillColor:'#ff4400',fillOpacity:0.1,dashArray:'4,4'}}
+              className="fire-pulse-ring" />
           ))}
-          <div className="flex items-center gap-1 ml-2">
-            <div className="w-2.5 h-2.5 rounded-full border border-risk-critical animate-pulse" style={{ background: 'transparent' }} />
-            <span className="text-[9px] font-mono text-text-muted">Active fire</span>
-          </div>
-          {activeLayer === 'spread' && (
-            <div className="flex items-center gap-1">
-              <div className="w-8 h-1.5 rounded" style={{ background: SPREAD_FILL, border: `1px dashed ${SPREAD_STR}` }} />
-              <span className="text-[9px] font-mono text-text-muted">Spread area</span>
-            </div>
-          )}
-        </div>
 
-        {/* Maps */}
-        <div className="flex-1 overflow-auto p-4">
-          <div className="flex flex-wrap gap-6 justify-center">
-            <RegionMap
-              cells={CALIFORNIA_CELLS}
-              bounds={CA_BOUNDS}
-              label="California"
-              activeLayer={activeLayer}
-              selectedId={selectedId}
-              spreadData={OBJ2_SPREAD}
-              onSelect={handleSelect}
-              w={380}
-              h={400}
-            />
-            <RegionMap
-              cells={TEXAS_CELLS}
-              bounds={TX_BOUNDS}
-              label="Texas"
-              activeLayer={activeLayer}
-              selectedId={selectedId}
-              spreadData={OBJ2_SPREAD}
-              onSelect={handleSelect}
-              w={380}
-              h={380}
-            />
-          </div>
+          {/* Spread perimeters */}
+          {layers.spread && Object.values(OBJ2_SPREAD).map(sim => (
+            <Polygon key={`sp-${sim.source_cell}`}
+              positions={sim.perimeter_coords.map(({lat,lon})=>[lat,lon])}
+              pathOptions={{color:'#fb923c',weight:1.8,dashArray:'8,5',fillColor:'#fb923c',fillOpacity:0.06}} />
+          ))}
 
-          {/* Map context caption */}
-          <div className="mt-4 px-2 text-[9px] font-mono text-text-muted opacity-60">
-            Geographic monitoring zones — California &amp; Texas · H3 res-2 · ~64km cells · Outlines approximate
-          </div>
+          {/* Spread direction arrows */}
+          {spreadArrows.map(a=>(
+            <Polyline key={a.key} positions={[a.from,a.to]}
+              pathOptions={{color:'#fb923c',weight:2.5,dashArray:'6,4',opacity:0.7}} />
+          ))}
 
-          {/* System meta footer */}
-          <div className="mt-2 px-2 flex flex-wrap gap-4 text-[9px] font-mono text-text-muted">
-            <span>OBJ-1: {MAP_META.obj1_model}</span>
-            <span>Last inference: {MAP_META.last_obj1_inference.replace('T',' ').slice(0,19)} UTC</span>
-            <span>OBJ-2: {MAP_META.obj2_model}</span>
-            <span>Last sim: {MAP_META.last_obj2_simulation.replace('T',' ').slice(0,19)} UTC</span>
-            <span className="text-status-partial">OBJ-2 trigger: {MAP_META.obj2_trigger}</span>
-          </div>
-        </div>
+          {/* Wind arrows */}
+          {layers.wind && allCells.filter(c=>c.wind_direction_10m!=null).map(c=>(
+            <Marker key={`w-${c.grid_id}`} position={[c.lat,c.lon]}
+              icon={makeWindIcon(edits[c.grid_id]?.wind_direction_10m ?? c.wind_direction_10m, edits[c.grid_id]?.wind_speed_10m ?? c.wind_speed_10m, isDark)}
+              interactive={false} />
+          ))}
+
+          {/* Crown badges */}
+          {layers.crown && allCells.map(c=>{
+            const m = edits[c.grid_id] ? {...c,...edits[c.grid_id]} : c;
+            const cr = deriveCrownFire(m.canopy_cover_pct,m.canopy_base_height_m,m.canopy_bulk_density);
+            if(cr==='none') return null;
+            return <Marker key={`cr-${c.grid_id}`} position={[c.lat,c.lon]} icon={makeCrownIcon(cr)} interactive={false}/>;
+          })}
+        </MapContainer>
+
+        {/* Floating controls */}
+        <LayerBar layers={layers} setLayers={setLayers} stats={stats} resolution={res} setResolution={setRes} />
+        <Legend layers={layers} />
       </div>
 
-      {/* ── Right: Detail panel ── */}
-      <div className="w-72 flex-shrink-0 border-l border-border-subtle bg-surface-1 flex flex-col">
+      {/* Detail panel */}
+      <div className="w-[280px] flex-shrink-0 border-l border-border-subtle bg-surface-1 flex flex-col z-[1000]">
         <div className="px-4 py-2.5 border-b border-border-subtle flex items-center gap-2 flex-shrink-0">
-          <MapPin className="w-3.5 h-3.5 text-text-muted" />
-          <span className="text-[10px] font-mono font-semibold text-text-secondary uppercase tracking-wider">
-            Cell Detail
-          </span>
-          {selectedId && (
-            <button
-              onClick={() => setSelectedId(null)}
-              className="ml-auto text-[9px] font-mono text-text-muted hover:text-text-primary"
-            >
-              clear
-            </button>
-          )}
+          <MapPin className="w-3.5 h-3.5 text-text-muted"/><span className="text-[10px] font-mono font-semibold text-text-secondary uppercase tracking-wider">Cell Detail</span>
+          {sel&&<button onClick={()=>setSel(null)} className="ml-auto text-[9px] font-mono text-text-muted hover:text-text-primary">clear</button>}
         </div>
-        <div className="flex-1 overflow-hidden">
-          <DetailPanel
-            cellId={selectedId}
-            allCells={allCells}
-            activeLayer={activeLayer}
-            onNavigate={onNavigate}
-          />
-        </div>
+        <div className="flex-1 overflow-hidden"><DetailPanel cellId={sel} allCells={allCells} edits={edits} setEdits={setEdits} onNavigate={onNavigate}/></div>
       </div>
     </div>
   );

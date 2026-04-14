@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import ThemeProvider from './components/ui/ThemeProvider';
 import Sidebar from './components/layout/Sidebar';
 import Header from './components/layout/Header';
 import Overview from './components/overview/Overview';
@@ -27,14 +28,16 @@ export default function App() {
   const ViewComponent = VIEWS[activeView] ?? Overview;
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-surface-0">
-      <Sidebar activeView={activeView} onNavigate={setActiveView} />
-      <div className="flex flex-col flex-1 overflow-hidden">
-        <Header activeView={activeView} />
-        <main className="flex-1 overflow-hidden">
-          <ViewComponent onNavigate={setActiveView} />
-        </main>
+    <ThemeProvider>
+      <div className="flex h-screen w-screen overflow-hidden bg-surface-0 bg-dot-grid">
+        <Sidebar activeView={activeView} onNavigate={setActiveView} />
+        <div className="flex flex-col flex-1 overflow-hidden">
+          <Header activeView={activeView} />
+          <main className="flex-1 overflow-hidden">
+            <ViewComponent onNavigate={setActiveView} />
+          </main>
+        </div>
       </div>
-    </div>
+    </ThemeProvider>
   );
 }
