@@ -537,7 +537,7 @@ def simulate_spread_timeseries(
                 continue
 
             try:
-                result = sim.simulate(df, cell_id, ignition_prob)
+                result = sim._simulate_once(df, cell_id, ignition_prob)
             except Exception as exc:
                 logger.warning("Propagation: sim failed for %s: %s", cell_id, exc)
                 continue
@@ -934,7 +934,7 @@ def _run_sensitivity(
 ) -> dict[str, Any]:
     """Run OAT sensitivity analysis for one fire."""
     base_df, ign_id = _make_df(fire["lat"], fire["lon"], fire["conditions"])
-    base_result = sim.simulate(base_df, ign_id, fire["ignition_prob"])
+    base_result = sim._simulate_once(base_df, ign_id, fire["ignition_prob"])
 
     sensitivity = {}
 
@@ -963,7 +963,7 @@ def _run_sensitivity(
 
             try:
                 p_df, p_id = _make_df(fire["lat"], fire["lon"], perturbed)
-                p_result = sim.simulate(p_df, p_id, fire["ignition_prob"])
+                p_result = sim._simulate_once(p_df, p_id, fire["ignition_prob"])
 
                 entry = {"perturbation": delta, "input_value": round(perturbed[feature], 2)}
                 for out_key in _OUTPUTS:
@@ -987,7 +987,7 @@ def _run_sensitivity(
         perturbed["fuel_model_fbfm40"] = float(fm)
         try:
             p_df, p_id = _make_df(fire["lat"], fire["lon"], perturbed)
-            p_result = sim.simulate(p_df, p_id, fire["ignition_prob"])
+            p_result = sim._simulate_once(p_df, p_id, fire["ignition_prob"])
             entry = {"fuel_model": fm}
             for out_key in _OUTPUTS:
                 entry[out_key] = round(p_result.get(out_key, 0), 4)
@@ -1131,13 +1131,10 @@ def _print_realtime(results: dict):
         mc = data.get("monte_carlo", {})
         inputs = r.get("inputs_used", {})
 
-        # Hybrid speed (40% deterministic + 60% MC p90)
-        DET_W, MC_W = 0.4, 0.6
-        det_speed = r['spread_speed_kmh']
-        mc_p50    = mc.get('spread_speed_kmh_p50', det_speed)
-        mc_p90    = mc.get('spread_speed_kmh_p90', det_speed)
-        h_speed   = DET_W * det_speed + MC_W * mc_p90
-        h_dir     = mc.get('dominant_direction_deg', r['spread_direction_deg'])
+        # MC p90 is the primary speed (already ensemble-based)
+        mc_p90  = mc.get('spread_speed_kmh_p90', r['spread_speed_kmh'])
+        h_speed = mc_p90
+        h_dir   = mc.get('dominant_direction_deg', r['spread_direction_deg'])
 
         fire_detected = r.get("fire_detected", False)
         status = "ACTIVE FIRE DETECTED" if fire_detected else "No active fire -- risk assessment"
@@ -1166,7 +1163,7 @@ def _print_realtime(results: dict):
 
         # ── Spread forecast ───────────────────────────────────────────────
         print(f"\n  Spread forecast:")
-        print(f"    hybrid speed  : {h_speed:.4f} km/h (40% det + 60% MC p90)")
+        print(f"    spread speed  : {h_speed:.4f} km/h (MC p90, N=100)")
         print(f"\n    Distance projection:")
         for hr in [1, 2, 3, 6]:
             dist = h_speed * hr
@@ -1283,7 +1280,7 @@ def main(
             logger.info("Evaluating: %s", fire["name"])
             df, ign_id = _make_df(fire["lat"], fire["lon"], fire["conditions"])
             t0 = time.perf_counter()
-            result = sim.simulate(df, ign_id, fire["ignition_prob"])
+            result = sim._simulate_once(df, ign_id, fire["ignition_prob"])
             elapsed_ms = (time.perf_counter() - t0) * 1000
 
             gate = compute_physics_gate(result, fire["ground_truth"])
@@ -1400,8 +1397,14 @@ def main(
             ign_id, ign_prob = _select_ignition(df)
 
             try:
-                # ── Step 1: single-cell fire behavior ────────────────────────
-                result = sim.simulate(df, ign_id, ign_prob)
+                # ── Monte Carlo N=100 — primary simulation (single call) ──────
+                PROPAGATION_HOURS = 6
+                logger.info("Running Monte Carlo N=100 from %s …", ign_id)
+                result = sim.simulate_monte_carlo(
+                    df, ign_id, ign_prob,
+                    n_simulations=100,
+                    horizon_hours=float(PROPAGATION_HOURS),
+                )
 
                 fire_row = df[df["grid_id"] == ign_id]
                 fire_detected = (
@@ -1412,34 +1415,8 @@ def main(
                 result["fire_detected"] = fire_detected
                 result["input_rh_pct"] = result.get("inputs_used", {}).get("relative_humidity_pct")
 
-                # ── Step 2: threatened cell analysis ─────────────────────────
                 ta = analyze_threatened_cells(result, horizon_hours=1.0)
                 iq = compute_input_quality(result)
-                sanity = sanity_check_output(result)
-                prop_honesty = compute_propagation_honesty(
-                    result, intercell_km=25.0 if res_km == 22 else 93.0
-                )
-
-                # ── Step 3: multi-hour propagation (1h, 2h, 3h, ... 6h) ─────
-                # At 22km (intercell ~25km), fire reaching a neighbor within 1h
-                # needs rate >= 25 km/h — only extreme fires (Santa Ana).
-                # Show hourly steps so operators see progression over time.
-                PROPAGATION_HOURS = 6
-                logger.info("Running %dh spread propagation from %s …", PROPAGATION_HOURS, ign_id)
-                spread = simulate_spread_timeseries(
-                    df, ign_id, ign_prob,
-                    hours=float(PROPAGATION_HOURS),
-                    timestep_h=1.0,
-                    sim=sim,
-                )
-
-                # ── Step 4: Monte Carlo N=100 weather perturbations ──────────
-                logger.info("Running Monte Carlo N=100 from %s …", ign_id)
-                mc_result = sim.simulate_monte_carlo(
-                    df, ign_id, ign_prob,
-                    n_simulations=100,
-                    horizon_hours=float(PROPAGATION_HOURS),
-                )
 
                 rt_entry = {
                     "ignition_cell": ign_id,
@@ -1456,25 +1433,19 @@ def main(
                     },
                     "threatened_analysis": ta,
                     "input_quality": iq,
-                    "spread_propagation": {
-                        "hours_simulated":  spread["hours_simulated"],
-                        "total_burned":     spread["total_burned"],
-                        "burned_cells":     spread["burned_cells"],
-                        "timeline":         spread["timeline"],
-                    },
                     "monte_carlo": {
-                        "n_simulations":              mc_result["n_simulations"],
-                        "horizon_hours":              mc_result["horizon_hours"],
-                        "spread_speed_kmh_p50":       mc_result["spread_speed_kmh_p50"],
-                        "spread_speed_kmh_p90":       mc_result["spread_speed_kmh_p90"],
-                        "spread_speed_kmh_p95":       mc_result["spread_speed_kmh_p95"],
-                        "spread_speed_kmh_mean":      mc_result["spread_speed_kmh_mean"],
-                        "spread_speed_kmh_std":       mc_result["spread_speed_kmh_std"],
-                        "dominant_direction_deg":     mc_result["dominant_direction_deg"],
-                        "direction_uncertainty_deg":  mc_result["direction_uncertainty_deg"],
-                        "crown_fire_probability":     mc_result["crown_fire_probability"],
-                        "neighbor_burn_probabilities": mc_result["neighbor_burn_probabilities"],
-                        "max_neighbor_burn_probability": mc_result["max_neighbor_burn_probability"],
+                        "n_simulations":               result["n_simulations"],
+                        "horizon_hours":               result["horizon_hours"],
+                        "spread_speed_kmh_p50":        result["spread_speed_kmh_p50"],
+                        "spread_speed_kmh_p90":        result["spread_speed_kmh_p90"],
+                        "spread_speed_kmh_p95":        result["spread_speed_kmh_p95"],
+                        "spread_speed_kmh_mean":       result["spread_speed_kmh_mean"],
+                        "spread_speed_kmh_std":        result["spread_speed_kmh_std"],
+                        "dominant_direction_deg":      result["dominant_direction_deg"],
+                        "direction_uncertainty_deg":   result["direction_uncertainty_deg"],
+                        "crown_fire_probability":      result["crown_fire_probability"],
+                        "neighbor_burn_probabilities": result["neighbor_burn_probabilities"],
+                        "max_neighbor_burn_probability": result["max_neighbor_burn_probability"],
                     },
                     # Internal refs for OBJ-3 report generation (not serialized)
                     "_full_result": result,

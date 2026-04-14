@@ -218,39 +218,31 @@ def run_obj2(df: pd.DataFrame, top_n: int = 1, generate_report: bool = False) ->
         print(f"{'-'*70}")
 
         try:
-            result = sim.simulate(df, ign_id, ign_prob)
+            # Single MC call — returns fire behavior + spread statistics
+            result = sim.simulate_monte_carlo(df, ign_id, ign_prob, n_simulations=100, horizon_hours=6.0)
 
-            # MC
-            mc = sim.simulate_monte_carlo(df, ign_id, ign_prob, n_simulations=100, horizon_hours=6.0)
-
-            DET_W, MC_W = 0.4, 0.6
-            det_speed   = result["spread_speed_kmh"]
-            mc_p50      = mc.get("spread_speed_kmh_p50", det_speed)
-            mc_p90      = mc.get("spread_speed_kmh_p90", det_speed)
-            h_speed     = DET_W * det_speed + MC_W * mc_p90
-            h_dir       = mc.get("dominant_direction_deg", result["spread_direction_deg"])
-
-            inputs = result.get("inputs_used", {})
-            wind_kmh = inputs.get("wind_speed_10m_ms", 0) * 3.6
-            rh = inputs.get("relative_humidity_pct", 0)
-            crown_prob = mc.get("crown_fire_probability", 0)
+            mc_p90    = result.get("spread_speed_kmh_p90", result["spread_speed_kmh"])
+            h_dir     = result.get("dominant_direction_deg", result["spread_direction_deg"])
+            inputs    = result.get("inputs_used", {})
+            wind_ms   = inputs.get("wind_speed_10m_ms", 0) or 0
+            wind_kmh  = wind_ms * 3.6
+            wind_dir  = inputs.get("wind_from_direction_deg")
+            rh        = inputs.get("relative_humidity_pct", 0)
+            crown_prob = result.get("crown_fire_probability", 0)
 
             print(f"\n  Fire behavior:")
             print(f"    direction     : {h_dir:.1f} deg ({result['dominant_factor']})")
             print(f"    intensity     : {result['byram_intensity_kwm']:.1f} kW/m ({result['crown_fire_status']})")
-            print(f"    wind          : {wind_kmh:.1f} km/h from {inputs.get('wind_from_direction_deg', 0):.0f} deg")
+            wind_str = f"{wind_kmh:.1f} km/h from {wind_dir:.0f} deg" if wind_kmh > 0 and wind_dir is not None else "N/A (no wind data for this cell)"
+            print(f"    wind          : {wind_str}")
             print(f"    moisture      : DFMC={result['dead_fuel_moisture_pct']:.1f}% (RH={rh:.0f}%)")
             print(f"    crown status  : {result['crown_fire_status']} (prob {crown_prob:.1%})")
 
-            n_sims = mc.get("n_simulations", 100)
-            print(f"\n  Monte Carlo spread forecast (N={n_sims}, 6h horizon):")
-            print(f"    speed p50     : {mc_p50:.4f} km/h")
-            print(f"    speed p90     : {mc_p90:.4f} km/h (worst-case)")
-            print(f"    hybrid speed  : {h_speed:.4f} km/h (40% det + 60% MC p90)")
-
+            print(f"\n  Spread forecast:")
+            print(f"    spread speed  : {mc_p90:.4f} km/h (MC p90, N=100)")
             print(f"\n    Distance projection:")
             for hr in [1, 2, 3, 6]:
-                dist = h_speed * hr
+                dist = mc_p90 * hr
                 print(f"      t={hr}h : {dist:.2f} km")
 
             # ── OBJ-3 report generation ───────────────────────────────────
