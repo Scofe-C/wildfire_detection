@@ -2,11 +2,11 @@ name: Model Pipeline CI/CD
 
 on:
   push:
-    branches: [master, main, develop]
+    branches: [master]
     paths:
       - "model-pipeline/**"
   pull_request:
-    branches: [master, main, develop]
+    branches: [master]
     paths:
       - "model-pipeline/**"
   workflow_dispatch:
@@ -19,10 +19,6 @@ env:
   PYTHON_VERSION: "3.11"
   GCS_BUCKET: "wildfire-mlops-123"
   GCP_REGION: "us-central1"
-
-concurrency:
-  group: model-ci-${{ github.ref }}
-  cancel-in-progress: true
 
 jobs:
   # ── Stage 1: Lint ────────────────────────────────────────────────────────
@@ -46,12 +42,6 @@ jobs:
             --select=E,F \
             --ignore=E501,F401
 
-      - name: Type check with mypy
-        working-directory: model-pipeline
-        run: |
-          pip install mypy types-PyYAML types-requests
-          mypy src/ --ignore-missing-imports --no-error-summary || true
-
   # ── Stage 2: Unit tests ──────────────────────────────────────────────────
   unit-tests:
     name: "Stage 2 — Unit Tests"
@@ -67,6 +57,9 @@ jobs:
       - name: Install dependencies
         working-directory: model-pipeline
         run: pip install -r requirements.txt
+
+      - name: Install pytest-cov
+        run: pip install pytest-cov
 
       - name: Run unit tests (OBJ-1 only, skip OBJ-2/3)
         working-directory: model-pipeline
@@ -234,20 +227,22 @@ jobs:
             --no-allow-unauthenticated \
             --quiet
 
-      - name: Smoke test — verify Cloud Run health
+      - name: Smoke test — verify /health endpoint
         run: |
           CLOUD_RUN_URL=$(gcloud run services describe wildfire-inference \
             --region ${{ env.GCP_REGION }} --format "value(status.url)")
-          for i in 1 2 3 4 5; do
-            if curl -sf --max-time 10 "${CLOUD_RUN_URL}/health" > /dev/null 2>&1; then
-              echo "Smoke test PASSED"
-              exit 0
-            fi
-            echo "Attempt $i — waiting 10s..."
-            sleep 10
+          echo "Smoke testing: ${CLOUD_RUN_URL}/health"
+          TOKEN=$(gcloud auth print-identity-token)
+          for i in 1 2 3; do
+            HTTP_STATUS=$(curl -sf -o /dev/null -w "%{http_code}" \
+              -H "Authorization: Bearer ${TOKEN}" \
+              --max-time 10 "${CLOUD_RUN_URL}/health") && break || sleep 10
           done
-          echo "Smoke test FAILED — /health not responding"
-          exit 1
+          if [ "$HTTP_STATUS" != "200" ]; then
+            echo "Smoke test FAILED — /health returned HTTP ${HTTP_STATUS}"
+            exit 1
+          fi
+          echo "Smoke test PASSED — service is healthy"
 
       - name: Notify Slack on success
         if: success()

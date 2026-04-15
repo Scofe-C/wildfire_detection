@@ -363,6 +363,91 @@ async def get_pipeline_status() -> JSONResponse:
 
 
 # ---------------------------------------------------------------------------
+# API — Airflow proxy (DAG status + run history)
+# ---------------------------------------------------------------------------
+
+_AIRFLOW_URL  = os.getenv("AIRFLOW_URL", "http://airflow-webserver:8080")
+_AIRFLOW_USER = os.getenv("AIRFLOW_USER", "admin")
+_AIRFLOW_PASS = os.getenv("AIRFLOW_PASS", "admin")
+_AIRFLOW_DAG  = "wildfire_data_pipeline"
+
+
+def _airflow_get(path: str) -> dict:
+    import base64
+    import urllib.request as _req
+
+    url  = f"{_AIRFLOW_URL}/api/v1/{path}"
+    cred = base64.b64encode(f"{_AIRFLOW_USER}:{_AIRFLOW_PASS}".encode()).decode()
+    request = _req.Request(url, headers={
+        "Authorization": f"Basic {cred}",
+        "Content-Type": "application/json",
+    })
+    with _req.urlopen(request, timeout=5) as resp:
+        return json.loads(resp.read())
+
+
+@app.get("/api/airflow/dag-status")
+async def airflow_dag_status() -> JSONResponse:
+    """Proxy Airflow GET /api/v1/dags/{dag_id} + last run state."""
+    def _fetch() -> dict:
+        try:
+            dag  = _airflow_get(f"dags/{_AIRFLOW_DAG}")
+            runs = _airflow_get(f"dags/{_AIRFLOW_DAG}/dagRuns?limit=1&order_by=-start_date")
+            last = (runs.get("dag_runs") or [{}])[0]
+            return {
+                "dag_id":            _AIRFLOW_DAG,
+                "is_paused":         dag.get("is_paused", False),
+                "is_active":         dag.get("is_active", True),
+                "schedule_interval": dag.get("schedule_interval"),
+                "last_run_state":    last.get("state"),
+                "last_run_start":    last.get("start_date"),
+                "last_run_end":      last.get("end_date"),
+                "airflow_online":    True,
+            }
+        except Exception as exc:
+            logger.warning("airflow dag-status failed: %s", exc)
+            return {"airflow_online": False, "error": str(exc)}
+
+    data = await asyncio.to_thread(_fetch)
+    return JSONResponse(data)
+
+
+@app.get("/api/airflow/dag-runs")
+async def airflow_dag_runs(limit: int = 8) -> JSONResponse:
+    """Proxy Airflow GET /api/v1/dags/{dag_id}/dagRuns — recent run history."""
+    def _fetch() -> dict:
+        try:
+            raw = _airflow_get(f"dags/{_AIRFLOW_DAG}/dagRuns?limit={limit}&order_by=-start_date")
+            result = []
+            for r in raw.get("dag_runs", []):
+                start = r.get("start_date")
+                end   = r.get("end_date")
+                dur   = None
+                if start and end:
+                    try:
+                        from datetime import datetime as _dt
+                        s = _dt.fromisoformat(start.replace("Z", "+00:00"))
+                        e = _dt.fromisoformat(end.replace("Z", "+00:00"))
+                        dur = int((e - s).total_seconds())
+                    except Exception:
+                        pass
+                result.append({
+                    "run_id":     r.get("dag_run_id"),
+                    "state":      r.get("state"),
+                    "start_date": start,
+                    "end_date":   end,
+                    "duration_s": dur,
+                })
+            return {"runs": result, "airflow_online": True}
+        except Exception as exc:
+            logger.warning("airflow dag-runs failed: %s", exc)
+            return {"runs": [], "airflow_online": False, "error": str(exc)}
+
+    data = await asyncio.to_thread(_fetch)
+    return JSONResponse(data)
+
+
+# ---------------------------------------------------------------------------
 # API — notifications
 # ---------------------------------------------------------------------------
 
