@@ -103,13 +103,13 @@ stages:
     deps:
     - path: data/processed/firms
       hash: md5
-      md5: 8cb1373728281d6957d08f93758aa011.dir
-      size: 19920
+      md5: b3326926748d59381569f1ffa17052ea.dir
+      size: 16788
       nfiles: 4
     - path: data/processed/weather
       hash: md5
-      md5: 37b87da3950cd666a6119a938a08e156.dir
-      size: 23472
+      md5: 74865f3b1a46d734263a340aa6892fb3.dir
+      size: 23575
       nfiles: 2
     - path: data/static
       hash: md5
@@ -131,9 +131,9 @@ stages:
     outs:
     - path: data/processed/fused
       hash: md5
-      md5: d8e1719ba7443121613bbdff7fe3b907.dir
-      size: 1679049
-      nfiles: 43
+      md5: 3c4d61e5e5d9b9bf3eec1468feb906d8.dir
+      size: 1913913
+      nfiles: 51
   validate_schema:
     cmd: python scripts/validation/validate_schema.py --input 
       data/processed/fused --resolution-km 64 --output-dir 

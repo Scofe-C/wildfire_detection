@@ -363,6 +363,131 @@ async def get_pipeline_status() -> JSONResponse:
 
 
 # ---------------------------------------------------------------------------
+# API — notifications
+# ---------------------------------------------------------------------------
+
+@app.get("/api/notifications")
+async def get_notifications() -> JSONResponse:
+    """Aggregate OBJ-1/2/3 pipeline events into notification feed for frontend bell."""
+
+    def _build() -> list[dict]:
+        _, bkt, _ = _gcs_client()
+        events: list[dict] = []
+
+        for region in ["california", "texas"]:
+            label = region.title()
+
+            # ── OBJ-1: ignition inference ──────────────────────────────────
+            inf_blob = bkt.blob(f"inference/latest/{region}_latest.json")
+            if inf_blob.exists():
+                try:
+                    d = json.loads(inf_blob.download_as_bytes())
+                    ts = d.get("run_timestamp", "")
+                    summary = d.get("summary", {})
+                    flagged  = summary.get("flagged_cells", 0)
+                    total    = summary.get("total_cells", 0)
+                    max_risk = summary.get("max_risk_score", 0)
+                    firms    = d.get("firms_hotspot_count", 0)
+                    tiers    = summary.get("risk_tier_counts", {})
+
+                    events.append({
+                        "id":        f"obj1_{region}_{ts}",
+                        "type":      "success",
+                        "source":    "OBJ-1",
+                        "title":     f"OBJ-1 Inference Complete — {label}",
+                        "message":   f"{flagged}/{total} cells flagged · max risk {max_risk:.2f}",
+                        "timestamp": ts,
+                        "region":    region,
+                    })
+
+                    if firms > 0:
+                        events.append({
+                            "id":        f"firms_{region}_{ts}",
+                            "type":      "fire",
+                            "source":    "FIRMS",
+                            "title":     f"Active Fire Hotspots — {label}",
+                            "message":   f"{firms} FIRMS hotspot(s) detected in region",
+                            "timestamp": ts,
+                            "region":    region,
+                        })
+
+                    critical = tiers.get("CRITICAL", 0)
+                    if critical > 0:
+                        events.append({
+                            "id":        f"critical_{region}_{ts}",
+                            "type":      "warning",
+                            "source":    "OBJ-1",
+                            "title":     f"Critical Risk Cells — {label}",
+                            "message":   f"{critical} cell(s) upgraded to CRITICAL tier",
+                            "timestamp": ts,
+                            "region":    region,
+                        })
+                except Exception:
+                    pass
+
+            # ── OBJ-2: fire spread simulation ─────────────────────────────
+            sim_blob = bkt.blob(f"simulation/latest/{region}_latest.json")
+            if sim_blob.exists():
+                try:
+                    d = json.loads(sim_blob.download_as_bytes())
+                    ts    = d.get("run_timestamp", "")
+                    speed = d.get("spread_speed_kmh", 0) or 0
+                    crown = d.get("crown_fire_status", "NO_CROWN") or "NO_CROWN"
+                    ntype = "warning" if crown not in ("NO_CROWN", "no_crown", "") else "success"
+                    events.append({
+                        "id":        f"obj2_{region}_{ts}",
+                        "type":      ntype,
+                        "source":    "OBJ-2",
+                        "title":     f"OBJ-2 Spread Simulation — {label}",
+                        "message":   f"Speed {speed:.1f} km/h · Crown: {crown.replace('_', ' ').title()}",
+                        "timestamp": ts,
+                        "region":    region,
+                    })
+                except Exception:
+                    pass
+
+        # ── OBJ-3: most recent reports from disk ───────────────────────────
+        reports_dir = _ROOT / "reports" / "disaster_reports"
+        if reports_dir.exists():
+            report_files = sorted(
+                (f for f in reports_dir.rglob("*.json")
+                 if "review_manifest" not in f.name and "incident_state" not in f.name),
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )[:6]
+            for json_file in report_files:
+                try:
+                    d = json.loads(json_file.read_text(encoding="utf-8"))
+                    ts     = d.get("generated_at", "")
+                    risk   = d.get("risk_level", "?")
+                    reg    = d.get("region", "unknown").title()
+                    rtype  = d.get("report_type", "report").replace("_", " ").title()
+                    ntype  = "warning" if risk in ("CRITICAL", "HIGH") else "success"
+                    events.append({
+                        "id":        f"obj3_{json_file.stem}",
+                        "type":      ntype,
+                        "source":    "OBJ-3",
+                        "title":     f"OBJ-3 Report Generated — {reg}",
+                        "message":   f"{rtype} · Risk level: {risk}",
+                        "timestamp": ts,
+                        "region":    d.get("region", ""),
+                    })
+                except Exception:
+                    continue
+
+        # Sort newest-first, cap at 30
+        events.sort(key=lambda e: e.get("timestamp", ""), reverse=True)
+        return events[:30]
+
+    try:
+        data = await asyncio.to_thread(_build)
+        return JSONResponse(data)
+    except Exception as exc:
+        logger.warning("notifications endpoint failed: %s", exc)
+        return JSONResponse([])
+
+
+# ---------------------------------------------------------------------------
 # API — list reports
 # ---------------------------------------------------------------------------
 
