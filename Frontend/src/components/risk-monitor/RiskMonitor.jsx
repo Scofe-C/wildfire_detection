@@ -1,7 +1,8 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { AlertTriangle, Wind, Thermometer, Droplets, Flame, MapPin } from 'lucide-react';
 import { CALIFORNIA_CELLS, TEXAS_CELLS, getRiskTier, RISK_THRESHOLDS } from '../../data/mockGridData';
 import { PIPELINE_META, FUSION_STAGE } from '../../data/mockPipelineData';
+import { apiUrl, normalizeCell, fmt } from '../../api';
 
 const TIER_COLORS = {
   CRITICAL: { bg: 'bg-risk-critical',     border: 'border-risk-critical',    text: 'text-risk-critical',     badge: 'bg-risk-critical/20 border-risk-critical/40 text-risk-critical' },
@@ -43,13 +44,13 @@ function CellCard({ cell, region, onClick, selected }) {
         <RiskBadge tier={tier} size="xs" />
       </div>
       <div className={`text-xl font-mono font-bold ${c.text} leading-none mb-1.5`}>
-        {cell.fire_risk_score.toFixed(3)}
+        {fmt(cell.fire_risk_score, 3)}
       </div>
       <HeatBar score={cell.fire_risk_score} />
       <div className="flex justify-between mt-1.5 text-[9px] font-mono text-text-muted">
-        <span>{cell.temperature_2m}°C</span>
-        <span>RH {cell.relative_humidity_2m}%</span>
-        <span>{cell.wind_speed_10m} km/h</span>
+        <span>{fmt(cell.temperature_2m)}°C</span>
+        <span>RH {fmt(cell.relative_humidity_2m)}%</span>
+        <span>{fmt(cell.wind_speed_10m)} km/h</span>
         {cell.active_fire_count > 0 && (
           <span className="text-risk-high font-semibold">{cell.active_fire_count} fires</span>
         )}
@@ -77,13 +78,13 @@ function CellDetail({ cell, region }) {
           <RiskBadge tier={tier} />
         </div>
         <div className="text-text-muted text-[10px] font-mono">{cell.grid_id}  ·  {region}  ·  H3 res-2  ·  64 km</div>
-        <div className="text-text-muted text-[10px] font-mono">{cell.lat.toFixed(2)}°N  {Math.abs(cell.lon).toFixed(2)}°W</div>
+        <div className="text-text-muted text-[10px] font-mono">{fmt(cell.lat)}°N  {fmt(Math.abs(cell.lon))}°W</div>
       </div>
 
       {/* Risk score */}
       <div className={`bg-surface-3 border ${c.border} rounded-lg p-3`}>
         <div className="text-text-muted text-[9px] uppercase tracking-wider mb-1">fire_risk_score</div>
-        <div className={`text-3xl font-mono font-bold ${c.text}`}>{cell.fire_risk_score.toFixed(4)}</div>
+        <div className={`text-3xl font-mono font-bold ${c.text}`}>{fmt(cell.fire_risk_score, 4)}</div>
         <HeatBar score={cell.fire_risk_score} />
         <div className="mt-1 text-[9px] text-text-muted font-mono">
           CRITICAL≥0.65  HIGH≥0.365  MEDIUM≥0.15  LOW&lt;0.15
@@ -95,11 +96,11 @@ function CellDetail({ cell, region }) {
         <div className="text-text-muted text-[9px] uppercase tracking-wider mb-2">Weather Features</div>
         <div className="grid grid-cols-2 gap-2">
           {[
-            { label: 'temperature_2m', value: `${cell.temperature_2m}°C`, icon: Thermometer },
-            { label: 'relative_humidity_2m', value: `${cell.relative_humidity_2m}%`, icon: Droplets },
-            { label: 'wind_speed_10m', value: `${cell.wind_speed_10m} km/h`, icon: Wind },
-            { label: 'vpd', value: `${cell.vpd} kPa`, icon: Thermometer },
-            { label: 'fire_weather_index', value: cell.fire_weather_index, icon: Flame },
+            { label: 'temperature_2m', value: `${fmt(cell.temperature_2m)}°C`, icon: Thermometer },
+            { label: 'relative_humidity_2m', value: `${fmt(cell.relative_humidity_2m)}%`, icon: Droplets },
+            { label: 'wind_speed_10m', value: `${fmt(cell.wind_speed_10m)} km/h`, icon: Wind },
+            { label: 'vpd', value: `${fmt(cell.vpd)} kPa`, icon: Thermometer },
+            { label: 'fire_weather_index', value: fmt(cell.fire_weather_index), icon: Flame },
           ].map(f => {
             const I = f.icon;
             return (
@@ -120,8 +121,8 @@ function CellDetail({ cell, region }) {
         <div className="text-text-muted text-[9px] uppercase tracking-wider mb-2">Fuel & Terrain</div>
         <div className="space-y-1 text-[10px]">
           {[
-            ['fuel_model_fbfm40', cell.fuel_model_fbfm40],
-            ['elevation_m', `${cell.elevation_m} m`],
+            ['fuel_model_fbfm40', cell.fuel_model_fbfm40 || '—'],
+            ['elevation_m', cell.elevation_m != null ? `${fmt(cell.elevation_m)} m` : '—'],
           ].map(([k, v]) => (
             <div key={k} className="flex justify-between">
               <span className="font-mono text-text-muted">{k}</span>
@@ -161,11 +162,35 @@ export default function RiskMonitor() {
   const [selectedRegion, setSelectedRegion] = useState(null);
   const [regionFilter, setRegionFilter] = useState('all');
   const [tierFilter, setTierFilter] = useState('all');
+  const [liveCells, setLiveCells] = useState(null);
+  const [loadingCells, setLoadingCells] = useState(true);
 
-  const allCells = [
+  useEffect(() => {
+    let cancelled = false;
+    async function fetchLive() {
+      try {
+        const [caRes, txRes] = await Promise.all([
+          fetch(apiUrl('/api/grid-cells?region=california')),
+          fetch(apiUrl('/api/grid-cells?region=texas')),
+        ]);
+        if (cancelled) return;
+        if (caRes.ok && txRes.ok) {
+          const ca = await caRes.json();
+          const tx = await txRes.json();
+          setLiveCells([...ca.cells.map(c => normalizeCell({ ...c, region: 'california' })),
+                        ...tx.cells.map(c => normalizeCell({ ...c, region: 'texas' }))]);
+        }
+      } catch { /* fall back to mock */ }
+      if (!cancelled) setLoadingCells(false);
+    }
+    fetchLive();
+    return () => { cancelled = true; };
+  }, []);
+
+  const allCells = liveCells || (loadingCells ? [] : [
     ...CALIFORNIA_CELLS.map(c => ({ ...c, region: 'california' })),
     ...TEXAS_CELLS.map(c => ({ ...c, region: 'texas' })),
-  ];
+  ]);
 
   const filteredCells = allCells.filter(c => {
     const tier = getRiskTier(c.fire_risk_score);

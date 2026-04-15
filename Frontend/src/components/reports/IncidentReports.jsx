@@ -1,6 +1,7 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { FileText, CheckCircle, AlertTriangle, Clock, ChevronDown, ChevronRight } from 'lucide-react';
 import { MOCK_REPORTS } from '../../data/mockReports';
+import useAPI from '../../hooks/useAPI';
 
 function ModeBadge({ mode }) {
   const cfg = {
@@ -168,10 +169,26 @@ function ReportCard({ report }) {
 
 export default function IncidentReports() {
   const [modeFilter, setModeFilter] = useState('all');
+  const { data: liveReports } = useAPI('/api/reports?limit=50');
+
+  // Transform live API reports to match mock schema, fall back to mocks
+  const reports = (liveReports && liveReports.length > 0)
+    ? liveReports.map(r => ({
+        report_id: r.id,
+        mode: r.risk_level === 'CRITICAL' ? 'EMERGENCY' : r.risk_level === 'HIGH' ? 'ACTIVE' : 'QUIET',
+        region: 'california',
+        generated_at: r.generated_at,
+        confidence: r.confidence,
+        grounding_sources: 0,
+        schema_type: r.report_type,
+        title: `${r.report_type} — ${r.id}`,
+        content: { situation_summary: 'View full report in OBJ-3 Reporter tab.', risk_summary: {} },
+      }))
+    : MOCK_REPORTS;
 
   const filtered = modeFilter === 'all'
-    ? MOCK_REPORTS
-    : MOCK_REPORTS.filter(r => r.mode === modeFilter);
+    ? reports
+    : reports.filter(r => r.mode === modeFilter);
 
   return (
     <div className="p-6 overflow-y-auto h-full">

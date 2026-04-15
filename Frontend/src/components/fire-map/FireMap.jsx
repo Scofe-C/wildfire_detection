@@ -10,6 +10,7 @@ import L from 'leaflet';
 import { useTheme } from '../ui/ThemeProvider';
 import { CALIFORNIA_CELLS_ENRICHED, TEXAS_CELLS_ENRICHED, getRiskTier } from '../../data/mockGridData';
 import { OBJ2_SPREAD } from '../../data/mockMapData';
+import { apiUrl, normalizeCell, fmt } from '../../api';
 import {
   hexBoundary, compassLabel,
   riskColor, moistureColor, intensityColor, windSpeedOpacity,
@@ -19,10 +20,15 @@ import {
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 const TILES = {
-  dark:  'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
-  light: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
+  dark:      'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
+  light:     'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
+  satellite: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
 };
-const TILE_ATTR = '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> &copy; <a href="https://carto.com/">CARTO</a>';
+const TILE_ATTRS = {
+  dark:      '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> &copy; <a href="https://carto.com/">CARTO</a>',
+  light:     '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> &copy; <a href="https://carto.com/">CARTO</a>',
+  satellite: '&copy; <a href="https://www.esri.com/">Esri</a> &mdash; World Imagery',
+};
 const DEFAULT_CENTER = [33.5, -108];
 const DEFAULT_ZOOM = 5;
 
@@ -39,7 +45,8 @@ function RiskBadge({ tier }) {
   return <span className={`text-[9px] font-mono font-semibold px-1.5 py-0.5 rounded border leading-none ${c}`}>{tier}</span>;
 }
 function Row({ icon: I, label, value, unit }) {
-  return <div className="flex items-center justify-between py-[3px]"><span className="flex items-center gap-1.5 text-text-muted"><I className="w-3 h-3"/><span className="text-[10px] font-mono">{label}</span></span><span className="text-[10px] font-mono text-text-primary">{value}{unit?` ${unit}`:''}</span></div>;
+  const display = value == null ? '—' : typeof value === 'number' ? fmt(value) : value;
+  return <div className="flex items-center justify-between py-[3px]"><span className="flex items-center gap-1.5 text-text-muted"><I className="w-3 h-3"/><span className="text-[10px] font-mono">{label}</span></span><span className="text-[10px] font-mono text-text-primary">{display}{unit && display !== '—' ? ` ${unit}` : ''}</span></div>;
 }
 
 // ─── Fly to selected cell ─────────────────────────────────────────────────────
@@ -55,16 +62,22 @@ function FlyTo({ lat, lon }) {
 function makeWindIcon(dir, speed, dark = true) {
   const rot = (dir + 180) % 360;
   const op = windSpeedOpacity(speed);
-  const color = dark ? '#e0f2fe' : '#1e3a5f';
+  const color = dark ? '#93c5fd' : '#1e3a5f';
+  const particleColor = dark ? '#60a5fa' : '#2563eb';
+  // Animation speed: faster wind = faster particle (1.5s at 20km/h, 3s at 0)
+  const dur = Math.max(0.8, 3 - (speed || 0) / 10).toFixed(1);
   return L.divIcon({
-    html: `<div style="transform:rotate(${rot}deg);opacity:${op};width:22px;height:22px">
-      <svg viewBox="0 0 22 22" width="22" height="22">
-        <line x1="11" y1="18" x2="11" y2="5" stroke="${color}" stroke-width="2.2" stroke-linecap="round"/>
-        <polygon points="11,2 7.5,8 14.5,8" fill="${color}"/>
+    html: `<div style="transform:rotate(${rot}deg);opacity:${op};width:26px;height:26px">
+      <svg viewBox="0 0 26 26" width="26" height="26">
+        <line x1="13" y1="22" x2="13" y2="6" stroke="${color}" stroke-width="1.5" stroke-linecap="round" opacity="0.5"/>
+        <polygon points="13,3 9.5,9 16.5,9" fill="${color}" opacity="0.7"/>
+        <circle r="2.5" fill="${particleColor}">
+          <animateMotion dur="${dur}s" repeatCount="indefinite" path="M13,22 L13,6" />
+        </circle>
       </svg></div>`,
     className: '',
-    iconSize: [22, 22],
-    iconAnchor: [11, 11],
+    iconSize: [26, 26],
+    iconAnchor: [13, 13],
   });
 }
 
@@ -80,7 +93,7 @@ function makeCrownIcon(type) {
 }
 
 // ─── Layer bar ────────────────────────────────────────────────────────────────
-function LayerBar({ layers, setLayers, stats, resolution, setResolution }) {
+function LayerBar({ layers, setLayers, stats, resolution, setResolution, mapStyle, setMapStyle }) {
   const setColor = k => setLayers(l => ({ ...l, colorLayer: k }));
   const toggle = k => setLayers(l => ({ ...l, [k]: !l[k] }));
   return (
@@ -104,10 +117,15 @@ function LayerBar({ layers, setLayers, stats, resolution, setResolution }) {
           {stats.activeFires>0&&<span className="text-[9px] font-mono px-1.5 py-0.5 rounded border bg-risk-critical/10 text-risk-critical border-risk-critical/30"><Flame className="w-2.5 h-2.5 inline mr-0.5"/>{stats.activeFires}</span>}
         </div>
       </div>
-      <div className="flex bg-surface-2 border border-border-subtle rounded-lg p-0.5 gap-px">
-        {['64km','22km'].map(r=>(
-          <button key={r} onClick={()=>setResolution(r)} className={`px-2 py-0.5 rounded-md text-[9px] font-mono transition-colors ${resolution===r?'bg-surface-0 text-text-primary font-semibold':'text-text-muted hover:text-text-secondary'}`}>{r}</button>
-        ))}
+      <div className="flex items-center gap-2">
+        <div className="flex bg-surface-2 border border-border-subtle rounded-lg p-0.5 gap-px">
+          {[{k:'auto',l:'Auto'},{k:'dark',l:'Dark'},{k:'light',l:'Light'},{k:'satellite',l:'Sat'}].map(({k,l})=>(
+            <button key={k} onClick={()=>setMapStyle(k)} className={`px-2 py-0.5 rounded-md text-[9px] font-mono transition-colors ${mapStyle===k?'bg-surface-0 text-text-primary font-semibold':'text-text-muted hover:text-text-secondary'}`}>{l}</button>
+          ))}
+        </div>
+        <div className="flex bg-surface-2 border border-border-subtle rounded-lg p-0.5 gap-px">
+          <span className="px-2 py-0.5 rounded-md text-[9px] font-mono bg-surface-0 text-text-primary font-semibold">64km</span>
+        </div>
       </div>
     </div>
   );
@@ -173,20 +191,20 @@ function DetailPanel({ cellId, allCells, edits, setEdits, onNavigate }) {
   return (
     <div className="flex flex-col h-full overflow-y-auto">
       <div className={`px-4 py-3 border-b border-border-subtle ${tier==='CRITICAL'?'glow-critical bg-risk-critical/5':''}`}>
-        <div className="flex items-start justify-between gap-2 mb-1"><div><div className="text-text-primary text-[13px] font-semibold leading-tight">{merged.name}</div><div className="text-text-muted text-[9px] font-mono mt-0.5">{merged.grid_id.slice(0,12)}...</div></div><RiskBadge tier={tier}/></div>
-        <div className="text-[10px] font-mono text-text-muted">{merged.lat.toFixed(2)}°N, {Math.abs(merged.lon).toFixed(2)}°W</div>
+        <div className="flex items-start justify-between gap-2 mb-1"><div><div className="text-text-primary text-[13px] font-semibold leading-tight">{merged.name || merged.grid_id?.slice(0,12)}</div><div className="text-text-muted text-[9px] font-mono mt-0.5">{merged.grid_id}</div></div><RiskBadge tier={tier}/></div>
+        <div className="text-[10px] font-mono text-text-muted">{fmt(merged.lat, 4)}°N, {fmt(Math.abs(merged.lon), 4)}°W</div>
         {edits[cellId]&&<div className="mt-1 flex items-center gap-1 text-[9px] font-mono text-purple-400"><Pencil className="w-2.5 h-2.5"/>Overrides active</div>}
       </div>
 
       {editing ? <EditForm cell={cell} vals={draft} onChange={(k,v)=>setDraft(d=>({...d,[k]:v}))} onSave={saveEdit} onCancel={cancelEdit}/> : <>
         <div className="px-4 py-3 border-b border-border-subtle">
           <div className="flex items-center gap-1.5 mb-2"><Activity className="w-3 h-3 text-accent-blue"/><span className="text-[10px] font-mono font-semibold text-text-secondary uppercase tracking-wider">Ignition Risk</span></div>
-          <div className="flex justify-between items-center mb-1"><span className="text-[10px] font-mono text-text-muted">P(ignition)</span><span className={`text-[14px] font-mono font-bold ${TIER_COLORS[tier].text}`}>{(merged.fire_risk_score*100).toFixed(1)}%</span></div>
-          <div className="h-2 bg-surface-3 rounded-full overflow-hidden"><div className="h-full rounded-full transition-all duration-500" style={{width:`${merged.fire_risk_score*100}%`,background:`linear-gradient(90deg,${TIER_COLORS.LOW.fill},${TIER_COLORS[tier].fill})`,boxShadow:`0 0 8px ${TIER_COLORS[tier].glow}`}}/></div>
+          <div className="flex justify-between items-center mb-1"><span className="text-[10px] font-mono text-text-muted">P(ignition)</span><span className={`text-[14px] font-mono font-bold ${TIER_COLORS[tier].text}`}>{fmt((merged.fire_risk_score||0)*100, 1)}%</span></div>
+          <div className="h-2 bg-surface-3 rounded-full overflow-hidden"><div className="h-full rounded-full transition-all duration-500" style={{width:`${(merged.fire_risk_score||0)*100}%`,background:`linear-gradient(90deg,${TIER_COLORS.LOW.fill},${TIER_COLORS[tier].fill})`,boxShadow:`0 0 8px ${TIER_COLORS[tier].glow}`}}/></div>
         </div>
         <div className="px-4 py-3 border-b border-border-subtle">
           <div className="flex items-center gap-1.5 mb-2"><Thermometer className="w-3 h-3 text-accent-orange"/><span className="text-[10px] font-mono font-semibold text-text-secondary uppercase tracking-wider">Weather</span></div>
-          <div className="divide-y divide-border-subtle/30"><Row icon={Thermometer} label="Temperature" value={merged.temperature_2m} unit="°C"/><Row icon={Droplets} label="Humidity" value={merged.relative_humidity_2m} unit="%"/><Row icon={Wind} label="Wind" value={`${merged.wind_speed_10m} m/s ${compassLabel(merged.wind_direction_10m)}`}/><Row icon={Activity} label="VPD" value={merged.vpd} unit="kPa"/><Row icon={Droplets} label="Soil Moisture" value={merged.soil_moisture_0_to_7cm} unit="m³/m³"/></div>
+          <div className="divide-y divide-border-subtle/30"><Row icon={Thermometer} label="Temperature" value={merged.temperature_2m} unit="°C"/><Row icon={Droplets} label="Humidity" value={merged.relative_humidity_2m} unit="%"/><Row icon={Wind} label="Wind" value={merged.wind_speed_10m != null ? `${fmt(merged.wind_speed_10m)} km/h ${compassLabel(merged.wind_direction_10m)}` : null}/><Row icon={Activity} label="VPD" value={merged.vpd} unit="kPa"/><Row icon={Droplets} label="Soil Moisture" value={merged.soil_moisture_0_to_7cm} unit="m³/m³"/></div>
         </div>
         <div className="px-4 py-3 border-b border-border-subtle">
           <div className="flex items-center gap-1.5 mb-2"><TreePine className="w-3 h-3 text-green-500"/><span className="text-[10px] font-mono font-semibold text-text-secondary uppercase tracking-wider">Terrain & Canopy</span></div>
@@ -214,13 +232,52 @@ export default function FireMap({ onNavigate }) {
   const [layers, setLayers] = useState({ colorLayer: 'risk', wind: true, crown: false, spread: false });
   const [sel, setSel] = useState(null);
   const [res, setRes] = useState('64km');
+  const [mapStyle, setMapStyle] = useState('auto'); // 'auto' | 'dark' | 'light' | 'satellite'
   const [edits, setEdits] = useState(() => { try { return JSON.parse(localStorage.getItem('fireMapEdits')||'{}'); } catch { return {}; } });
 
+  const [liveCells, setLiveCells] = useState(null);
+  const [liveSpread, setLiveSpread] = useState(null); // {ignition_cell, neighbor_burn_probabilities, spread_direction_deg, ...}
+
+  useEffect(() => {
+    let cancelled = false;
+    async function fetchLive() {
+      try {
+        const [caRes, txRes] = await Promise.all([
+          fetch(apiUrl('/api/grid-cells?region=california')),
+          fetch(apiUrl('/api/grid-cells?region=texas')),
+        ]);
+        if (cancelled) return;
+        if (caRes.ok && txRes.ok) {
+          const ca = await caRes.json();
+          const tx = await txRes.json();
+          setLiveCells([...ca.cells.map(c => normalizeCell({ ...c, region: 'california' })), ...tx.cells.map(c => normalizeCell({ ...c, region: 'texas' }))]);
+        }
+      } catch { /* backend offline — fall back to mock */ }
+      // Fetch live spread simulations
+      try {
+        const spreadMap = {};
+        for (const region of ['california', 'texas']) {
+          const res = await fetch(apiUrl(`/api/spread-simulations?region=${region}`));
+          if (res.ok) {
+            const data = await res.json();
+            if (data.simulation && !data.simulation.fallback) spreadMap[region] = data.simulation;
+          }
+        }
+        if (!cancelled && Object.keys(spreadMap).length > 0) setLiveSpread(spreadMap);
+      } catch { /* backend offline */ }
+      if (!cancelled) setLoading(false);
+    }
+    fetchLive();
+    return () => { cancelled = true; };
+  }, []);
+
+  const [loading, setLoading] = useState(true);
+
   const allCells = useMemo(() => {
-    const ca = res === '22km' ? generateFireZoomCells(CALIFORNIA_CELLS_ENRICHED, OBJ2_SPREAD) : CALIFORNIA_CELLS_ENRICHED;
-    const tx = res === '22km' ? generateFireZoomCells(TEXAS_CELLS_ENRICHED, OBJ2_SPREAD) : TEXAS_CELLS_ENRICHED;
-    return [...ca.map(c=>({...c,region:'california'})), ...tx.map(c=>({...c,region:'texas'}))];
-  }, [res]);
+    if (liveCells) return liveCells;
+    if (loading) return []; // Show empty map while loading — no mock flash
+    return [...CALIFORNIA_CELLS_ENRICHED.map(c=>({...c,region:'california'})), ...TEXAS_CELLS_ENRICHED.map(c=>({...c,region:'texas'}))];
+  }, [liveCells, loading]);
 
   const stats = useMemo(() => ({
     critical: allCells.filter(c=>getRiskTier(c.fire_risk_score)==='CRITICAL').length,
@@ -228,17 +285,37 @@ export default function FireMap({ onNavigate }) {
     activeFires: allCells.filter(c=>c.fire_detected_binary===1).length,
   }), [allCells]);
 
-  // Spread arrows (source → target polylines)
-  const spreadArrows = useMemo(() => {
-    if (!layers.spread) return [];
-    const map = {}; allCells.forEach(c => { map[c.grid_id] = c; });
-    const arr = [];
-    Object.values(OBJ2_SPREAD).forEach(sim => {
-      const s = map[sim.source_cell]; if (!s) return;
-      sim.affected_cells.forEach(id => { if (id === sim.source_cell) return; const t = map[id]; if (t) arr.push({ key:`${sim.source_cell}-${id}`, from:[s.lat,s.lon], to:[t.lat,t.lon] }); });
-    });
-    return arr;
-  }, [layers.spread, allCells]);
+  // Spread overlay: live OBJ-2 burn probabilities per neighbor cell
+  const { spreadOverlays, spreadArrows, ignitionCells } = useMemo(() => {
+    if (!layers.spread) return { spreadOverlays: [], spreadArrows: [], ignitionCells: [] };
+    const cellMap = {}; allCells.forEach(c => { cellMap[c.grid_id] = c; });
+    const overlays = [];
+    const arrows = [];
+    const ignitions = [];
+
+    if (liveSpread) {
+      // Use live OBJ-2 simulation data
+      Object.entries(liveSpread).forEach(([region, sim]) => {
+        const ign = cellMap[sim.ignition_cell];
+        if (ign) ignitions.push({ ...ign, spreadDir: sim.spread_direction_deg, speedKmh: sim.spread_speed_kmh, crownStatus: sim.crown_fire_status });
+
+        const burnProbs = sim.neighbor_burn_probabilities || {};
+        Object.entries(burnProbs).forEach(([cellId, prob]) => {
+          const target = cellMap[cellId];
+          if (!target) return;
+          overlays.push({ cellId, lat: target.lat, lon: target.lon, prob, region });
+          if (ign) arrows.push({ key: `${sim.ignition_cell}-${cellId}`, from: [ign.lat, ign.lon], to: [target.lat, target.lon], prob });
+        });
+      });
+    } else {
+      // Fallback to mock OBJ2_SPREAD
+      Object.values(OBJ2_SPREAD).forEach(sim => {
+        const s = cellMap[sim.source_cell]; if (!s) return;
+        sim.affected_cells.forEach(id => { if (id === sim.source_cell) return; const t = cellMap[id]; if (t) arrows.push({ key: `${sim.source_cell}-${id}`, from: [s.lat, s.lon], to: [t.lat, t.lon], prob: 0.5 }); });
+      });
+    }
+    return { spreadOverlays: overlays, spreadArrows: arrows, ignitionCells: ignitions };
+  }, [layers.spread, allCells, liveSpread]);
 
   const selCell = sel ? allCells.find(c => c.grid_id === sel) : null;
 
@@ -250,31 +327,34 @@ export default function FireMap({ onNavigate }) {
           style={{ height: '100%', width: '100%', background: isDark ? '#0c1117' : '#f5f1eb' }}
           className="rounded-none">
 
-          <TileLayer key={theme} url={TILES[theme] || TILES.dark} attribution={TILE_ATTR} maxZoom={18} />
+          {(() => { const ts = mapStyle === 'auto' ? theme : mapStyle; return (
+            <TileLayer key={ts} url={TILES[ts] || TILES.dark} attribution={TILE_ATTRS[ts] || TILE_ATTRS.dark} maxZoom={18} />
+          ); })()}
 
           {/* Fly to selected cell */}
           {selCell && <FlyTo lat={selCell.lat} lon={selCell.lon} />}
 
-          {/* Hex cells */}
+          {/* Hex cells — real H3 boundaries when available, fallback to approximate */}
           {allCells.map(cell => {
             const m = edits[cell.grid_id] ? { ...cell, ...edits[cell.grid_id] } : cell;
             const fill = hexFill(m, layers.colorLayer);
             const isSel = cell.grid_id === sel;
-            const boundary = hexBoundary(cell.lat, cell.lon, hexRadius(cell));
+            const inState = cell.in_state !== false;
+            const boundary = cell.hex_boundary || hexBoundary(cell.lat, cell.lon, hexRadius(cell));
             return (
               <Polygon key={cell.grid_id} positions={boundary}
                 pathOptions={{
-                  fillColor: fill, fillOpacity: isDark ? 0.7 : 0.6,
-                  color: isSel ? '#3b82f6' : isDark ? 'rgba(0,0,0,0.6)' : 'rgba(0,0,0,0.25)',
-                  weight: isSel ? 3 : 0.8,
-                  opacity: isSel ? 1 : 0.6,
+                  fillColor: fill, fillOpacity: inState ? (isDark ? 0.55 : 0.45) : 0.15,
+                  color: isSel ? '#3b82f6' : isDark ? 'rgba(255,255,255,0.15)' : 'rgba(0,0,0,0.2)',
+                  weight: isSel ? 2.5 : 1,
+                  opacity: isSel ? 1 : (inState ? 0.7 : 0.3),
                 }}
                 eventHandlers={{ click: () => setSel(p => p === cell.grid_id ? null : cell.grid_id) }}>
                 <Tooltip sticky className={isDark ? 'leaflet-tooltip-dark' : 'leaflet-tooltip-light'}>
                   <div className="font-mono">
-                    <div className="text-xs font-semibold">{cell.name}</div>
+                    <div className="text-xs font-semibold">{cell.name || cell.grid_id?.slice(0,12)}</div>
                     <div className="text-[10px] opacity-80">
-                      Risk: {(m.fire_risk_score*100).toFixed(0)}% — {getRiskTier(m.fire_risk_score)}
+                      Risk: {fmt(m.fire_risk_score * 100, 0)}% — {getRiskTier(m.fire_risk_score)}
                       {m.fire_detected_binary===1&&<span className="text-red-400 font-bold ml-1">FIRE</span>}
                     </div>
                   </div>
@@ -290,17 +370,50 @@ export default function FireMap({ onNavigate }) {
               className="fire-pulse-ring" />
           ))}
 
-          {/* Spread perimeters */}
-          {layers.spread && Object.values(OBJ2_SPREAD).map(sim => (
-            <Polygon key={`sp-${sim.source_cell}`}
-              positions={sim.perimeter_coords.map(({lat,lon})=>[lat,lon])}
-              pathOptions={{color:'#fb923c',weight:1.8,dashArray:'8,5',fillColor:'#fb923c',fillOpacity:0.06}} />
+          {/* Live spread: burn probability overlays on neighbor cells */}
+          {spreadOverlays.map(o => (
+            <CircleMarker key={`burn-${o.cellId}`} center={[o.lat, o.lon]}
+              radius={Math.max(8, o.prob * 30)}
+              pathOptions={{
+                color: o.prob >= 0.5 ? '#ef4444' : o.prob >= 0.2 ? '#f59e0b' : '#10b981',
+                weight: 1.5,
+                fillColor: o.prob >= 0.5 ? '#ef4444' : o.prob >= 0.2 ? '#f59e0b' : '#10b981',
+                fillOpacity: 0.15 + o.prob * 0.35,
+              }}
+              className="spread-burn-overlay">
+              <Tooltip className={isDark ? 'leaflet-tooltip-dark' : 'leaflet-tooltip-light'}>
+                <span className="font-mono text-[10px]">Burn prob: {(o.prob * 100).toFixed(1)}%</span>
+              </Tooltip>
+            </CircleMarker>
           ))}
 
-          {/* Spread direction arrows */}
+          {/* Ignition cell pulse animation */}
+          {ignitionCells.map(ign => (
+            <CircleMarker key={`ign-${ign.grid_id}`} center={[ign.lat, ign.lon]}
+              radius={22}
+              pathOptions={{
+                color: '#ef4444', weight: 3, fillColor: '#ef4444', fillOpacity: 0.25,
+                dashArray: '6,3',
+              }}
+              className="ignition-pulse">
+              <Tooltip permanent direction="top" offset={[0, -15]}
+                className={isDark ? 'leaflet-tooltip-dark' : 'leaflet-tooltip-light'}>
+                <span className="font-mono text-[10px] font-bold text-red-500">
+                  IGNITION · {(ign.speedKmh || 0).toFixed(2)} km/h · {(ign.spreadDir || 0).toFixed(0)}°
+                </span>
+              </Tooltip>
+            </CircleMarker>
+          ))}
+
+          {/* Spread direction arrows (ignition → neighbor) */}
           {spreadArrows.map(a=>(
             <Polyline key={a.key} positions={[a.from,a.to]}
-              pathOptions={{color:'#fb923c',weight:2.5,dashArray:'6,4',opacity:0.7}} />
+              pathOptions={{
+                color: a.prob >= 0.5 ? '#ef4444' : '#fb923c',
+                weight: 1.5 + a.prob * 2,
+                dashArray: '6,4',
+                opacity: 0.4 + a.prob * 0.5,
+              }} />
           ))}
 
           {/* Wind arrows */}
@@ -320,7 +433,7 @@ export default function FireMap({ onNavigate }) {
         </MapContainer>
 
         {/* Floating controls */}
-        <LayerBar layers={layers} setLayers={setLayers} stats={stats} resolution={res} setResolution={setRes} />
+        <LayerBar layers={layers} setLayers={setLayers} stats={stats} resolution={res} setResolution={setRes} mapStyle={mapStyle} setMapStyle={setMapStyle} />
         <Legend layers={layers} />
       </div>
 

@@ -9,16 +9,22 @@
 //   LOW:      fire_risk_score < 0.15
 
 export const RISK_THRESHOLDS = {
-  CRITICAL: 0.65,
-  HIGH: 0.365,
-  MEDIUM: 0.15,
+  CRITICAL: 0.75,
+  HIGH: 0.45,
+  MEDIUM: 0.18,
   LOW: 0.0,
 };
 
-export function getRiskTier(score) {
-  if (score >= RISK_THRESHOLDS.CRITICAL) return 'CRITICAL';
-  if (score >= RISK_THRESHOLDS.HIGH)     return 'HIGH';
-  if (score >= RISK_THRESHOLDS.MEDIUM)   return 'MEDIUM';
+export function getRiskTier(score, region) {
+  // Use backend risk_tier when available; this is the fallback for mock/local data
+  const t = region === 'california'
+    ? { c: 0.80, h: 0.50, m: 0.20 }
+    : region === 'texas'
+    ? { c: 0.75, h: 0.45, m: 0.18 }
+    : { c: RISK_THRESHOLDS.CRITICAL, h: RISK_THRESHOLDS.HIGH, m: RISK_THRESHOLDS.MEDIUM };
+  if (score >= t.c) return 'CRITICAL';
+  if (score >= t.h) return 'HIGH';
+  if (score >= t.m) return 'MEDIUM';
   return 'LOW';
 }
 

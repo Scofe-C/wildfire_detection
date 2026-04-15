@@ -716,10 +716,29 @@ function GenerateTab({ onGenerated }) {
 // ─── Main ─────────────────────────────────────────────────────────────────────
 export default function OBJ3Reporter() {
   const [tab, setTab] = useState('reports');
+  const [pipelineRunning, setPipelineRunning] = useState(false);
   const { data: status, loading: statusLoading, refresh: refreshStatus } = useAPI('/api/status', { interval: 30000 });
   const { data: reports, loading: reportsLoading, refresh: refreshReports } = useAPI('/api/reports?limit=100');
 
   function handleGenerated() { refreshReports(); refreshStatus(); }
+
+  async function triggerPipelineReport() {
+    setPipelineRunning(true);
+    try {
+      const res = await fetch(apiUrl('/api/generate-from-pipeline'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ regions: ['california', 'texas'] }),
+      });
+      const data = await res.json();
+      if (!res.ok) { alert('Pipeline report failed: ' + (data.detail || res.statusText)); return; }
+      const ok = (data.reports || []).filter(r => r.success).length;
+      const fail = (data.reports || []).filter(r => !r.success).length;
+      alert(`Pipeline reports: ${ok} generated, ${fail} failed.`);
+      refreshReports(); refreshStatus();
+    } catch (e) { alert('Request failed: ' + e.message); }
+    finally { setPipelineRunning(false); }
+  }
 
   return (
     <div className="h-full overflow-y-auto">
@@ -727,14 +746,21 @@ export default function OBJ3Reporter() {
         <StatusBanner status={status} loading={statusLoading} onRefresh={refreshStatus}/>
 
         {/* Tab bar */}
-        <div className="flex items-center gap-1 bg-surface-2 border border-border-subtle rounded-[7px] p-0.5 w-fit">
-          {[['reports','Reports',FileText],['generate','Generate',Send],['config','Config',MessageSquare]].map(([id,label,Icon])=>(
-            <button key={id} onClick={() => setTab(id)}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-[5px] text-[11px] font-mono transition-colors
-                ${tab===id ? 'bg-surface-1 text-text-primary shadow-card font-semibold' : 'text-text-muted hover:text-text-secondary'}`}>
-              <Icon className="w-3 h-3"/>{label}
-            </button>
-          ))}
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-1 bg-surface-2 border border-border-subtle rounded-[7px] p-0.5 w-fit">
+            {[['reports','Reports',FileText],['generate','Generate',Send],['config','Config',MessageSquare]].map(([id,label,Icon])=>(
+              <button key={id} onClick={() => setTab(id)}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-[5px] text-[11px] font-mono transition-colors
+                  ${tab===id ? 'bg-surface-1 text-text-primary shadow-card font-semibold' : 'text-text-muted hover:text-text-secondary'}`}>
+                <Icon className="w-3 h-3"/>{label}
+              </button>
+            ))}
+          </div>
+          <button onClick={triggerPipelineReport} disabled={pipelineRunning}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-[7px] text-[11px] font-mono font-semibold
+              bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
+            {pipelineRunning ? <><Loader2 className="w-3 h-3 animate-spin"/>Running...</> : <><Zap className="w-3 h-3"/>Run Pipeline Report</>}
+          </button>
         </div>
 
         {/* Tab content */}
