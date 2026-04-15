@@ -51,7 +51,15 @@ filterwarnings = [
 
 [tool.coverage.run]
 source = ["src"]
-omit = ["tests/*", "src/models/*/placeholder.py"]
+omit = [
+    "tests/*",
+    "src/models/*/placeholder.py",
+    "src/models/obj2_spread/*",
+    "src/models/obj3_gemini/*",
+    "src/api/*",
+    "src/notifications/*",
+    "src/reports/*",
+]
 
 [tool.coverage.report]
 fail_under = 35

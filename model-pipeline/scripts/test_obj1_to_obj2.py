@@ -160,9 +160,12 @@ def synthesize_obj1_scores(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _assign_risk_tier(score: float) -> str:
-    if score >= 0.65:  return "CRITICAL"
-    if score >= 0.365: return "HIGH"
-    if score >= 0.15:  return "MEDIUM"
+    if score >= 0.65:
+        return "CRITICAL"
+    if score >= 0.365:
+        return "HIGH"
+    if score >= 0.15:
+        return "MEDIUM"
     return "LOW"
 
 
@@ -205,7 +208,7 @@ def run_obj2(df: pd.DataFrame, top_n: int = 1, generate_report: bool = False) ->
         top5 = df.nlargest(5, "fire_risk_score")[["grid_id", "fire_risk_score", "risk_tier"]]
         if "active_fire_count" in df.columns:
             top5 = top5.merge(df[["grid_id", "active_fire_count"]], on="grid_id", how="left")
-        print(f"\n  Top-5 OBJ-1 risk cells:")
+        print("\n  Top-5 OBJ-1 risk cells:")
         print(top5.to_string(index=False))
 
     for _, cell_row in top_cells.iterrows():
@@ -230,7 +233,7 @@ def run_obj2(df: pd.DataFrame, top_n: int = 1, generate_report: bool = False) ->
             rh        = inputs.get("relative_humidity_pct", 0)
             crown_prob = result.get("crown_fire_probability", 0)
 
-            print(f"\n  Fire behavior:")
+            print("\n  Fire behavior:")
             print(f"    direction     : {h_dir:.1f} deg ({result['dominant_factor']})")
             print(f"    intensity     : {result['byram_intensity_kwm']:.1f} kW/m ({result['crown_fire_status']})")
             wind_str = f"{wind_kmh:.1f} km/h from {wind_dir:.0f} deg" if wind_kmh > 0 and wind_dir is not None else "N/A (no wind data for this cell)"
@@ -238,9 +241,9 @@ def run_obj2(df: pd.DataFrame, top_n: int = 1, generate_report: bool = False) ->
             print(f"    moisture      : DFMC={result['dead_fuel_moisture_pct']:.1f}% (RH={rh:.0f}%)")
             print(f"    crown status  : {result['crown_fire_status']} (prob {crown_prob:.1%})")
 
-            print(f"\n  Spread forecast:")
+            print("\n  Spread forecast:")
             print(f"    spread speed  : {mc_p90:.4f} km/h (MC p90, N=100)")
-            print(f"\n    Distance projection:")
+            print("\n    Distance projection:")
             for hr in [1, 2, 3, 6]:
                 dist = mc_p90 * hr
                 print(f"      t={hr}h : {dist:.2f} km")
