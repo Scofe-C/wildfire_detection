@@ -1,7 +1,11 @@
 import { useState, useEffect } from 'react';
-import { FileText, CheckCircle, AlertTriangle, Clock, ChevronDown, ChevronRight } from 'lucide-react';
+import { FileText, CheckCircle, AlertTriangle, Clock, ChevronDown, ChevronRight, Loader } from 'lucide-react';
 import { MOCK_REPORTS } from '../../data/mockReports';
 import useAPI from '../../hooks/useAPI';
+import { apiUrl } from '../../api';
+
+const fmt2 = (v) => (v != null && !isNaN(v)) ? Number(v).toFixed(2) : '—';
+const fmt3 = (v) => (v != null && !isNaN(v)) ? Number(v).toFixed(3) : '—';
 
 function ModeBadge({ mode }) {
   const cfg = {
@@ -10,7 +14,7 @@ function ModeBadge({ mode }) {
     EMERGENCY: 'bg-risk-critical/10 border-risk-critical/30 text-risk-critical',
   };
   return (
-    <span className={`text-[9px] font-mono font-bold px-2 py-0.5 rounded border ${cfg[mode] ?? cfg.QUIET}`}>{mode}</span>
+    <span className={`text-[9px] font-mono font-bold px-2 py-0.5 rounded border ${cfg[mode] ?? cfg.QUIET}`}>{mode ?? 'QUIET'}</span>
   );
 }
 
@@ -23,57 +27,80 @@ function RiskCountBadge({ label, count, tier }) {
   };
   return (
     <div className="text-center">
-      <div className={`text-lg font-mono font-bold ${colors[tier]}`}>{count}</div>
+      <div className={`text-lg font-mono font-bold ${colors[tier]}`}>{count ?? 0}</div>
       <div className="text-[9px] text-text-muted font-mono uppercase">{label}</div>
     </div>
   );
 }
 
+/** Fetch full report JSON from backend and display rich content */
 function ReportCard({ report }) {
   const [expanded, setExpanded] = useState(false);
-  const rs = report.content.risk_summary;
+  const [detail, setDetail] = useState(null);
+  const [loading, setLoading] = useState(false);
 
-  const modeIcon = {
-    QUIET:     <CheckCircle className="w-4 h-4 text-accent-green" />,
-    ACTIVE:    <AlertTriangle className="w-4 h-4 text-accent-orange" />,
-    EMERGENCY: <AlertTriangle className="w-4 h-4 text-risk-critical" />,
-  }[report.mode];
+  // mode derived from risk_level on list item
+  const mode = report.mode ?? (
+    report.risk_level === 'CRITICAL' ? 'EMERGENCY' :
+    report.risk_level === 'HIGH'     ? 'ACTIVE'    : 'QUIET'
+  );
 
   const borderColor = {
     QUIET:     'border-accent-green/30',
     ACTIVE:    'border-accent-orange/30',
     EMERGENCY: 'border-risk-critical/40',
-  }[report.mode];
+  }[mode] ?? 'border-border-subtle';
+
+  const modeIcon = {
+    QUIET:     <CheckCircle className="w-4 h-4 text-accent-green" />,
+    ACTIVE:    <AlertTriangle className="w-4 h-4 text-accent-orange" />,
+    EMERGENCY: <AlertTriangle className="w-4 h-4 text-risk-critical" />,
+  }[mode];
+
+  const handleExpand = async () => {
+    const next = !expanded;
+    setExpanded(next);
+    if (next && !detail && !loading) {
+      setLoading(true);
+      try {
+        const res = await fetch(apiUrl(`/api/reports/${report.report_id || report.id}`));
+        if (res.ok) setDetail(await res.json());
+      } catch (_) {}
+      setLoading(false);
+    }
+  };
+
+  const conf = detail?.report_confidence ?? report.confidence ?? 0;
+  const sources = Array.isArray(detail?.grounding_sources)
+    ? detail.grounding_sources.length
+    : (report.grounding_sources ?? '—');
+  const topCell = detail?.top_risk_cells?.[0];
 
   return (
     <div className={`bg-surface-2 border ${borderColor} rounded-lg overflow-hidden`}>
       {/* Card header */}
       <button
-        onClick={() => setExpanded(v => !v)}
+        onClick={handleExpand}
         className="w-full p-4 flex items-start gap-3 hover:bg-surface-3/40 transition-colors text-left"
       >
         <div className="flex-shrink-0 mt-0.5">{modeIcon}</div>
         <div className="flex-1">
           <div className="flex items-center gap-2 mb-1 flex-wrap">
-            <ModeBadge mode={report.mode} />
-            <span className="text-[9px] font-mono bg-surface-3 border border-border-subtle text-text-muted px-1.5 py-0.5 rounded">{report.schema_type}</span>
-            <span className="text-[9px] font-mono text-text-muted">{report.region}</span>
-            <span className="text-[9px] font-mono text-text-muted">{report.report_id}</span>
+            <ModeBadge mode={mode} />
+            <span className="text-[9px] font-mono bg-surface-3 border border-border-subtle text-text-muted px-1.5 py-0.5 rounded">
+              {report.report_type ?? report.schema_type}
+            </span>
+            <span className="text-[9px] font-mono text-text-muted">{report.report_id ?? report.id}</span>
           </div>
           <div className="text-text-primary text-sm font-semibold mb-1">{report.title}</div>
           <div className="flex items-center gap-3 text-[10px] text-text-muted font-mono">
-            <span><Clock className="w-2.5 h-2.5 inline mr-0.5" />{report.generated_at}</span>
-            <span>{report.llm_model}</span>
-            <span>conf: <span className={report.confidence >= 0.70 ? 'text-accent-green' : 'text-risk-critical'}>{report.confidence.toFixed(2)}</span></span>
-            <span>sources: {report.grounding_sources}</span>
+            <span><Clock className="w-2.5 h-2.5 inline mr-0.5" />{(report.generated_at ?? '').slice(0, 19).replace('T', ' ')}</span>
+            <span>conf: <span className={conf >= 0.70 ? 'text-accent-green' : 'text-risk-critical'}>{fmt2(conf)}</span></span>
+            <span>sources: {sources}</span>
+            {report.human_review_required && (
+              <span className="text-accent-orange">review required</span>
+            )}
           </div>
-        </div>
-        {/* Risk summary mini */}
-        <div className="flex items-center gap-3 flex-shrink-0 mr-2">
-          <RiskCountBadge label="CRIT" count={rs.critical_cells} tier="critical" />
-          <RiskCountBadge label="HIGH" count={rs.high_cells} tier="high" />
-          <RiskCountBadge label="MED"  count={rs.medium_cells} tier="medium" />
-          <RiskCountBadge label="LOW"  count={rs.low_cells} tier="low" />
         </div>
         {expanded ? <ChevronDown className="w-4 h-4 text-text-muted flex-shrink-0 mt-1" /> : <ChevronRight className="w-4 h-4 text-text-muted flex-shrink-0 mt-1" />}
       </button>
@@ -81,86 +108,160 @@ function ReportCard({ report }) {
       {/* Expanded content */}
       {expanded && (
         <div className="border-t border-border-subtle px-4 pb-4 pt-3 space-y-4">
-          {/* Situation summary */}
-          <div>
-            <div className="text-text-muted text-[9px] uppercase tracking-wider mb-1">Situation Summary</div>
-            <p className="text-text-secondary text-[11px] leading-relaxed bg-surface-3 border border-border-subtle rounded p-3">
-              {report.content.situation_summary}
-            </p>
-          </div>
-
-          {/* Weather outlook */}
-          <div>
-            <div className="text-text-muted text-[9px] uppercase tracking-wider mb-1">Weather Outlook</div>
-            <p className="text-text-secondary text-[11px] leading-relaxed bg-surface-3 border border-border-subtle rounded p-3">
-              {report.content.weather_outlook}
-            </p>
-          </div>
-
-          {/* Driving features + actions */}
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <div className="text-text-muted text-[9px] uppercase tracking-wider mb-1">Key Features Driving Risk</div>
-              <div className="bg-surface-3 border border-border-subtle rounded p-3 space-y-1">
-                {report.content.key_features_driving_risk.map((f, i) => (
-                  <div key={i} className="flex items-center gap-1.5">
-                    <div className="w-1 h-1 rounded-full bg-risk-high flex-shrink-0" />
-                    <span className="text-[10px] font-mono text-text-secondary">{f}</span>
-                  </div>
-                ))}
-              </div>
+          {loading && (
+            <div className="flex items-center gap-2 text-text-muted text-xs">
+              <Loader className="w-3 h-3 animate-spin" /> Loading report details…
             </div>
-            <div>
-              <div className="text-text-muted text-[9px] uppercase tracking-wider mb-1">Recommended Actions</div>
-              <div className="bg-surface-3 border border-border-subtle rounded p-3 space-y-1.5">
-                {report.content.recommended_actions.map((a, i) => (
-                  <div key={i} className="flex items-start gap-1.5">
-                    <span className="text-[9px] font-mono text-text-muted flex-shrink-0 mt-0.5">{String(i + 1).padStart(2, '0')}</span>
-                    <span className="text-[10px] text-text-secondary leading-tight">{a}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
+          )}
 
-          {/* Risk grid */}
-          <div className="grid grid-cols-5 gap-2">
-            <div className="col-span-2 bg-surface-3 border border-border-subtle rounded p-3">
-              <div className="text-text-muted text-[9px] uppercase tracking-wider mb-2">Risk Distribution</div>
-              <div className="flex items-center gap-3">
-                <RiskCountBadge label="CRITICAL" count={rs.critical_cells} tier="critical" />
-                <RiskCountBadge label="HIGH"     count={rs.high_cells}     tier="high" />
-                <RiskCountBadge label="MEDIUM"   count={rs.medium_cells}   tier="medium" />
-                <RiskCountBadge label="LOW"      count={rs.low_cells}      tier="low" />
+          {detail ? (
+            <>
+              {/* Risk summary */}
+              <div>
+                <div className="text-text-muted text-[9px] uppercase tracking-wider mb-1">Risk Summary</div>
+                <p className="text-text-secondary text-[11px] leading-relaxed bg-surface-3 border border-border-subtle rounded p-3">
+                  {detail.risk_summary || '—'}
+                </p>
               </div>
-            </div>
-            <div className="col-span-3 bg-surface-3 border border-border-subtle rounded p-3">
-              <div className="text-text-muted text-[9px] uppercase tracking-wider mb-2">Highest Risk Cell</div>
-              <div className="flex items-center gap-3">
+
+              {/* Weather */}
+              {detail.weather_observations && (
                 <div>
-                  <div className="text-text-primary text-xs font-semibold">{rs.highest_risk_cell}</div>
-                  <div className="text-2xl font-mono font-bold text-risk-critical">{rs.highest_risk_score.toFixed(3)}</div>
+                  <div className="text-text-muted text-[9px] uppercase tracking-wider mb-1">Weather Observations</div>
+                  <div className="flex flex-wrap gap-3 bg-surface-3 border border-border-subtle rounded p-3">
+                    {[
+                      { label: 'Temp', val: detail.weather_observations.temperature_f != null ? `${fmt2(detail.weather_observations.temperature_f)} °F` : '—' },
+                      { label: 'RH',   val: detail.weather_observations.relative_humidity_pct != null ? `${fmt2(detail.weather_observations.relative_humidity_pct)} %` : '—' },
+                      { label: 'Wind', val: detail.weather_observations.wind_speed_mph != null ? `${fmt2(detail.weather_observations.wind_speed_mph)} mph` : '—' },
+                      { label: 'Fuel Moisture 1hr', val: detail.weather_observations.fuel_moisture_1hr != null ? `${fmt2(detail.weather_observations.fuel_moisture_1hr)} %` : '—' },
+                    ].map(({ label, val }) => (
+                      <div key={label} className="text-center">
+                        <div className="text-[9px] text-text-muted font-mono">{label}</div>
+                        <div className="text-xs font-mono text-text-primary">{val}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Top risk cells + contributing factors */}
+              <div className="grid grid-cols-2 gap-4">
+                {/* Top risk cells */}
+                {detail.top_risk_cells?.length > 0 && (
+                  <div>
+                    <div className="text-text-muted text-[9px] uppercase tracking-wider mb-1">Top Risk Cells</div>
+                    <div className="bg-surface-3 border border-border-subtle rounded p-3 space-y-1">
+                      {detail.top_risk_cells.slice(0, 5).map((cell, i) => (
+                        <div key={i} className="flex items-center justify-between">
+                          <span className="text-[10px] font-mono text-text-muted">{cell.h3_index}</span>
+                          <span className="text-[10px] font-mono font-bold text-risk-critical">{fmt3(cell.risk_score)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Contributing factors */}
+                {detail.contributing_factors?.length > 0 && (
+                  <div>
+                    <div className="text-text-muted text-[9px] uppercase tracking-wider mb-1">Contributing Factors</div>
+                    <div className="bg-surface-3 border border-border-subtle rounded p-3 space-y-1">
+                      {detail.contributing_factors.map((f, i) => (
+                        <div key={i} className="flex items-start gap-1.5">
+                          <div className="w-1 h-1 rounded-full bg-risk-high flex-shrink-0 mt-1.5" />
+                          <span className="text-[10px] font-mono text-text-secondary leading-tight">{f}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Recommendations */}
+              {detail.preventive_recommendations?.length > 0 && (
+                <div>
+                  <div className="text-text-muted text-[9px] uppercase tracking-wider mb-1">Recommended Actions</div>
+                  <div className="bg-surface-3 border border-border-subtle rounded p-3 space-y-2">
+                    {detail.preventive_recommendations.map((rec, i) => (
+                      <div key={i} className="flex items-start gap-2">
+                        <span className={`text-[9px] font-mono font-bold flex-shrink-0 px-1 rounded ${rec.priority === 'CRITICAL' ? 'text-risk-critical' : rec.priority === 'HIGH' ? 'text-risk-high' : 'text-text-muted'}`}>
+                          {rec.priority}
+                        </span>
+                        <div>
+                          <div className="text-[10px] font-semibold text-text-primary">{rec.title}</div>
+                          <div className="text-[10px] text-text-secondary leading-tight mt-0.5">{rec.description}</div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Escalation trigger */}
+              {detail.escalation_trigger && (
+                <div>
+                  <div className="text-text-muted text-[9px] uppercase tracking-wider mb-1">Escalation Trigger</div>
+                  <p className="text-text-secondary text-[11px] leading-relaxed bg-surface-3 border border-border-subtle rounded p-3">
+                    {detail.escalation_trigger}
+                  </p>
+                </div>
+              )}
+
+              {/* Footer */}
+              <div className="flex items-center justify-between pt-2 border-t border-border-subtle">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-[9px] font-mono text-text-muted">type: {detail.report_type}</span>
+                  {detail.disclaimer && (
+                    <>
+                      <span className="text-[9px] font-mono text-text-muted">·</span>
+                      <span className="text-[9px] font-mono text-accent-orange">{detail.disclaimer}</span>
+                    </>
+                  )}
+                </div>
+                <div className="flex gap-2">
+                  {detail.data_completeness && Object.entries(detail.data_completeness).map(([k, v]) => (
+                    <span key={k} className={`text-[9px] font-mono px-1.5 py-0.5 rounded border ${v ? 'text-accent-green border-accent-green/30' : 'text-text-muted border-border-subtle'}`}>
+                      {k}
+                    </span>
+                  ))}
                 </div>
               </div>
-              <div className="text-[9px] text-text-muted font-mono mt-1">{report.content.model_attribution}</div>
+            </>
+          ) : !loading && (
+            /* Fallback for mock reports */
+            <div className="space-y-4">
+              <div>
+                <div className="text-text-muted text-[9px] uppercase tracking-wider mb-1">Situation Summary</div>
+                <p className="text-text-secondary text-[11px] leading-relaxed bg-surface-3 border border-border-subtle rounded p-3">
+                  {report.content?.situation_summary || '—'}
+                </p>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <div className="text-text-muted text-[9px] uppercase tracking-wider mb-1">Key Features</div>
+                  <div className="bg-surface-3 border border-border-subtle rounded p-3 space-y-1">
+                    {(report.content?.key_features_driving_risk || []).map((f, i) => (
+                      <div key={i} className="flex items-center gap-1.5">
+                        <div className="w-1 h-1 rounded-full bg-risk-high flex-shrink-0" />
+                        <span className="text-[10px] font-mono text-text-secondary">{f}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-text-muted text-[9px] uppercase tracking-wider mb-1">Recommended Actions</div>
+                  <div className="bg-surface-3 border border-border-subtle rounded p-3 space-y-1.5">
+                    {(report.content?.recommended_actions || []).map((a, i) => (
+                      <div key={i} className="flex items-start gap-1.5">
+                        <span className="text-[9px] font-mono text-text-muted flex-shrink-0 mt-0.5">{String(i + 1).padStart(2, '0')}</span>
+                        <span className="text-[10px] text-text-secondary leading-tight">{a}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
             </div>
-          </div>
-
-          {/* Footer */}
-          <div className="flex items-center justify-between pt-2 border-t border-border-subtle">
-            <div className="flex items-center gap-2">
-              <span className="text-[9px] font-mono text-text-muted">schema: {report.schema_type} (Pydantic/ICS-209)</span>
-              <span className="text-[9px] font-mono text-text-muted">·</span>
-              <span className="text-[9px] font-mono text-text-muted">grounding: {report.grounding_sources} sources ≥ min({3})</span>
-            </div>
-            <div className="flex gap-2">
-              {['JSON', 'Markdown', 'HTML'].map(fmt => (
-                <span key={fmt} className="text-[9px] font-mono text-text-muted border border-border-subtle rounded px-1.5 py-0.5 bg-surface-3">
-                  {fmt}
-                </span>
-              ))}
-            </div>
-          </div>
+          )}
         </div>
       )}
     </div>
@@ -171,18 +272,24 @@ export default function IncidentReports() {
   const [modeFilter, setModeFilter] = useState('all');
   const { data: liveReports } = useAPI('/api/reports?limit=50');
 
-  // Transform live API reports to match mock schema, fall back to mocks
+  // Normalize list items to a stable card shape
   const reports = (liveReports && liveReports.length > 0)
     ? liveReports.map(r => ({
         report_id: r.id,
-        mode: r.risk_level === 'CRITICAL' ? 'EMERGENCY' : r.risk_level === 'HIGH' ? 'ACTIVE' : 'QUIET',
-        region: 'california',
-        generated_at: r.generated_at,
-        confidence: r.confidence,
-        grounding_sources: 0,
-        schema_type: r.report_type,
-        title: `${r.report_type} — ${r.id}`,
-        content: { situation_summary: 'View full report in OBJ-3 Reporter tab.', risk_summary: {} },
+        id:         r.id,
+        mode:       r.operating_mode ?? (
+          r.risk_level === 'CRITICAL' ? 'EMERGENCY' :
+          r.risk_level === 'HIGH'     ? 'ACTIVE'    : 'QUIET'
+        ),
+        risk_level:            r.risk_level,
+        report_type:           r.report_type,
+        schema_type:           r.report_type,
+        generated_at:          r.generated_at,
+        confidence:            r.confidence ?? r.report_confidence ?? 0,
+        grounding_sources:     r.grounding_sources,
+        human_review_required: r.human_review_required,
+        title: `${(r.report_type || 'report').replace(/_/g, ' ')} — ${r.id}`,
+        content: null, // loaded on expand from /api/reports/{id}
       }))
     : MOCK_REPORTS;
 
@@ -209,8 +316,8 @@ export default function IncidentReports() {
             <div className="text-text-secondary text-xs font-mono">gemini-2.5-flash (Vertex AI)</div>
           </div>
           <div>
-            <div className="text-text-muted text-[9px] font-mono uppercase tracking-wider">Today</div>
-            <div className="text-text-secondary text-xs font-mono">2 reports generated</div>
+            <div className="text-text-muted text-[9px] font-mono uppercase tracking-wider">Reports</div>
+            <div className="text-text-secondary text-xs font-mono">{reports.length} generated</div>
           </div>
         </div>
 
@@ -242,11 +349,11 @@ export default function IncidentReports() {
         <div className="text-text-muted text-[9px] uppercase tracking-wider mb-2">Report Schema Hierarchy (src/models/obj3_gemini/schemas/)</div>
         <div className="flex items-center gap-2 flex-wrap">
           {[
-            { name: 'BaseReport',    file: 'base_schema.py',        desc: 'Pydantic base' },
-            { name: 'IncidentReport', file: 'incident_schema.py',   desc: 'ICS-209 aligned' },
-            { name: 'DailyReport',   file: 'daily_schema.py',       desc: 'Daily briefing' },
-            { name: 'HighRiskReport',file: 'high_risk_schema.py',   desc: 'CRITICAL conditions' },
-            { name: 'FinalReport',   file: 'final_schema.py',       desc: 'Post-incident' },
+            { name: 'BaseReport',     file: 'base_schema.py',      desc: 'Pydantic base' },
+            { name: 'IncidentReport', file: 'incident_schema.py',  desc: 'ICS-209 aligned' },
+            { name: 'DailyReport',    file: 'daily_schema.py',     desc: 'Daily briefing' },
+            { name: 'HighRiskReport', file: 'high_risk_schema.py', desc: 'CRITICAL conditions' },
+            { name: 'FinalReport',    file: 'final_schema.py',     desc: 'Post-incident' },
           ].map(s => (
             <div key={s.name} className="flex items-center gap-1.5 bg-surface-3 border border-border-subtle rounded px-2 py-1.5">
               <FileText className="w-3 h-3 text-text-muted" />
@@ -268,7 +375,7 @@ export default function IncidentReports() {
         )}
       </div>
 
-      {/* Reporting config note */}
+      {/* Validation config */}
       <div className="mt-4 bg-surface-2 border border-border-subtle rounded-lg p-3">
         <div className="text-text-muted text-[9px] uppercase tracking-wider mb-2">Validation Requirements</div>
         <div className="flex items-center gap-6 text-[10px] text-text-muted font-mono">

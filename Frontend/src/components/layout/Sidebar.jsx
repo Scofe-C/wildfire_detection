@@ -35,19 +35,18 @@ export default function Sidebar({ activeView, onNavigate }) {
       {/* Logo */}
       <div className="px-4 py-4 border-b border-sidebar-border">
         <div className="flex items-center gap-2.5">
-          <div
-            className="w-[34px] h-[34px] rounded-[8px] flex items-center justify-center flex-shrink-0"
-            style={{ background: 'linear-gradient(135deg, #c2410c, #ea580c)' }}
-          >
-            <Flame className="w-[17px] h-[17px] text-white" />
-          </div>
+          <img
+            src="/gemini-svg.svg"
+            alt="PyroWatch"
+            className="w-[42px] h-[42px] rounded-[10px] flex-shrink-0 object-cover"
+          />
           {!collapsed && (
             <div className="overflow-hidden">
-              <div className="font-display text-[15px] font-bold text-white leading-tight whitespace-nowrap">
-                Wildfire
+              <div className="font-display text-[20px] font-bold text-white leading-tight whitespace-nowrap">
+                PyroWatch
               </div>
               <div className="text-[10px] font-mono text-sidebar-text uppercase tracking-wider leading-tight">
-                MLOps Console
+                Intelligence Platform
               </div>
             </div>
           )}

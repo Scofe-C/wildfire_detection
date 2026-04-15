@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 500" width="100%" height="100%">
+  <defs>
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="4" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+    
+    <linearGradient id="irisGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FFD700" /> <stop offset="100%" stop-color="#FF4500" /> </linearGradient>
+
+    <pattern id="honeycomb" width="30" height="51.96" patternUnits="userSpaceOnUse" patternTransform="scale(0.8) translate(10, 10)">
+      <path d="M 15 0 L 30 8.66 L 30 25.98 L 15 34.64 L 0 25.98 L 0 8.66 Z" fill="none" stroke="#FFA500" stroke-width="2.5"/>
+      <path d="M 15 51.96 L 30 43.3 L 30 25.98 L 15 34.64 L 0 25.98 L 0 43.3 Z" fill="none" stroke="#FFA500" stroke-width="2.5"/>
+      <path d="M 45 17.32 L 60 8.66 L 60 25.98 L 45 34.64 L 30 25.98 L 30 8.66 Z" fill="none" stroke="#FFA500" stroke-width="2.5"/>
+      <path d="M -15 17.32 L 0 8.66 L 0 25.98 L -15 34.64 L -30 25.98 L -30 8.66 Z" fill="none" stroke="#FFA500" stroke-width="2.5"/>
+    </pattern>
+  </defs>
+
+  <circle cx="250" cy="250" r="230" fill="#1f1105" />
+
+  <path d="M 60,370 L 170,370 Q 190,370 200,355 L 210,380 L 230,340 L 255,400 L 275,340 L 290,380 L 300,355 Q 310,370 330,370 L 440,370" 
+        fill="none" stroke="#FFD700" stroke-width="4" filter="url(#glow)" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <path d="M 130,190 Q 150,140 250,130 Q 350,140 370,190" fill="none" stroke="#FFD700" stroke-width="2" filter="url(#glow)"/>
+  <path d="M 100,220 Q 130,160 250,150 Q 370,160 400,220" fill="none" stroke="#FF8C00" stroke-width="2"/>
+  
+  <circle cx="250" cy="130" r="4" fill="#FFD700" filter="url(#glow)"/>
+  <path d="M 250,130 L 250,160" fill="none" stroke="#FFD700" stroke-width="2" filter="url(#glow)"/>
+
+  <circle cx="130" cy="190" r="3" fill="#FFD700"/>
+  <circle cx="370" cy="190" r="3" fill="#FFD700"/>
+  <circle cx="160" cy="165" r="3" fill="#FFD700"/>
+  <circle cx="340" cy="165" r="3" fill="#FFD700"/>
+  <circle cx="200" cy="142" r="3" fill="#FFD700"/>
+  <circle cx="300" cy="142" r="3" fill="#FFD700"/>
+
+  <circle cx="100" cy="220" r="4" fill="#FF8C00"/>
+  <circle cx="400" cy="220" r="4" fill="#FF8C00"/>
+
+  <path d="M 130,310 Q 180,350 250,360 Q 320,350 370,310" fill="none" stroke="#FFD700" stroke-width="2" filter="url(#glow)"/>
+  <path d="M 100,280 Q 150,330 250,340 Q 350,330 400,280" fill="none" stroke="#FF8C00" stroke-width="2"/>
+
+  <circle cx="130" cy="310" r="3" fill="#FFD700"/>
+  <circle cx="370" cy="310" r="3" fill="#FFD700"/>
+  <circle cx="100" cy="280" r="4" fill="#FF8C00"/>
+  <circle cx="400" cy="280" r="4" fill="#FF8C00"/>
+  
+  <circle cx="200" cy="345" r="3" fill="#FFD700"/>
+  <circle cx="300" cy="345" r="3" fill="#FFD700"/>
+
+  <path d="M 80,250 Q 250,110 420,250 Q 250,390 80,250 Z" fill="none" stroke="#FFD700" stroke-width="3" filter="url(#glow)"/>
+  <path d="M 110,250 Q 250,135 390,250 Q 250,365 110,250 Z" fill="none" stroke="#FF8C00" stroke-width="3"/>
+
+  <clipPath id="irisClip">
+    <circle cx="250" cy="250" r="65" />
+  </clipPath>
+  
+  <circle cx="250" cy="250" r="65" fill="url(#irisGrad)" opacity="0.8" filter="url(#glow)"/>
+  
+  <rect x="180" y="180" width="140" height="140" fill="url(#honeycomb)" clip-path="url(#irisClip)" opacity="0.9"/>
+  
+  <polygon points="250,215 280,232.5 280,267.5 250,285 220,267.5 220,232.5" fill="#4A1800" stroke="#FF4500" stroke-width="3" filter="url(#glow)"/>
+
+  <path d="M 250,230 C 265,255 270,270 250,275 C 235,270 240,255 255,250 C 255,250 245,260 250,270 C 240,265 240,245 250,230 Z" fill="#FF2400" filter="url(#glow)"/>
+</svg>
