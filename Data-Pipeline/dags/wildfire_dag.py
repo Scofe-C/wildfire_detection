@@ -1145,4 +1145,3 @@ if __name__ == "__main__":
     print(f"DAG '{DAG_ID}' parsed successfully.")
     print(f"Tasks: {[t.task_id for t in dag.tasks]}")
     print(f"Task count: {len(dag.tasks)}")
-    dag.test()
