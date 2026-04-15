@@ -615,53 +615,103 @@ async def get_notifications() -> JSONResponse:
 
 @app.get("/api/reports")
 async def list_reports(limit: int = 50) -> JSONResponse:
-    reports_dir = _ROOT / "reports" / "disaster_reports"
-    if not reports_dir.exists():
-        return JSONResponse([])
-
     entries = []
-    for json_file in sorted(reports_dir.rglob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
-        if "review_manifest" in json_file.name or "incident_state" in json_file.name:
-            continue
-        try:
-            data = json.loads(json_file.read_text(encoding="utf-8"))
-            # Find companion HTML/MD
-            stem = json_file.stem
-            parent = json_file.parent
-            rendered = None
-            for ext in (".html", ".md"):
-                candidate = parent / (stem + ext)
-                if candidate.exists():
-                    # Use forward slashes — avoids URL encoding issues on Windows
-                    rendered = candidate.relative_to(_ROOT).as_posix()
-                    break
-            entries.append({
-                "id": stem,
-                "report_type": data.get("report_type", "unknown"),
-                "risk_level": data.get("risk_level", "?"),
-                "incident_id": data.get("incident_id", "?"),
-                "generated_at": data.get("generated_at", ""),
-                "confidence": data.get("report_confidence"),
-                "human_review_required": data.get("human_review_required", False),
-                "review_status": data.get("review_status", "?"),
-                "json_path": str(json_file.relative_to(_ROOT)),
-                "rendered_path": rendered,
-            })
-        except Exception:
-            continue
-        if len(entries) >= limit:
-            break
+
+    # ── Local disk (local Docker dev) ─────────────────────────────────────
+    reports_dir = _ROOT / "reports" / "disaster_reports"
+    if reports_dir.exists():
+        for json_file in sorted(reports_dir.rglob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
+            if "review_manifest" in json_file.name or "incident_state" in json_file.name:
+                continue
+            try:
+                data = json.loads(json_file.read_text(encoding="utf-8"))
+                stem = json_file.stem
+                parent = json_file.parent
+                rendered = None
+                for ext in (".html", ".md"):
+                    candidate = parent / (stem + ext)
+                    if candidate.exists():
+                        rendered = candidate.relative_to(_ROOT).as_posix()
+                        break
+                entries.append({
+                    "id": stem,
+                    "report_type": data.get("report_type", "unknown"),
+                    "risk_level": data.get("risk_level", "?"),
+                    "incident_id": data.get("incident_id", "?"),
+                    "generated_at": data.get("generated_at", ""),
+                    "confidence": data.get("report_confidence"),
+                    "human_review_required": data.get("human_review_required", False),
+                    "review_status": data.get("review_status", "?"),
+                    "json_path": str(json_file.relative_to(_ROOT)),
+                    "rendered_path": rendered,
+                })
+            except Exception:
+                continue
+            if len(entries) >= limit:
+                break
+
+    # ── GCS fallback (Cloud Run — disk is ephemeral) ───────────────────────
+    if not entries:
+        gcs_bucket = os.getenv("GCS_BUCKET_NAME")
+        if gcs_bucket:
+            try:
+                from google.cloud import storage as _gcs
+                _client = _gcs.Client()
+                blobs = _client.list_blobs(gcs_bucket, prefix="reports/obj3/")
+                for blob in sorted(blobs, key=lambda b: b.updated, reverse=True):
+                    if not blob.name.endswith(".json"):
+                        continue
+                    if "/latest/" in blob.name:
+                        continue
+                    stem = blob.name.rsplit("/", 1)[-1].replace(".json", "")
+                    if "review_manifest" in stem or "incident_state" in stem:
+                        continue
+                    try:
+                        data = json.loads(blob.download_as_bytes())
+                        entries.append({
+                            "id": stem,
+                            "report_type": data.get("report_type", "unknown"),
+                            "risk_level": data.get("risk_level", "?"),
+                            "incident_id": data.get("incident_id", "?"),
+                            "generated_at": data.get("generated_at", ""),
+                            "confidence": data.get("report_confidence"),
+                            "human_review_required": data.get("human_review_required", False),
+                            "review_status": data.get("review_status", "?"),
+                            "json_path": blob.name,
+                            "rendered_path": None,
+                        })
+                    except Exception:
+                        continue
+                    if len(entries) >= limit:
+                        break
+            except Exception as exc:
+                logger.warning("GCS report listing failed: %s", exc)
 
     return JSONResponse(entries)
 
 
 @app.get("/api/reports/{report_id}")
 async def get_report(report_id: str) -> JSONResponse:
+    # ── Local disk first ───────────────────────────────────────────────────
     reports_dir = _ROOT / "reports" / "disaster_reports"
     matches = list(reports_dir.rglob(f"{report_id}.json"))
-    if not matches:
-        raise HTTPException(status_code=404, detail=f"Report {report_id} not found")
-    return JSONResponse(json.loads(matches[0].read_text(encoding="utf-8")))
+    if matches:
+        return JSONResponse(json.loads(matches[0].read_text(encoding="utf-8")))
+
+    # ── GCS fallback ───────────────────────────────────────────────────────
+    gcs_bucket = os.getenv("GCS_BUCKET_NAME")
+    if gcs_bucket:
+        try:
+            from google.cloud import storage as _gcs
+            _client = _gcs.Client()
+            blobs = list(_client.list_blobs(gcs_bucket, prefix="reports/obj3/"))
+            for blob in blobs:
+                if blob.name.endswith(f"{report_id}.json"):
+                    return JSONResponse(json.loads(blob.download_as_bytes()))
+        except Exception as exc:
+            logger.warning("GCS report fetch failed: %s", exc)
+
+    raise HTTPException(status_code=404, detail=f"Report {report_id} not found")
 
 
 @app.delete("/api/reports/{report_id}")
@@ -1430,7 +1480,7 @@ async def generate_from_pipeline(request: Request) -> JSONResponse:
     """OBJ-1 → OBJ-2 → OBJ-3 pipeline: read inference + fused from GCS,
     run fire spread simulation, generate disaster report.
 
-    Called by the Airflow ``run_inference`` task or the dashboard button.
+    Called by the Airflow ``trigger_model_server`` task or the dashboard button.
 
     Expected JSON body::
 
@@ -1468,6 +1518,83 @@ async def generate_from_pipeline(request: Request) -> JSONResponse:
         _TIER_MAP = {"CRITICAL": "CRITICAL", "HIGH": "HIGH", "MEDIUM": "MODERATE", "LOW": "LOW"}
         _TIER_ORDER = ["CRITICAL", "HIGH", "MEDIUM", "LOW"]
 
+        # ── Step 0: OBJ-1 — Run inference for all regions before per-region loop ──
+        logger.info("[pipeline] Step 0: running OBJ-1 inference for regions: %s", regions)
+        import yaml as _yaml
+        import pandas as _pd
+        import io as _io
+        from src.preprocessing.feature_engineering import full_pipeline as _full_pipeline
+        from src.tracking.vertex_registry import VertexRegistry as _VertexRegistry
+
+        _config_path = Path(__file__).parents[2] / "configs" / "model_config.yaml"
+        with open(_config_path) as _f:
+            _model_cfg = _yaml.safe_load(_f)
+
+        _model_type = _model_cfg.get("model_type", "xgb")
+        _drop_cols = _model_cfg.get("pipeline_only_columns", [])
+        _thresholds = _model_cfg.get("risk_tiers", {"critical": 0.85, "high": 0.7, "medium": 0.5})
+
+        def _risk_tier(s: float) -> str:
+            if s >= _thresholds.get("critical", 0.85):
+                return "CRITICAL"
+            if s >= _thresholds.get("high", 0.7):
+                return "HIGH"
+            if s >= _thresholds.get("medium", 0.5):
+                return "MEDIUM"
+            return "LOW"
+
+        for _region in regions:
+            try:
+                _fused_prefix = f"data/processed/fused/{resolution_km}km/region={_region}/"
+                _blobs = list(client.list_blobs(bucket, prefix=_fused_prefix))
+                if not _blobs:
+                    logger.warning("[OBJ-1] No fused parquet found for %s at %s", _region, _fused_prefix)
+                    continue
+
+                _parquet_buffers = []
+                for _blob in _blobs:
+                    if _blob.name.endswith(".parquet"):
+                        _buf = _io.BytesIO()
+                        _blob.download_to_file(_buf)
+                        _buf.seek(0)
+                        _parquet_buffers.append(_pd.read_parquet(_buf))
+
+                if not _parquet_buffers:
+                    logger.warning("[OBJ-1] No .parquet blobs for region %s", _region)
+                    continue
+
+                _region_df = _pd.concat(_parquet_buffers, ignore_index=True)
+                _region_df = _region_df.drop(columns=[c for c in _drop_cols if c in _region_df.columns], errors="ignore")
+
+                _medians = _region_df.median(numeric_only=True).to_dict()
+                _X = _full_pipeline(_region_df, model_type=_model_type, is_inference=True, fit_medians=_medians)
+
+                _registry = _VertexRegistry(project=os.getenv("GOOGLE_CLOUD_PROJECT"), location="us-central1")
+                _model_obj = _registry.load_production_model(region=_region)
+
+                _scores = _model_obj.predict(_X)
+                _region_df = _region_df.copy()
+                _region_df["fire_risk_score"] = _scores
+                _region_df["fire_risk_flag"] = (_scores >= _model_cfg.get("risk_threshold", 0.5)).astype(int)
+                _region_df["risk_tier"] = _region_df["fire_risk_score"].apply(_risk_tier)
+
+                _top_cells = _region_df.nlargest(50, "fire_risk_score").to_dict(orient="records")
+                _inf_blob = bkt.blob(f"inference/latest/{_region}_latest.json")
+                _inf_blob.upload_from_string(
+                    json.dumps({
+                        "region": _region,
+                        "run_id": datetime.now(UTC).strftime("%Y%m%d-%H%M%S"),
+                        "cells": _top_cells,
+                        "scored_at": datetime.now(UTC).isoformat(),
+                    }, default=str),
+                    content_type="application/json",
+                )
+                logger.info("[OBJ-1] Wrote inference for %s: %d cells scored", _region, len(_region_df))
+
+            except Exception as _exc:
+                logger.warning("[OBJ-1] Inference failed for %s (non-blocking): %s", _region, _exc)
+
+        # ── Per-region OBJ-2 + OBJ-3 ──────────────────────────────────────────
         for region in regions:
             # ── Step 1: Read OBJ-1 inference JSON from GCS ────────────────
             blob_path = f"inference/latest/{region}_latest.json"

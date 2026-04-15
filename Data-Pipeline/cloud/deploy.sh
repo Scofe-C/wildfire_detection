@@ -33,7 +33,12 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 ENV_FILE="${1:-.env}"
 if [ -f "${ENV_FILE}" ]; then
-    export $(grep -v '^#' "${ENV_FILE}" | grep -v '^$' | xargs)
+    while IFS= read -r line || [[ -n "${line}" ]]; do
+        [[ "${line}" =~ ^[[:space:]]*# ]] && continue
+        [[ -z "${line//[[:space:]]/}" ]] && continue
+        [[ "${line}" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] || continue
+        export "${line?}"
+    done < "${ENV_FILE}"
     echo "✓ Loaded ${ENV_FILE}"
 else
     echo "ERROR: env file '${ENV_FILE}' not found."
@@ -87,7 +92,7 @@ gcloud functions deploy "${FUNCTION_NAME}" \
     --trigger-http \
     --no-allow-unauthenticated \
     --set-env-vars="AIRFLOW_URL=${AIRFLOW_URL},AIRFLOW_USER=${AIRFLOW_USER},AIRFLOW_PASS=${AIRFLOW_PASS}" \
-    --memory=128MB \
+    --memory=256MB \
     --timeout=60s \
     --min-instances=0 \
     --max-instances=3 \

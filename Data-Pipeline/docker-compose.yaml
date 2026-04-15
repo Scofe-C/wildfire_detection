@@ -28,6 +28,7 @@ x-airflow-common-env: &airflow-common-env
   AIRFLOW__CORE__LOAD_EXAMPLES: "false"
   AIRFLOW__CORE__ENABLE_XCOM_PICKLING: "true"
   AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "true"
+  AIRFLOW__API__AUTH_BACKENDS: "airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session"
 
   FIRMS_MAP_KEY: ${FIRMS_MAP_KEY:-your_firms_api_key_here}
   GEMINI_API_KEY: ${GEMINI_API_KEY:-}
