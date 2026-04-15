@@ -35,7 +35,6 @@ CMD ["python", "-m", "uvicorn", "src.api.inference_api:app", "--host", "0.0.0.0"
 FROM base AS dashboard
 RUN pip install --no-cache-dir uvicorn[standard] fastapi python-multipart
 COPY templates/ templates/
-COPY corpus/ corpus/
-RUN mkdir -p reports/disaster_reports
+RUN mkdir -p corpus/raw corpus/processed reports/disaster_reports
 EXPOSE 8000
 CMD ["python", "-m", "uvicorn", "src.api.server:app", "--host", "0.0.0.0", "--port", "8000"]
