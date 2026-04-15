@@ -84,7 +84,7 @@ jobs:
     name: "Stage 3 — Container Build"
     runs-on: ubuntu-latest
     needs: unit-tests
-    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master' && vars.ENABLE_GCP_DEPLOY == 'true'
     steps:
       - uses: actions/checkout@v4
 
@@ -111,7 +111,7 @@ jobs:
     name: "Stage 4-7 — Train, Validate, Bias Gate, Registry"
     runs-on: ubuntu-latest
     needs: container-build
-    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master' && vars.ENABLE_GCP_DEPLOY == 'true'
     environment: model-training
 
     steps:
@@ -210,7 +210,7 @@ jobs:
     name: "Stage 8 — Deploy (Manual Approval)"
     runs-on: ubuntu-latest
     needs: train-validate-register
-    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master' && vars.ENABLE_GCP_DEPLOY == 'true'
     environment: production   # Requires reviewer approval in GitHub settings
 
     steps:
@@ -268,7 +268,7 @@ jobs:
     name: "Stage 9 — Monitoring Scheduler"
     runs-on: ubuntu-latest
     needs: deploy
-    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master' && vars.ENABLE_GCP_DEPLOY == 'true'
 
     steps:
       - uses: actions/checkout@v4
