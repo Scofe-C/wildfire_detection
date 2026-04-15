@@ -131,8 +131,8 @@ git clone https://github.com/Scofe-C/wildfire_detection/data-pipeline.git
 cd wildfire-pipeline
 
 # 2. Configure environment variables
-cp .env.example .env
-# Edit .env: set FIRMS_MAP_KEY, GCS_BUCKET_NAME, GCP_KEY_PATH
+cp ../.env.example ../.env
+# Edit ../.env: set FIRMS_MAP_KEY, GCS_BUCKET_NAME, GCP_KEY_PATH (all at repo root)
 
 # 3. Configure DVC remote (one-time per developer)
 dvc remote add -d gcs_remote gs://<your-bucket>/dvc-store
@@ -141,10 +141,15 @@ dvc remote modify gcs_remote credentialpath gcp-key.json
 # 4. Pull versioned data
 dvc pull
 
-# 5. Start Airflow services
-docker compose up -d --build
+# 5. Start all services (from repo root)
+cd .. && make up-full
+# Or Airflow only: make up
 
-# 6. Open Airflow UI at http://localhost:8080  (admin / admin)
+# 6. Open services:
+#    Airflow:   http://localhost:8080  (airflow / airflow)
+#    Dashboard: http://localhost:8000
+#    Monitor:   http://localhost:8001
+#    MLflow:    http://localhost:5000
 ```
 
 ### Unpause DAGs
@@ -879,7 +884,7 @@ gcloud storage cp industrial_sources.json \
 
 ## 19. Environment Variables
 
-Copy `.env.example` to `.env`. **Never commit `.env` to Git** — it is listed in `.gitignore`.
+Environment variables are set in the **repo root `.env`** file (`wildfire_detection/.env`). See [SETUP.md](../SETUP.md) for the full template. **Never commit `.env` to Git**.
 
 | Variable | Required | Description |
 |---|---|---|
@@ -912,9 +917,9 @@ dvc pull
 # 4a. Reproduce full pipeline offline
 dvc repro
 
-# 4b. Or run in Docker (no local Python install needed)
-cp .env.example .env   # fill in your keys
-docker compose up -d --build
+# 4b. Or run in Docker (from repo root — no local Python install needed)
+cd .. && cp .env.example .env   # fill in your keys
+make up-full                    # starts all services
 ```
 
 `pyarrow` is hard-pinned in `constraints.txt` because Parquet encoding changed between major versions. All team members across Windows 11, Windows 10, and macOS must use the identical version to prevent silent schema divergence when reading each other's Parquet files.

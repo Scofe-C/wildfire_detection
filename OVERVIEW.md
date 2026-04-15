@@ -35,12 +35,13 @@ The platform has two main layers:
 └─────────────────────────────────────────────────────────────┘
 ```
 
-The project is split into two subdirectories:
+The project is split into three subdirectories:
 
 | Directory | Role |
 |-----------|------|
 | `Data-Pipeline/` | Data ingestion, feature engineering, Airflow orchestration |
-| `model-pipeline/` | ML model training, validation, bias gating, deployment |
+| `model-pipeline/` | ML model training, validation, bias gating, deployment, OBJ-3 dashboard |
+| `Frontend/` | React + Vite + Tailwind SPA — fire map, model pipeline views, OBJ-3 reporter |
 
 ---
 
@@ -140,7 +141,8 @@ Classifies each H3 cell as fire / no-fire given current conditions.
 - **Input**: 7 core features — temperature, relative humidity, wind speed/direction, precipitation, lagged fire detection, lagged active fire count
 - **Output**: Binary prediction + fire probability [0, 1]
 - **Hyperparameters**: `max_depth=6`, `n_estimators=100`, `scale_pos_weight` auto-computed for class imbalance
-- **Validation gate**: AUC-PR > 0.75 required before deployment
+- **Decision threshold**: 0.239 (tuned for >= 90% recall on LA fires)
+- **Validation gate**: AUC-PR >= 0.89 required before deployment (CI-enforced)
 
 ### OBJ-2 — Cell2Fire Physics-Based Spread Simulator
 
@@ -174,7 +176,7 @@ Generates structured incident reports using a state-machine-driven LLM orchestra
                           #   → Fire rate disparity must be < 5%
                           #   → DVC enforces bias_report.json before training proceeds
 3. Train OBJ-1 (XGBoost)  # MLflow experiment tracking; artifacts saved to models/ignition/
-4. Validate               # AUC-PR > 0.75 gate
+4. Validate               # AUC-PR >= 0.89 gate (all regions)
 5. Bias gate (post-train) # Fairlearn FNR disparity < 5% (FEMA NRI vulnerability stratification)
 6. Train OBJ-2 (Cell2Fire) parameter sweep
 7. Build OBJ-3 (Gemini) corpus embeddings
@@ -224,16 +226,23 @@ dvc repro         # Re-runs pipeline from that state
 | `model-pipeline/configs/reporting_config.yaml` | LLM backends, corpus paths, report schemas, Jinja2 templates |
 | `Data-Pipeline/dvc.yaml` | Data pipeline stages + dependencies |
 | `model-pipeline/dvc.yaml` | Model pipeline stages: `validate_model`, `bias_gate` |
-| `Data-Pipeline/docker-compose.yaml` | Local Airflow + Postgres + Redis dev environment |
+| `docker-compose.yaml` | Root-level unified compose — Airflow + Dashboard + Monitor + MLflow (profiles) |
+| `Data-Pipeline/docker-compose.yaml` | Sub-project Airflow + Postgres dev environment |
+| `Makefile` | Developer entry point: `make up`, `make up-full`, `make status`, `make test` |
 
 ### Required Environment Variables
 
+All set in a single `.env` file at the repo root:
+
 ```bash
-FIRMS_MAP_KEY        # NASA FIRMS API key
-GCS_BUCKET_NAME      # GCS bucket (e.g. wildfire-mlops-dev)
-GCP_KEY_PATH         # Path to GCP service account JSON
-SLACK_WEBHOOK_URL    # Optional: Slack alerts
-GOOGLE_CLOUD_PROJECT # GCP project ID
+FIRMS_MAP_KEY                  # NASA FIRMS API key
+GCS_BUCKET_NAME                # GCS bucket (e.g. wildfire-mlops-123)
+GCP_KEY_PATH                   # Path to GCP service account JSON (repo root)
+GOOGLE_APPLICATION_CREDENTIALS # Same path as GCP_KEY_PATH
+GOOGLE_CLOUD_PROJECT           # GCP project ID
+GEMINI_API_KEY                 # Google AI Studio key (OBJ-3 reports)
+LLM_BACKEND                    # gemini_dev | ollama | vertex_ai
+SLACK_WEBHOOK_URL              # Optional: Slack alerts
 ```
 
 ---
@@ -242,12 +251,46 @@ GOOGLE_CLOUD_PROJECT # GCP project ID
 
 The test suite has 200+ pytest tests covering ingestion, processing, fusion, validation, bias analysis, export, utilities, DAG structure, and end-to-end integration (with mocked APIs).
 
-GitHub Actions runs on every push:
-1. DAG parse-time import validation
-2. Full pytest suite inside Docker
-3. `ruff` linting (rules E and F, zero tolerance)
-4. Dependency pin check (`pyarrow` constraint)
-5. Docker layer build with cache
+### 3 GitHub Actions Workflows
+
+**`ci.yaml` — Data Pipeline CI** (push/PR to `main`/`develop`)
+1. Build Docker test image (cached)
+2. Validate Airflow DAG imports
+3. Validate `dvc.yaml` syntax + dep files
+4. pytest suite (coverage >= 60%)
+5. ruff lint + mypy type check + pip-audit
+6. Dependency pin check
+
+**`model_ci.yml` — Model Pipeline CI/CD** (push/PR to `master`/`main`/`develop`, 9 stages)
+1. Lint (ruff + mypy)
+2. Unit tests (coverage >= 35%)
+3. Build + push Docker image to GCR (master only)
+4. Train CA + TX models
+5. AUC-PR gate (>= 0.89) — blocks deploy if model isn't accurate
+6. Bias gate (FNR disparity <= 5%) — blocks deploy if model is unfair
+7. Push to Vertex AI registry
+8. Deploy to Cloud Run (manual approval required) + smoke test
+9. Update Cloud Scheduler monitoring job (every 6h)
+
+**`model_rollback.yml` — Manual Rollback** (workflow_dispatch only)
+- Swaps Vertex AI model labels to roll back to a known-good version
+- Requires production environment approval
+
+### Startup
+
+```bash
+cp .env.example .env          # fill in API keys
+make up-full                  # Airflow + Dashboard + Monitor + MLflow
+make status                   # verify all endpoints are healthy
+```
+
+| Service | URL |
+|---------|-----|
+| Airflow | http://localhost:8080 (airflow / airflow) |
+| OBJ-3 Dashboard | http://localhost:8000 |
+| Fire Monitor | http://localhost:8001 |
+| MLflow | http://localhost:5000 |
+| Frontend SPA | http://localhost:5173 (npm run dev) |
 
 ---
 
@@ -255,6 +298,13 @@ GitHub Actions runs on every push:
 
 ```
 wildfire_detection/
+├── .env.example                 # Unified env template (single .env at root)
+├── docker-compose.yaml          # Root compose — all services with profiles
+├── Makefile                     # make up / make up-full / make status / make test
+├── start.sh                     # Zero-dep Docker startup wrapper
+├── .github/workflows/           # CI/CD (ci.yaml, model_ci.yml, model_rollback.yml)
+├── .pre-commit-config.yaml      # Pre-commit hooks (ruff, mypy, secrets)
+│
 ├── Data-Pipeline/
 │   ├── dags/                    # Airflow DAGs
 │   │   ├── wildfire_dag.py      # Main 6-hourly pipeline DAG
@@ -265,6 +315,8 @@ wildfire_detection/
 │   │   ├── fusion/              # Feature joining onto H3 grid
 │   │   ├── validation/          # Schema, anomaly detection, bias analysis
 │   │   ├── export/              # Parquet + spatial .npz output
+│   │   ├── fire_monitor.py      # Continuous monitoring loop (quiet/active/emergency)
+│   │   ├── fire_monitor_api.py  # Control dashboard API (:8001)
 │   │   └── utils/               # H3 grid, rate limiting, GCS state, schema loading
 │   ├── cloud/
 │   │   └── fire_watchdog/       # GCP Cloud Function (real-time monitor)
@@ -272,26 +324,40 @@ wildfire_detection/
 │   ├── configs/
 │   │   └── schema_config.yaml   # 28-feature schema (single source of truth)
 │   ├── docker/                  # Multi-stage Dockerfile
-│   ├── docker-compose.yaml
+│   ├── docker-compose.yaml      # Sub-project compose (Airflow + OBJ-3 dashboard)
 │   └── dvc.yaml
 │
-└── model-pipeline/
+├── model-pipeline/
+│   ├── src/
+│   │   ├── data/                # Parquet loader + schema validation
+│   │   ├── api/                 # FastAPI server (dashboard + inference API)
+│   │   ├── models/
+│   │   │   ├── obj1_xgboost/    # Fire occurrence classifier
+│   │   │   ├── obj2_spread/     # Rothermel + Cell2Fire spread simulator
+│   │   │   └── obj3_gemini/     # LLM disaster report orchestrator
+│   │   ├── validation/          # AUC-PR, F1, FNR metrics
+│   │   ├── bias/                # Fairlearn FNR disparity gate
+│   │   ├── tracking/            # MLflow + Vertex AI
+│   │   ├── notifications/       # Slack webhook alerts
+│   │   └── pipeline/            # Orchestrator + OBJ-1/2→OBJ-3 bridge
+│   ├── dashboard/               # OBJ-3 report viewer HTML
+│   ├── configs/
+│   │   ├── feature_schema.yaml
+│   │   ├── model_config.yaml
+│   │   └── reporting_config.yaml
+│   ├── models/ignition/         # Trained model artifacts (DVC-tracked)
+│   ├── reports/                 # Validation + bias + disaster reports
+│   └── dvc.yaml
+│
+└── Frontend/                    # React + Vite + Tailwind SPA
     ├── src/
-    │   ├── data/                # Parquet loader + schema validation
-    │   ├── models/
-    │   │   ├── obj1_xgboost/    # Fire occurrence classifier
-    │   │   ├── obj2_spread/     # Cell2Fire C++ wrapper
-    │   │   └── obj3_gemini/     # LLM disaster report orchestrator
-    │   ├── validation/          # AUC-PR, F1, FNR metrics
-    │   ├── bias/                # Fairlearn FNR disparity gate
-    │   ├── tracking/            # MLflow + Vertex AI
-    │   ├── notifications/       # Slack webhook alerts
-    │   └── pipeline/            # Orchestrator (wires all stages)
-    ├── configs/
-    │   ├── feature_schema.yaml
-    │   ├── model_config.yaml
-    │   └── reporting_config.yaml
-    ├── models/ignition/         # Trained model artifacts (DVC-tracked)
-    ├── reports/                 # Validation + bias reports
-    └── dvc.yaml
+    │   ├── components/
+    │   │   ├── fire-map/        # H3 fire map with risk visualization
+    │   │   ├── model-pipeline/  # OBJ-3 reporter UI
+    │   │   ├── layout/          # Header, Sidebar
+    │   │   └── ui/              # Shared components (Badge, Card, Spinner, etc.)
+    │   ├── hooks/               # API hooks
+    │   └── api.js               # Backend API client
+    ├── package.json
+    └── tailwind.config.js
 ```

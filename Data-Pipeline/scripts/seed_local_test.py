@@ -200,7 +200,8 @@ def create_dummy_gcp_key():
         "token_uri": "https://oauth2.googleapis.com/token",
     }
 
-    output_path = PROJECT_ROOT / "gcp-key.json"
+    # Write to repo root (single source of truth)
+    output_path = PROJECT_ROOT.parent / "gcp-key.json"
     if output_path.exists():
         print(f"  gcp-key.json: already exists, skipping (remove manually to regenerate)")
         return output_path
@@ -213,7 +214,8 @@ def create_dummy_gcp_key():
 
 def create_dot_env():
     """Create .env with dummy values so docker compose starts."""
-    env_path = PROJECT_ROOT / ".env"
+    # Write to repo root (single source of truth)
+    env_path = PROJECT_ROOT.parent / ".env"
     if env_path.exists():
         print(f"  .env: already exists, skipping (remove manually to regenerate)")
         return env_path
@@ -222,6 +224,7 @@ def create_dot_env():
 FIRMS_MAP_KEY=DUMMY_KEY_FOR_LOCAL_TESTING
 GCS_BUCKET_NAME=wildfire-mlops-dev
 GCP_KEY_PATH=./gcp-key.json
+GOOGLE_APPLICATION_CREDENTIALS=./gcp-key.json
 SLACK_WEBHOOK_URL=
 """
     with open(env_path, "w",encoding="utf-8") as f:

@@ -29,6 +29,7 @@
 name: Pipeline CI
 
 on:
+  workflow_dispatch:
   push:
     branches: [main, develop]
     paths:
@@ -198,6 +199,19 @@ jobs:
               --output-format=github \
               --select=E,F \
               --ignore=E501
+
+      - name: Type check with mypy
+        run: |
+          docker run --rm \
+            wildfire-pipeline:test \
+            bash -c "pip install --quiet mypy types-PyYAML types-requests && \
+              mypy scripts/ --ignore-missing-imports --no-error-summary || true"
+
+      - name: Vulnerability scan with pip-audit
+        run: |
+          docker run --rm \
+            wildfire-pipeline:test \
+            bash -c "pip install --quiet pip-audit && pip-audit --strict 2>&1 || true"
 
       # Verify critical packages are pinned in constraints.txt.
       # These four packages have cross-machine compatibility requirements:

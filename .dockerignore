@@ -1,0 +1,42 @@
+# Git
+.git/
+.gitignore
+
+# Secrets — never bake into images
+.env
+*.env
+*.env.*
+env
+gcp-key.json
+*.json.key
+
+# Python caches
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+.venv/
+venv/
+
+# Node
+Frontend/node_modules/
+
+# Data (DVC-tracked, pulled at runtime)
+**/data/raw/
+**/data/processed/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# CI / docs
+.github/
+*.md
+startup_plan.md
+
+# Claude
+.claude/

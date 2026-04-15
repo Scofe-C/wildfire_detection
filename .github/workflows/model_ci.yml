@@ -2,11 +2,11 @@ name: Model Pipeline CI/CD
 
 on:
   push:
-    branches: [master]
+    branches: [master, main, develop]
     paths:
       - "model-pipeline/**"
   pull_request:
-    branches: [master]
+    branches: [master, main, develop]
     paths:
       - "model-pipeline/**"
   workflow_dispatch:
@@ -19,6 +19,10 @@ env:
   PYTHON_VERSION: "3.11"
   GCS_BUCKET: "wildfire-mlops-123"
   GCP_REGION: "us-central1"
+
+concurrency:
+  group: model-ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   # ── Stage 1: Lint ────────────────────────────────────────────────────────
@@ -42,6 +46,12 @@ jobs:
             --select=E,F \
             --ignore=E501,F401
 
+      - name: Type check with mypy
+        working-directory: model-pipeline
+        run: |
+          pip install mypy types-PyYAML types-requests
+          mypy src/ --ignore-missing-imports --no-error-summary || true
+
   # ── Stage 2: Unit tests ──────────────────────────────────────────────────
   unit-tests:
     name: "Stage 2 — Unit Tests"
@@ -64,7 +74,10 @@ jobs:
           pytest tests/ \
             --ignore=tests/obj2 \
             --ignore=tests/obj3 \
-            -v --tb=short
+            -v --tb=short \
+            --cov=src \
+            --cov-report=term-missing \
+            --cov-fail-under=35
 
   # ── Stage 3: Container build ─────────────────────────────────────────────
   container-build:
@@ -220,6 +233,21 @@ jobs:
             --set-env-vars MLFLOW_TRACKING_URI=${{ secrets.MLFLOW_TRACKING_URI }} \
             --no-allow-unauthenticated \
             --quiet
+
+      - name: Smoke test — verify Cloud Run health
+        run: |
+          CLOUD_RUN_URL=$(gcloud run services describe wildfire-inference \
+            --region ${{ env.GCP_REGION }} --format "value(status.url)")
+          for i in 1 2 3 4 5; do
+            if curl -sf --max-time 10 "${CLOUD_RUN_URL}/health" > /dev/null 2>&1; then
+              echo "Smoke test PASSED"
+              exit 0
+            fi
+            echo "Attempt $i — waiting 10s..."
+            sleep 10
+          done
+          echo "Smoke test FAILED — /health not responding"
+          exit 1
 
       - name: Notify Slack on success
         if: success()
