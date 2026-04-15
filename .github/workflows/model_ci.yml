@@ -84,7 +84,7 @@ jobs:
     name: "Stage 3 — Container Build"
     runs-on: ubuntu-latest
     needs: unit-tests
-    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/master') || github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@v4
 
@@ -111,7 +111,7 @@ jobs:
     name: "Stage 4-7 — Train, Validate, Bias Gate, Registry"
     runs-on: ubuntu-latest
     needs: container-build
-    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/master') || github.event_name == 'workflow_dispatch'
     environment: model-training
 
     steps:
