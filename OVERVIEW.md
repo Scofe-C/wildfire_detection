@@ -1,5 +1,5 @@
 
-# Wildfire Detection MLOps Platform
+hoe# Wildfire Detection MLOps Platform
 
 A production-grade MLOps platform for wildfire detection and disaster response in California and Texas, built for Northeastern University's MLOps course (February 2026).
 
