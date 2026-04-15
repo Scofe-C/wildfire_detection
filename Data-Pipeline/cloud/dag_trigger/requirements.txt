@@ -1,0 +1,2 @@
+# dag-trigger Cloud Function — stdlib only, no external deps needed
+# urllib and json are built into Python 3.x
