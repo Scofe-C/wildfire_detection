@@ -8,9 +8,9 @@
 GREEN='\033[0;32m'; RED='\033[0;31m'; YELLOW='\033[0;33m'; NC='\033[0m'
 
 ENDPOINTS=(
-    "Airflow Webserver  |http://localhost:8080/health         |airflow / airflow"
-    "OBJ-3 Dashboard    |http://localhost:8000/api/status     |—"
-    "Frontend SPA       |http://localhost:3000                |—"
+    "Airflow Webserver|http://localhost:8080/health|airflow / airflow"
+    "OBJ-3 Dashboard|http://localhost:8000/api/status|—"
+    "Frontend SPA|http://localhost:3000|—"
 )
 
 echo ""

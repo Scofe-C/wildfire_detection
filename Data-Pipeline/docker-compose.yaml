@@ -31,6 +31,7 @@ x-airflow-common-env: &airflow-common-env
 
   FIRMS_MAP_KEY: ${FIRMS_MAP_KEY:-your_firms_api_key_here}
   GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+  GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
   GCS_BUCKET_NAME: ${GCS_BUCKET_NAME:-wildfire-mlops-dev}
   GOOGLE_CLOUD_PROJECT: ${GOOGLE_CLOUD_PROJECT:-}
   SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}
@@ -150,6 +151,7 @@ services:
     image: wildfire-obj3-dashboard:local
     environment:
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
       GOOGLE_APPLICATION_CREDENTIALS: /app/gcp-key.json
       GOOGLE_CLOUD_PROJECT: ${GOOGLE_CLOUD_PROJECT:-}
       GCS_BUCKET_NAME: ${GCS_BUCKET_NAME:-wildfire-mlops-dev}
