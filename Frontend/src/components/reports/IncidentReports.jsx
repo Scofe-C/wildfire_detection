@@ -145,7 +145,7 @@ function ReportCard({ report }) {
               )}
 
               {/* Top risk cells + contributing factors */}
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 {/* Top risk cells */}
                 {detail.top_risk_cells?.length > 0 && (
                   <div>
@@ -208,7 +208,7 @@ function ReportCard({ report }) {
               )}
 
               {/* Footer */}
-              <div className="flex items-center justify-between pt-2 border-t border-border-subtle">
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-border-subtle">
                 <div className="flex items-center gap-2 flex-wrap">
                   <span className="text-[9px] font-mono text-text-muted">type: {detail.report_type}</span>
                   {detail.disclaimer && (
@@ -218,7 +218,7 @@ function ReportCard({ report }) {
                     </>
                   )}
                 </div>
-                <div className="flex gap-2">
+                <div className="flex flex-wrap gap-2">
                   {detail.data_completeness && Object.entries(detail.data_completeness).map(([k, v]) => (
                     <span key={k} className={`text-[9px] font-mono px-1.5 py-0.5 rounded border ${v ? 'text-accent-green border-accent-green/30' : 'text-text-muted border-border-subtle'}`}>
                       {k}
@@ -236,7 +236,7 @@ function ReportCard({ report }) {
                   {report.content?.situation_summary || '—'}
                 </p>
               </div>
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
                   <div className="text-text-muted text-[9px] uppercase tracking-wider mb-1">Key Features</div>
                   <div className="bg-surface-3 border border-border-subtle rounded p-3 space-y-1">
@@ -301,8 +301,8 @@ export default function IncidentReports() {
     <div className="p-6 overflow-y-auto h-full">
 
       {/* Header strip */}
-      <div className="bg-surface-2 border border-border-subtle rounded-lg p-3 mb-5 flex items-center justify-between">
-        <div className="flex items-center gap-6">
+      <div className="bg-surface-2 border border-border-subtle rounded-lg p-3 mb-5 flex flex-col md:flex-row items-start md:items-center gap-3 md:gap-0 justify-between">
+        <div className="grid grid-cols-2 md:flex md:items-center gap-3 md:gap-6">
           <div>
             <div className="text-text-muted text-[9px] font-mono uppercase tracking-wider">Generator</div>
             <div className="text-text-primary text-xs font-semibold">GeminiDisasterReporter (OBJ-3)</div>
@@ -378,7 +378,7 @@ export default function IncidentReports() {
       {/* Validation config */}
       <div className="mt-4 bg-surface-2 border border-border-subtle rounded-lg p-3">
         <div className="text-text-muted text-[9px] uppercase tracking-wider mb-2">Validation Requirements</div>
-        <div className="flex items-center gap-6 text-[10px] text-text-muted font-mono">
+        <div className="flex flex-wrap items-center gap-3 md:gap-6 text-[10px] text-text-muted font-mono">
           <span>confidence_threshold: 0.70</span>
           <span>min_grounding_sources: 3</span>
           <span>section_completeness: required</span>

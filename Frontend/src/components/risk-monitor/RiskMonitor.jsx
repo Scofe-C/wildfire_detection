@@ -3,6 +3,10 @@ import { AlertTriangle, Wind, Thermometer, Droplets, Flame, MapPin } from 'lucid
 import { CALIFORNIA_CELLS, TEXAS_CELLS, getRiskTier, RISK_THRESHOLDS } from '../../data/mockGridData';
 import { PIPELINE_META, FUSION_STAGE } from '../../data/mockPipelineData';
 import { apiUrl, normalizeCell, fmt } from '../../api';
+import LOCATION_NAMES from '../../data/locationNames.json';
+
+// Build a fast lookup: grid_id → location name
+const LOCATION_MAP = Object.fromEntries(LOCATION_NAMES.map(l => [l.grid_id, l.location]));
 
 const TIER_COLORS = {
   CRITICAL: { bg: 'bg-risk-critical',     border: 'border-risk-critical',    text: 'text-risk-critical',     badge: 'bg-risk-critical/20 border-risk-critical/40 text-risk-critical' },
@@ -40,7 +44,9 @@ function CellCard({ cell, region, onClick, selected }) {
       }`}
     >
       <div className="flex items-start justify-between mb-1">
-        <div className="text-text-primary text-[10px] font-semibold leading-tight">{cell.name}</div>
+        <div className="text-text-primary text-[10px] font-semibold leading-tight">
+          {LOCATION_MAP[cell.grid_id] || cell.grid_id?.slice(0, 10)}
+        </div>
         <RiskBadge tier={tier} size="xs" />
       </div>
       <div className={`text-xl font-mono font-bold ${c.text} leading-none mb-1.5`}>
@@ -74,7 +80,9 @@ function CellDetail({ cell, region }) {
       <div>
         <div className="flex items-center gap-2 mb-1">
           <MapPin className="w-3.5 h-3.5 text-text-muted" />
-          <span className="text-text-primary text-sm font-semibold">{cell.name}</span>
+          <span className="text-text-primary text-sm font-semibold">
+            {LOCATION_MAP[cell.grid_id] || cell.grid_id}
+          </span>
           <RiskBadge tier={tier} />
         </div>
         <div className="text-text-muted text-[10px] font-mono">{cell.grid_id}  ·  {region}  ·  H3 res-2  ·  64 km</div>
