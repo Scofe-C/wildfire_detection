@@ -615,9 +615,49 @@ async def get_notifications() -> JSONResponse:
 
 @app.get("/api/reports")
 async def list_reports(limit: int = 50) -> JSONResponse:
-    entries = []
+    seen_ids: set[str] = set()
+    entries: list[dict] = []
 
-    # ── Local disk (local Docker dev) ─────────────────────────────────────
+    def _append(entry: dict) -> None:
+        if entry["id"] not in seen_ids:
+            seen_ids.add(entry["id"])
+            entries.append(entry)
+
+    # ── GCS (always checked — source of truth in Cloud Run) ───────────────
+    gcs_bucket = os.getenv("GCS_BUCKET_NAME")
+    if gcs_bucket:
+        try:
+            from google.cloud import storage as _gcs
+            _client = _gcs.Client()
+            blobs = _client.list_blobs(gcs_bucket, prefix="reports/obj3/")
+            for blob in sorted(blobs, key=lambda b: b.updated, reverse=True):
+                if not blob.name.endswith(".json"):
+                    continue
+                if "/latest/" in blob.name:
+                    continue
+                stem = blob.name.rsplit("/", 1)[-1].replace(".json", "")
+                if "review_manifest" in stem or "incident_state" in stem:
+                    continue
+                try:
+                    data = json.loads(blob.download_as_bytes())
+                    _append({
+                        "id": stem,
+                        "report_type": data.get("report_type", "unknown"),
+                        "risk_level": data.get("risk_level", "?"),
+                        "incident_id": data.get("incident_id", "?"),
+                        "generated_at": data.get("generated_at", ""),
+                        "confidence": data.get("report_confidence"),
+                        "human_review_required": data.get("human_review_required", False),
+                        "review_status": data.get("review_status", "?"),
+                        "json_path": blob.name,
+                        "rendered_path": None,
+                    })
+                except Exception:
+                    continue
+        except Exception as exc:
+            logger.warning("GCS report listing failed: %s", exc)
+
+    # ── Local disk (local dev / newly written reports not yet in GCS) ──────
     reports_dir = _ROOT / "reports" / "disaster_reports"
     if reports_dir.exists():
         for json_file in sorted(reports_dir.rglob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
@@ -633,7 +673,7 @@ async def list_reports(limit: int = 50) -> JSONResponse:
                     if candidate.exists():
                         rendered = candidate.relative_to(_ROOT).as_posix()
                         break
-                entries.append({
+                _append({
                     "id": stem,
                     "report_type": data.get("report_type", "unknown"),
                     "risk_level": data.get("risk_level", "?"),
@@ -647,47 +687,9 @@ async def list_reports(limit: int = 50) -> JSONResponse:
                 })
             except Exception:
                 continue
-            if len(entries) >= limit:
-                break
 
-    # ── GCS fallback (Cloud Run — disk is ephemeral) ───────────────────────
-    if not entries:
-        gcs_bucket = os.getenv("GCS_BUCKET_NAME")
-        if gcs_bucket:
-            try:
-                from google.cloud import storage as _gcs
-                _client = _gcs.Client()
-                blobs = _client.list_blobs(gcs_bucket, prefix="reports/obj3/")
-                for blob in sorted(blobs, key=lambda b: b.updated, reverse=True):
-                    if not blob.name.endswith(".json"):
-                        continue
-                    if "/latest/" in blob.name:
-                        continue
-                    stem = blob.name.rsplit("/", 1)[-1].replace(".json", "")
-                    if "review_manifest" in stem or "incident_state" in stem:
-                        continue
-                    try:
-                        data = json.loads(blob.download_as_bytes())
-                        entries.append({
-                            "id": stem,
-                            "report_type": data.get("report_type", "unknown"),
-                            "risk_level": data.get("risk_level", "?"),
-                            "incident_id": data.get("incident_id", "?"),
-                            "generated_at": data.get("generated_at", ""),
-                            "confidence": data.get("report_confidence"),
-                            "human_review_required": data.get("human_review_required", False),
-                            "review_status": data.get("review_status", "?"),
-                            "json_path": blob.name,
-                            "rendered_path": None,
-                        })
-                    except Exception:
-                        continue
-                    if len(entries) >= limit:
-                        break
-            except Exception as exc:
-                logger.warning("GCS report listing failed: %s", exc)
-
-    return JSONResponse(entries)
+    entries.sort(key=lambda e: e.get("generated_at", ""), reverse=True)
+    return JSONResponse(entries[:limit])
 
 
 @app.get("/api/reports/{report_id}")
@@ -1520,9 +1522,11 @@ async def generate_from_pipeline(request: Request) -> JSONResponse:
 
         # ── Step 0: OBJ-1 — Run inference for all regions before per-region loop ──
         logger.info("[pipeline] Step 0: running OBJ-1 inference for regions: %s", regions)
+        import io as _io
         import yaml as _yaml
         import pandas as _pd
-        import io as _io
+        import xgboost as _xgb
+        import lightgbm as _lgb
         from src.preprocessing.feature_engineering import full_pipeline as _full_pipeline
         from src.tracking.vertex_registry import VertexRegistry as _VertexRegistry
 
@@ -1530,21 +1534,38 @@ async def generate_from_pipeline(request: Request) -> JSONResponse:
         with open(_config_path) as _f:
             _model_cfg = _yaml.safe_load(_f)
 
-        _model_type = _model_cfg.get("model_type", "xgb")
-        _drop_cols = _model_cfg.get("pipeline_only_columns", [])
-        _thresholds = _model_cfg.get("risk_tiers", {"critical": 0.85, "high": 0.7, "medium": 0.5})
+        # Complete list of pipeline-only columns — must be dropped before full_pipeline
+        _PIPELINE_ONLY_COLS = [
+            "active_fire_count", "mean_frp", "median_frp",
+            "max_confidence", "nearest_fire_distance_km",
+            "fire_detected_binary",
+            "canopy_base_height_m", "canopy_bulk_density", "evt_national_class",
+        ]
 
-        def _risk_tier(s: float) -> str:
-            if s >= _thresholds.get("critical", 0.85):
-                return "CRITICAL"
-            if s >= _thresholds.get("high", 0.7):
-                return "HIGH"
-            if s >= _thresholds.get("medium", 0.5):
-                return "MEDIUM"
+        # Region-specific risk tier thresholds — California raised to reduce
+        # false CRITICAL flags; Texas slightly raised from baseline.
+        _TIER_THRESHOLDS = {
+            "california": [("CRITICAL", 0.80), ("HIGH", 0.50), ("MEDIUM", 0.20)],
+            "texas":      [("CRITICAL", 0.75), ("HIGH", 0.45), ("MEDIUM", 0.18)],
+        }
+        _DEFAULT_TIERS = [("CRITICAL", 0.65), ("HIGH", 0.365), ("MEDIUM", 0.15)]
+
+        def _assign_risk_tier(score: float, region: str = "") -> str:
+            tiers = _TIER_THRESHOLDS.get(region, _DEFAULT_TIERS)
+            for tier, lower in tiers:
+                if score >= lower:
+                    return tier
             return "LOW"
+
+        _vai_cfg = _model_cfg.get("tracking", {}).get("vertex_ai", {})
+        _project_id = os.getenv("GOOGLE_CLOUD_PROJECT", _vai_cfg.get("project_id", ""))
+        _location = _vai_cfg.get("location", "us-central1")
+        _run_timestamp = datetime.now(UTC)
+        _all_critical: list[dict] = []
 
         for _region in regions:
             try:
+                # Read fused parquet from GCS
                 _fused_prefix = f"data/processed/fused/{resolution_km}km/region={_region}/"
                 _blobs = list(client.list_blobs(bucket, prefix=_fused_prefix))
                 if not _blobs:
@@ -1564,35 +1585,141 @@ async def generate_from_pipeline(request: Request) -> JSONResponse:
                     continue
 
                 _region_df = _pd.concat(_parquet_buffers, ignore_index=True)
-                _region_df = _region_df.drop(columns=[c for c in _drop_cols if c in _region_df.columns], errors="ignore")
 
-                _medians = _region_df.median(numeric_only=True).to_dict()
-                _X = _full_pipeline(_region_df, model_type=_model_type, is_inference=True, fit_medians=_medians)
+                # Extract FIRMS aggregates BEFORE dropping pipeline-only columns
+                _firms_count = 0
+                _firms_hotspots: list[dict] = []
+                if "active_fire_count" in _region_df.columns:
+                    _firms_count = int(_region_df["active_fire_count"].sum())
+                    if _firms_count > 0 and "mean_frp" in _region_df.columns:
+                        for _, _row in _region_df[_region_df["active_fire_count"] > 0].iterrows():
+                            _firms_hotspots.append({
+                                "lat": float(_row.get("latitude", 0)),
+                                "lon": float(_row.get("longitude", 0)),
+                                "frp": float(_row.get("mean_frp", 0)),
+                                "confidence": float(_row.get("max_confidence", 80)),
+                            })
 
-                _registry = _VertexRegistry(project=os.getenv("GOOGLE_CLOUD_PROJECT"), location="us-central1")
-                _model_obj = _registry.load_production_model(region=_region)
+                # Drop pipeline-only columns before preprocessing
+                _drop_cols = [c for c in _PIPELINE_ONLY_COLS if c in _region_df.columns]
+                if _drop_cols:
+                    _region_df = _region_df.drop(columns=_drop_cols)
 
-                _scores = _model_obj.predict(_X)
-                _region_df = _region_df.copy()
-                _region_df["fire_risk_score"] = _scores
-                _region_df["fire_risk_flag"] = (_scores >= _model_cfg.get("risk_threshold", 0.5)).astype(int)
-                _region_df["risk_tier"] = _region_df["fire_risk_score"].apply(_risk_tier)
+                # Load production model from Vertex AI registry
+                _registry = _VertexRegistry(
+                    project_id=_project_id,
+                    location=_location,
+                    display_name=f"wildfire-ignition-{_region}",
+                    gcs_bucket=bucket,
+                )
+                _model, _medians, _threshold = _registry.load_production()
+                logger.info("[OBJ-1] %s: model loaded, threshold=%.4f", _region, _threshold)
 
-                _top_cells = _region_df.nlargest(50, "fire_risk_score").to_dict(orient="records")
-                _inf_blob = bkt.blob(f"inference/latest/{_region}_latest.json")
-                _inf_blob.upload_from_string(
-                    json.dumps({
-                        "region": _region,
-                        "run_id": datetime.now(UTC).strftime("%Y%m%d-%H%M%S"),
-                        "cells": _top_cells,
-                        "scored_at": datetime.now(UTC).isoformat(),
-                    }, default=str),
+                # Run preprocessing pipeline (returns tuple — unpack second element)
+                _X, _ = _full_pipeline(_region_df, model_type="xgb", is_inference=True, fit_medians=_medians)
+
+                # Score with model-type-specific API
+                if isinstance(_model, _xgb.Booster):
+                    _y_prob = _model.predict(_xgb.DMatrix(_X))
+                elif isinstance(_model, _lgb.Booster):
+                    _y_prob = _model.predict(_X)
+                elif hasattr(_model, "predict_proba"):
+                    _y_prob = _model.predict_proba(_X)[:, 1]
+                else:
+                    _y_prob = _model.predict(_X)
+
+                # Build scored dataframe
+                _id_cols = ["grid_id", "region"]
+                for _opt in ("latitude", "longitude"):
+                    if _opt in _region_df.columns:
+                        _id_cols.append(_opt)
+                _scored_df = _region_df[_id_cols].copy().reset_index(drop=True)
+                _scored_df["timestamp"]       = _run_timestamp
+                _scored_df["fire_risk_score"] = _y_prob
+                _scored_df["fire_risk_flag"]  = (_y_prob >= _threshold).astype(int)
+                _scored_df["risk_tier"]       = [_assign_risk_tier(s, _region) for s in _y_prob]
+                _scored_df["model_version"]   = "production"
+                _scored_df["threshold_used"]  = _threshold
+
+                _n_flagged = int(_scored_df["fire_risk_flag"].sum())
+                _n_crit    = int((_scored_df["risk_tier"] == "CRITICAL").sum())
+                logger.info("[OBJ-1] %s: flagged=%d  CRITICAL=%d  max_score=%.4f",
+                            _region, _n_flagged, _n_crit, float(_scored_df["fire_risk_score"].max()))
+
+                # Build cells list for JSON
+                _cell_cols = ["grid_id", "fire_risk_score", "fire_risk_flag", "risk_tier"] + (
+                    ["latitude", "longitude"] if "latitude" in _scored_df.columns else []
+                )
+                _cells_list = _scored_df[_cell_cols].to_dict(orient="records")
+
+                # Weather telemetry (from region_df — weather cols survive the drop)
+                _telemetry: dict = {}
+                if "temperature_2m" in _region_df.columns:
+                    _telemetry["temperature_max"] = round(float(_region_df["temperature_2m"].max()), 2)
+                if "wind_speed_10m" in _region_df.columns:
+                    _telemetry["wind_speed_mph"] = round(float(_region_df["wind_speed_10m"].mean() * 0.6214), 2)
+                if "relative_humidity_2m" in _region_df.columns:
+                    _telemetry["relative_humidity"] = round(float(_region_df["relative_humidity_2m"].mean()), 2)
+                if "soil_moisture_0_to_7cm" in _region_df.columns:
+                    _telemetry["soil_moisture"] = round(float(_region_df["soil_moisture_0_to_7cm"].mean()), 4)
+
+                # Enriched JSON — single source of truth for OBJ-3
+                _region_payload = {
+                    "run_timestamp":      _run_timestamp.isoformat(),
+                    "model_version":      "production",
+                    "threshold":          _threshold,
+                    "region":             _region,
+                    "cells":              _cells_list,
+                    "summary": {
+                        "total_cells":      len(_scored_df),
+                        "flagged_cells":    _n_flagged,
+                        "max_risk_score":   float(_scored_df["fire_risk_score"].max()),
+                        "risk_tier_counts": _scored_df["risk_tier"].value_counts().to_dict(),
+                    },
+                    "firms_hotspot_count": _firms_count,
+                    "firms_hotspots":      _firms_hotspots,
+                    "telemetry":           _telemetry,
+                }
+
+                # Write parquet + JSON to GCS
+                _ts_str = _run_timestamp.strftime("%Y%m%dT%H%MZ")
+                _year   = _run_timestamp.year
+                _month  = f"{_run_timestamp.month:02d}"
+
+                _pbuf = _io.BytesIO()
+                _scored_df.to_parquet(_pbuf, index=False)
+                bkt.blob(
+                    f"inference/region={_region}/year={_year}/month={_month}/inference_{_ts_str}.parquet"
+                ).upload_from_string(_pbuf.getvalue(), content_type="application/octet-stream")
+
+                bkt.blob(f"inference/latest/{_region}_latest.json").upload_from_string(
+                    json.dumps(_region_payload, indent=2, default=str),
                     content_type="application/json",
                 )
-                logger.info("[OBJ-1] Wrote inference for %s: %d cells scored", _region, len(_region_df))
+                logger.info("[OBJ-1] %s: GCS write complete (%d cells scored)", _region, len(_scored_df))
+
+                if _n_crit > 0:
+                    _all_critical.extend(
+                        _scored_df[_scored_df["risk_tier"] == "CRITICAL"][
+                            ["grid_id", "region", "fire_risk_score"]
+                        ].to_dict(orient="records")
+                    )
 
             except Exception as _exc:
                 logger.warning("[OBJ-1] Inference failed for %s (non-blocking): %s", _region, _exc)
+
+        # Slack alert for CRITICAL cells
+        if _all_critical:
+            try:
+                from src.notifications.alerter import SlackAlerter
+                _top = _all_critical[0]
+                SlackAlerter().alert_critical_fire_risk(
+                    region=str(_top.get("region", "unknown")),
+                    grid_id=str(_top.get("grid_id", "unknown")),
+                    probability=float(_top.get("fire_risk_score", 0.0)),
+                )
+            except Exception as _exc:
+                logger.warning("[OBJ-1] Slack alert failed (non-blocking): %s", _exc)
 
         # ── Per-region OBJ-2 + OBJ-3 ──────────────────────────────────────────
         for region in regions:
