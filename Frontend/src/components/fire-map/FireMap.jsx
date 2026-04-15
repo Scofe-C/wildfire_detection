@@ -2,8 +2,9 @@ import { useState, useMemo, useEffect } from 'react';
 import {
   Flame, Wind, Thermometer, Droplets, Activity, TreePine,
   FileText, ChevronRight, Info, Crosshair, MapPin, Mountain,
-  Pencil, Save, Download, X, EyeOff, Navigation, Layers, BarChart3,
+  Pencil, Save, Download, X, EyeOff, Navigation, Layers, BarChart3, QrCode,
 } from 'lucide-react';
+import { QRCodeSVG } from 'qrcode.react';
 import 'leaflet/dist/leaflet.css';
 import { MapContainer, TileLayer, Polygon, Polyline, CircleMarker, Tooltip, Marker, useMap } from 'react-leaflet';
 import L from 'leaflet';
@@ -92,40 +93,144 @@ function makeCrownIcon(type) {
   });
 }
 
+// ─── Discover LAN IP via WebRTC ───────────────────────────────────────────────
+async function getLanIP() {
+  return new Promise((resolve) => {
+    try {
+      const pc = new RTCPeerConnection({ iceServers: [] });
+      pc.createDataChannel('');
+      pc.createOffer().then(o => pc.setLocalDescription(o)).catch(() => resolve(null));
+      pc.onicecandidate = ({ candidate }) => {
+        if (!candidate) return;
+        const m = /([0-9]{1,3}(?:\.[0-9]{1,3}){3})/.exec(candidate.candidate);
+        if (m && !m[1].startsWith('127.') && !m[1].startsWith('169.254.')) {
+          resolve(m[1]);
+          pc.close();
+        }
+      };
+      setTimeout(() => resolve(null), 2000);
+    } catch {
+      resolve(null);
+    }
+  });
+}
+
+// ─── QR Modal ─────────────────────────────────────────────────────────────────
+function QRModal({ onClose }) {
+  const [lanIP, setLanIP] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    getLanIP().then(ip => {
+      setLanIP(ip);
+      setLoading(false);
+    });
+  }, []);
+
+  const port = window.location.port || '80';
+  const viewerUrl = lanIP
+    ? `http://${lanIP}:${port}/?mode=viewer`
+    : `${window.location.origin}/?mode=viewer`;
+
+  const handleCopy = () => {
+    navigator.clipboard?.writeText(viewerUrl);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  return (
+    <div className="fixed inset-0 z-[2000] flex items-center justify-center p-4" onClick={onClose}>
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
+      <div
+        className="relative bg-surface-1 border border-border-subtle rounded-2xl shadow-2xl p-6 flex flex-col items-center gap-4 w-72"
+        onClick={e => e.stopPropagation()}
+      >
+        <button
+          onClick={onClose}
+          className="absolute top-3 right-3 text-text-muted hover:text-text-primary transition-colors"
+        >
+          <X className="w-4 h-4" />
+        </button>
+
+        <div className="flex items-center gap-2">
+          <QrCode className="w-4 h-4 text-accent-blue" />
+          <span className="text-[11px] font-mono font-semibold text-text-secondary uppercase tracking-wider">Mobile Viewer</span>
+        </div>
+
+        <div className="p-3 bg-white rounded-xl min-h-[216px] flex items-center justify-center">
+          {loading ? (
+            <div className="w-48 h-48 flex flex-col items-center justify-center gap-2">
+              <div className="w-5 h-5 border-2 border-accent-blue/40 border-t-accent-blue rounded-full animate-spin" />
+              <span className="text-[9px] font-mono text-gray-400">Detecting LAN IP…</span>
+            </div>
+          ) : (
+            <QRCodeSVG value={viewerUrl} size={192} bgColor="#ffffff" fgColor="#0f172a" level="M" />
+          )}
+        </div>
+
+        <div className="text-center space-y-1 w-full">
+          <p className="text-[10px] font-mono text-text-muted">
+            {lanIP ? `LAN IP detected · same Wi-Fi required` : `Could not detect LAN IP · using origin`}
+          </p>
+        </div>
+
+        <div className="flex items-center gap-2 px-3 py-2 bg-surface-2 border border-border-subtle rounded-lg w-full">
+          <span className="text-[9px] font-mono text-text-muted flex-1 truncate">{viewerUrl}</span>
+          <button
+            onClick={handleCopy}
+            className={`text-[9px] font-mono flex-shrink-0 transition-colors ${copied ? 'text-accent-green' : 'text-accent-blue hover:underline'}`}
+          >
+            {copied ? 'Copied!' : 'Copy'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Layer bar ────────────────────────────────────────────────────────────────
-function LayerBar({ layers, setLayers, stats, resolution, setResolution, mapStyle, setMapStyle }) {
+function LayerBar({ layers, setLayers, stats, resolution, setResolution, mapStyle, setMapStyle, onQR }) {
   const setColor = k => setLayers(l => ({ ...l, colorLayer: k }));
   const toggle = k => setLayers(l => ({ ...l, [k]: !l[k] }));
   return (
-    <div className="absolute top-3 left-3 right-[290px] z-[1000] flex items-center justify-between px-3 py-2 bg-surface-1/90 backdrop-blur-md border border-border-subtle rounded-xl shadow-xl">
-      <div className="flex items-center gap-3">
-        <div className="flex bg-surface-2 border border-border-subtle rounded-lg p-0.5 gap-px">
+    <div className="absolute top-3 left-3 right-3 md:right-[290px] z-[1000] flex flex-wrap items-center justify-between gap-1.5 px-2.5 py-2 bg-surface-1/90 backdrop-blur-md border border-border-subtle rounded-xl shadow-xl">
+      <div className="flex flex-wrap items-center gap-1.5">
+        <div className="flex flex-shrink-0 bg-surface-2 border border-border-subtle rounded-lg p-0.5 gap-px">
           {[{k:'risk',I:Activity,l:'Risk'},{k:'moisture',I:Droplets,l:'Moisture'},{k:'intensity',I:BarChart3,l:'Intensity'}].map(({k,I,l})=>(
-            <button key={k} onClick={()=>setColor(k)} className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-mono transition-colors ${layers.colorLayer===k?'bg-surface-0 text-text-primary font-semibold shadow-sm':'text-text-muted hover:text-text-secondary'}`}><I className="w-3 h-3"/>{l}</button>
+            <button key={k} onClick={()=>setColor(k)} className={`flex flex-shrink-0 items-center gap-1.5 px-1.5 md:px-2.5 py-1 rounded-md text-[10px] font-mono whitespace-nowrap transition-colors ${layers.colorLayer===k?'bg-surface-0 text-text-primary font-semibold shadow-sm':'text-text-muted hover:text-text-secondary'}`}><I className="w-3 h-3"/>{l}</button>
           ))}
         </div>
-        <div className="flex items-center gap-1 pl-3 border-l border-border-subtle">
+        <div className="flex flex-shrink-0 items-center gap-1 md:pl-3 md:border-l border-border-subtle">
           {[{k:'wind',I:Wind,l:'Wind'},{k:'crown',I:TreePine,l:'Crown'},{k:'spread',I:Navigation,l:'Spread'}].map(({k,I,l})=>(
-            <button key={k} onClick={()=>toggle(k)} className={`flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-mono border transition-colors ${layers[k]?'bg-accent-blue/10 text-accent-blue border-accent-blue/30':'text-text-muted border-transparent hover:text-text-secondary'}`}>
+            <button key={k} onClick={()=>toggle(k)} className={`flex flex-shrink-0 items-center gap-1 px-1.5 md:px-2 py-1 rounded-md text-[10px] font-mono whitespace-nowrap border transition-colors ${layers[k]?'bg-accent-blue/10 text-accent-blue border-accent-blue/30':'text-text-muted border-transparent hover:text-text-secondary'}`}>
               {layers[k]?<I className="w-3 h-3"/>:<EyeOff className="w-3 h-3 opacity-40"/>}{l}
             </button>
           ))}
         </div>
-        <div className="flex items-center gap-1.5 pl-3 border-l border-border-subtle">
-          {stats.critical>0&&<span className="text-[9px] font-mono px-1.5 py-0.5 rounded border bg-risk-critical/10 text-risk-critical border-risk-critical/30 animate-pulse">{stats.critical} CRIT</span>}
-          {stats.high>0&&<span className="text-[9px] font-mono px-1.5 py-0.5 rounded border bg-risk-high/10 text-risk-high border-risk-high/30">{stats.high} HIGH</span>}
-          {stats.activeFires>0&&<span className="text-[9px] font-mono px-1.5 py-0.5 rounded border bg-risk-critical/10 text-risk-critical border-risk-critical/30"><Flame className="w-2.5 h-2.5 inline mr-0.5"/>{stats.activeFires}</span>}
+        <div className="flex flex-shrink-0 items-center gap-1.5 md:pl-3 md:border-l border-border-subtle">
+          {stats.critical>0&&<span className="text-[9px] font-mono px-1.5 py-0.5 rounded border bg-risk-critical/10 text-risk-critical border-risk-critical/30 animate-pulse whitespace-nowrap">{stats.critical} CRIT</span>}
+          {stats.high>0&&<span className="text-[9px] font-mono px-1.5 py-0.5 rounded border bg-risk-high/10 text-risk-high border-risk-high/30 whitespace-nowrap">{stats.high} HIGH</span>}
+          {stats.activeFires>0&&<span className="text-[9px] font-mono px-1.5 py-0.5 rounded border bg-risk-critical/10 text-risk-critical border-risk-critical/30 whitespace-nowrap"><Flame className="w-2.5 h-2.5 inline mr-0.5"/>{stats.activeFires}</span>}
         </div>
       </div>
-      <div className="flex items-center gap-2">
+      <div className="flex flex-shrink-0 items-center gap-1.5">
         <div className="flex bg-surface-2 border border-border-subtle rounded-lg p-0.5 gap-px">
           {[{k:'auto',l:'Auto'},{k:'dark',l:'Dark'},{k:'light',l:'Light'},{k:'satellite',l:'Sat'}].map(({k,l})=>(
-            <button key={k} onClick={()=>setMapStyle(k)} className={`px-2 py-0.5 rounded-md text-[9px] font-mono transition-colors ${mapStyle===k?'bg-surface-0 text-text-primary font-semibold':'text-text-muted hover:text-text-secondary'}`}>{l}</button>
+            <button key={k} onClick={()=>setMapStyle(k)} className={`px-1.5 md:px-2 py-0.5 rounded-md text-[9px] font-mono whitespace-nowrap transition-colors ${mapStyle===k?'bg-surface-0 text-text-primary font-semibold':'text-text-muted hover:text-text-secondary'}`}>{l}</button>
           ))}
         </div>
         <div className="flex bg-surface-2 border border-border-subtle rounded-lg p-0.5 gap-px">
-          <span className="px-2 py-0.5 rounded-md text-[9px] font-mono bg-surface-0 text-text-primary font-semibold">64km</span>
+          <span className="px-1.5 md:px-2 py-0.5 rounded-md text-[9px] font-mono bg-surface-0 text-text-primary font-semibold">64km</span>
         </div>
+        <button
+          onClick={onQR}
+          title="Open mobile viewer QR code"
+          className="flex items-center gap-1 px-1.5 md:px-2 py-1 rounded-lg border border-border-subtle bg-surface-2 text-text-muted hover:text-accent-blue hover:border-accent-blue/40 hover:bg-accent-blue/8 transition-colors"
+        >
+          <QrCode className="w-3 h-3" />
+          <span className="text-[9px] font-mono hidden md:inline">QR</span>
+        </button>
       </div>
     </div>
   );
@@ -233,6 +338,7 @@ export default function FireMap({ onNavigate }) {
   const [sel, setSel] = useState(null);
   const [res, setRes] = useState('64km');
   const [mapStyle, setMapStyle] = useState('auto'); // 'auto' | 'dark' | 'light' | 'satellite'
+  const [showQR, setShowQR] = useState(false);
   const [edits, setEdits] = useState(() => { try { return JSON.parse(localStorage.getItem('fireMapEdits')||'{}'); } catch { return {}; } });
 
   const [liveCells, setLiveCells] = useState(null);
@@ -367,7 +473,7 @@ export default function FireMap({ onNavigate }) {
           {allCells.filter(c=>c.fire_detected_binary===1).map(c=>(
             <CircleMarker key={`fp-${c.grid_id}`} center={[c.lat,c.lon]} radius={18}
               pathOptions={{color:'#ff4400',weight:2,fillColor:'#ff4400',fillOpacity:0.1,dashArray:'4,4'}}
-              className="fire-pulse-ring" />
+              className="fire-pulse-ring" interactive={false} />
           ))}
 
           {/* Live spread: burn probability overlays on neighbor cells */}
@@ -380,11 +486,7 @@ export default function FireMap({ onNavigate }) {
                 fillColor: o.prob >= 0.5 ? '#ef4444' : o.prob >= 0.2 ? '#f59e0b' : '#10b981',
                 fillOpacity: 0.15 + o.prob * 0.35,
               }}
-              className="spread-burn-overlay">
-              <Tooltip className={isDark ? 'leaflet-tooltip-dark' : 'leaflet-tooltip-light'}>
-                <span className="font-mono text-[10px]">Burn prob: {(o.prob * 100).toFixed(1)}%</span>
-              </Tooltip>
-            </CircleMarker>
+              className="spread-burn-overlay" interactive={false} />
           ))}
 
           {/* Ignition cell pulse animation */}
@@ -395,14 +497,7 @@ export default function FireMap({ onNavigate }) {
                 color: '#ef4444', weight: 3, fillColor: '#ef4444', fillOpacity: 0.25,
                 dashArray: '6,3',
               }}
-              className="ignition-pulse">
-              <Tooltip permanent direction="top" offset={[0, -15]}
-                className={isDark ? 'leaflet-tooltip-dark' : 'leaflet-tooltip-light'}>
-                <span className="font-mono text-[10px] font-bold text-red-500">
-                  IGNITION · {(ign.speedKmh || 0).toFixed(2)} km/h · {(ign.spreadDir || 0).toFixed(0)}°
-                </span>
-              </Tooltip>
-            </CircleMarker>
+              className="ignition-pulse" interactive={false} />
           ))}
 
           {/* Spread direction arrows (ignition → neighbor) */}
@@ -413,7 +508,7 @@ export default function FireMap({ onNavigate }) {
                 weight: 1.5 + a.prob * 2,
                 dashArray: '6,4',
                 opacity: 0.4 + a.prob * 0.5,
-              }} />
+              }} interactive={false} />
           ))}
 
           {/* Wind arrows */}
@@ -433,15 +528,34 @@ export default function FireMap({ onNavigate }) {
         </MapContainer>
 
         {/* Floating controls */}
-        <LayerBar layers={layers} setLayers={setLayers} stats={stats} resolution={res} setResolution={setRes} mapStyle={mapStyle} setMapStyle={setMapStyle} />
+        <LayerBar layers={layers} setLayers={setLayers} stats={stats} resolution={res} setResolution={setRes} mapStyle={mapStyle} setMapStyle={setMapStyle} onQR={() => setShowQR(true)} />
         <Legend layers={layers} />
+        {showQR && <QRModal onClose={() => setShowQR(false)} />}
       </div>
 
-      {/* Detail panel */}
-      <div className="w-[280px] flex-shrink-0 border-l border-border-subtle bg-surface-1 flex flex-col z-[1000]">
+      {/* Mobile backdrop — tap outside to close panel */}
+      {sel && (
+        <div
+          className="md:hidden fixed inset-0 bg-black/40 z-[999]"
+          onClick={() => setSel(null)}
+        />
+      )}
+
+      {/* Detail panel — fixed overlay on mobile, static sidebar on desktop */}
+      <div className={`
+        fixed inset-y-0 right-0 md:static md:inset-auto
+        w-[280px] flex-shrink-0 border-l border-border-subtle bg-surface-1 flex flex-col
+        z-[1000] transition-transform duration-300
+        ${sel ? 'translate-x-0' : 'translate-x-full md:translate-x-0'}
+      `}>
         <div className="px-4 py-2.5 border-b border-border-subtle flex items-center gap-2 flex-shrink-0">
-          <MapPin className="w-3.5 h-3.5 text-text-muted"/><span className="text-[10px] font-mono font-semibold text-text-secondary uppercase tracking-wider">Cell Detail</span>
-          {sel&&<button onClick={()=>setSel(null)} className="ml-auto text-[9px] font-mono text-text-muted hover:text-text-primary">clear</button>}
+          <MapPin className="w-3.5 h-3.5 text-text-muted"/>
+          <span className="text-[10px] font-mono font-semibold text-text-secondary uppercase tracking-wider">Cell Detail</span>
+          {sel && (
+            <button onClick={() => setSel(null)} className="ml-auto flex items-center gap-1 text-[9px] font-mono text-text-muted hover:text-text-primary transition-colors">
+              <X className="w-3 h-3" />Close
+            </button>
+          )}
         </div>
         <div className="flex-1 overflow-hidden"><DetailPanel cellId={sel} allCells={allCells} edits={edits} setEdits={setEdits} onNavigate={onNavigate}/></div>
       </div>

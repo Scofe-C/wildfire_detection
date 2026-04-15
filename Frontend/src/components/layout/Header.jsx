@@ -1,22 +1,33 @@
+import { useState, useEffect } from 'react';
 import { Clock, Bell, AlertTriangle, Sun, Moon } from 'lucide-react';
 import { useTheme } from '../ui/ThemeProvider';
 import Badge from '../ui/Badge';
 
-const PAGE_TITLES = {
-  overview:        { label: 'System Overview',              sub: 'PyroWatch · wildfire-mlops-123 · us-central1' },
-  'data-pipeline': { label: 'Data Pipeline',                sub: 'PyroWatch · wildfire_data_pipeline · 0 */6 * * * UTC' },
-  obj1:            { label: 'OBJ-1 Ignition Classifier',    sub: 'PyroWatch · XGBoost + LightGBM · Vertex AI Model Registry' },
-  obj2:            { label: 'OBJ-2 Fire Spread Simulator',  sub: 'PyroWatch · Rothermel (1972) + Monte Carlo N=100' },
-  obj3:            { label: 'OBJ-3 AI Disaster Reporter',   sub: 'PyroWatch · GeminiDisasterReporter · Vertex AI' },
-  'fire-map':      { label: 'Fire Detection Map',           sub: 'PyroWatch · OBJ-1 risk + OBJ-2 spread · H3 64km · CA & TX' },
-  'risk-monitor':  { label: 'Risk Monitor',                 sub: 'PyroWatch · H3 64km grid · California & Texas' },
-  reports:         { label: 'Incident Reports',             sub: 'PyroWatch · ICS-209 aligned · OBJ-3 Gemini LLM' },
-};
+function getPageTitles(monthYear) {
+  return {
+    overview:        { label: 'System Overview',              sub: `PyroWatch · wildfire-mlops-123 · us-central1 · ${monthYear}` },
+    'data-pipeline': { label: 'Data Pipeline',                sub: 'PyroWatch · wildfire_data_pipeline · 0 */6 * * * UTC' },
+    obj1:            { label: 'OBJ-1 Ignition Classifier',    sub: 'PyroWatch · XGBoost + LightGBM · Vertex AI Model Registry' },
+    obj2:            { label: 'OBJ-2 Fire Spread Simulator',  sub: 'PyroWatch · Rothermel (1972) + Monte Carlo N=100' },
+    obj3:            { label: 'OBJ-3 AI Disaster Reporter',   sub: 'PyroWatch · GeminiDisasterReporter · Vertex AI' },
+    'fire-map':      { label: 'Fire Detection Map',           sub: 'PyroWatch · OBJ-1 risk + OBJ-2 spread · H3 64km · CA & TX' },
+    'risk-monitor':  { label: 'Risk Monitor',                 sub: `PyroWatch · H3 64km grid · California & Texas · ${monthYear}` },
+    reports:         { label: 'Incident Reports',             sub: 'PyroWatch · ICS-209 aligned · OBJ-3 Gemini LLM' },
+  };
+}
 
 export default function Header({ activeView }) {
-  const page = PAGE_TITLES[activeView] || PAGE_TITLES.overview;
   const { theme, toggle } = useTheme();
-  const now = new Date('2025-01-15T18:04:32Z');
+  const [now, setNow] = useState(new Date());
+
+  useEffect(() => {
+    const timer = setInterval(() => setNow(new Date()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const monthYear = now.toLocaleString('en-US', { month: 'short', year: 'numeric' });
+  const PAGE_TITLES = getPageTitles(monthYear);
+  const page = PAGE_TITLES[activeView] || PAGE_TITLES.overview;
 
   return (
     <header className="h-14 bg-surface-1 border-b border-border-subtle flex items-center justify-between px-6 flex-shrink-0">
