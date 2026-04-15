@@ -3,14 +3,14 @@ import { useTheme } from '../ui/ThemeProvider';
 import Badge from '../ui/Badge';
 
 const PAGE_TITLES = {
-  overview:        { label: 'System Overview',              sub: 'wildfire-mlops-123 · us-central1 · Jan 2025' },
-  'data-pipeline': { label: 'Data Pipeline',                sub: 'wildfire_data_pipeline · 0 */6 * * * UTC' },
-  obj1:            { label: 'OBJ-1 Ignition Classifier',    sub: 'xgboost_ignition · MLflow: wildfire-ignition-v1' },
-  obj2:            { label: 'OBJ-2 Fire Spread Simulator',  sub: 'Rothermel (1972) + FBFM40 physics model' },
-  obj3:            { label: 'OBJ-3 AI Disaster Reporter',   sub: 'GeminiDisasterReporter · gemini-2.5-flash' },
-  'fire-map':      { label: 'Fire Detection Map',           sub: 'OBJ-1 risk overlay · OBJ-2 spread · H3 64km · CA & TX' },
-  'risk-monitor':  { label: 'Wildfire Risk Monitor',        sub: 'H3 64km grid · California & Texas · Jan 2025' },
-  reports:         { label: 'Incident Reports',             sub: 'ICS-209 aligned · OBJ-3 Gemini LLM output' },
+  overview:        { label: 'System Overview',              sub: 'PyroWatch · wildfire-mlops-123 · us-central1' },
+  'data-pipeline': { label: 'Data Pipeline',                sub: 'PyroWatch · wildfire_data_pipeline · 0 */6 * * * UTC' },
+  obj1:            { label: 'OBJ-1 Ignition Classifier',    sub: 'PyroWatch · XGBoost + LightGBM · Vertex AI Model Registry' },
+  obj2:            { label: 'OBJ-2 Fire Spread Simulator',  sub: 'PyroWatch · Rothermel (1972) + Monte Carlo N=100' },
+  obj3:            { label: 'OBJ-3 AI Disaster Reporter',   sub: 'PyroWatch · GeminiDisasterReporter · Vertex AI' },
+  'fire-map':      { label: 'Fire Detection Map',           sub: 'PyroWatch · OBJ-1 risk + OBJ-2 spread · H3 64km · CA & TX' },
+  'risk-monitor':  { label: 'Risk Monitor',                 sub: 'PyroWatch · H3 64km grid · California & Texas' },
+  reports:         { label: 'Incident Reports',             sub: 'PyroWatch · ICS-209 aligned · OBJ-3 Gemini LLM' },
 };
 
 export default function Header({ activeView }) {
