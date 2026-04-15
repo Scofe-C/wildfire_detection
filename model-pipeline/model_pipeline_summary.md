@@ -1,4 +1,4 @@
-# Wildfire Detection — Model Pipeline Summary
+com# Wildfire Detection — Model Pipeline Summary
 
 ## 1. Overview
 

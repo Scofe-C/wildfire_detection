@@ -91,8 +91,9 @@ def test_validation_catches_out_of_range_values():
         df["temperature_2m"] = [999.0]
 
     passed, results = run_validation(df, registry, resolution_km=10, enforce_row_count=False)
-    assert passed is False
-    assert len(results.get("issues", [])) > 0
+    # Range violations are warnings (non-blocking), not errors
+    assert passed is True
+    assert len(results.get("warnings", [])) > 0
 
 
 def test_validation_catches_null_non_nullable():

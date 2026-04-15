@@ -33,22 +33,23 @@ def run_validation(
     max_null_rate: float = float(getattr(registry, "max_null_rate", 0.15))
     tol_pct: float = float(getattr(registry, "row_count_tolerance_pct", 5)) / 100.0
 
-    issues: List[str] = []
+    errors: List[str] = []
+    warnings: List[str] = []
 
-    # 1) Column existence
+    # 1) Column existence — ERROR: missing columns break downstream tasks
     for col in feature_names:
         if col not in df.columns:
-            issues.append(f"missing_column: {col}")
+            errors.append(f"missing_column: {col}")
 
-    # 2) Null constraints on required columns
+    # 2) Null constraints on required columns — ERROR
     for col in non_nullable:
         if col not in df.columns:
             continue
         null_count = int(df[col].isna().sum())
         if null_count > 0:
-            issues.append(f"non_nullable_has_nulls: column={col} null_count={null_count}")
+            errors.append(f"non_nullable_has_nulls: column={col} null_count={null_count}")
 
-    # 3) Null rate on optional columns
+    # 3) Null rate on optional columns — WARNING (real data often has gaps)
     _SKIP_NULL_CHECK = {"fire_weather_index", "ndvi"}
     for col in feature_names:
         if col in non_nullable or col in _SKIP_NULL_CHECK:
@@ -57,11 +58,11 @@ def run_validation(
             continue
         null_rate = float(df[col].isna().mean())
         if null_rate > max_null_rate:
-            issues.append(
+            warnings.append(
                 f"high_null_rate: column={col} null_rate={null_rate:.2%} threshold={max_null_rate:.2%}"
             )
 
-    # 4) Range rules (min/max)
+    # 4) Range rules (min/max) — WARNING (outliers shouldn't block the pipeline)
     for col, rules in rules_map.items():
         if col not in feature_names or col not in df.columns:
             continue
@@ -71,41 +72,44 @@ def run_validation(
         if series.empty:
             continue
         if "min" in rules and float(series.min()) < float(rules["min"]):
-            issues.append(
+            warnings.append(
                 f"below_min: column={col} min_found={series.min()} min_allowed={rules['min']}"
             )
         if "max" in rules and float(series.max()) > float(rules["max"]):
-            issues.append(
+            warnings.append(
                 f"above_max: column={col} max_found={series.max()} max_allowed={rules['max']}"
             )
         if "allowed_values" in rules:
             invalid = set(df[col].dropna().unique()) - set(rules["allowed_values"])
             if invalid:
-                issues.append(f"invalid_values: column={col} values={invalid}")
+                warnings.append(f"invalid_values: column={col} values={invalid}")
 
-    # 5) grid_id uniqueness
+    # 5) grid_id uniqueness — WARNING
     if "grid_id" in df.columns and df["grid_id"].notna().any():
         total = len(df)
         unique = df["grid_id"].nunique()
         if total > 0 and (unique / total) < 0.99:
-            issues.append(
+            warnings.append(
                 f"low_grid_id_uniqueness: unique={unique} total={total} ratio={unique/total:.2%}"
             )
 
-    # 6) Row count bounds
+    # 6) Row count bounds — WARNING (tolerance already generous)
     if enforce_row_count:
         expected = _get_expected_row_count(resolution_km)
         lo = int(expected * (1.0 - tol_pct))
         hi = int(expected * (1.0 + tol_pct))
         actual = len(df)
         if not (lo <= actual <= hi):
-            issues.append(
+            warnings.append(
                 f"row_count_out_of_bounds: actual={actual} expected={expected} "
                 f"allowed=[{lo}, {hi}]"
             )
 
-    passed = len(issues) == 0
-    return passed, {"passed": passed, "issues": issues}
+    # Only structural errors (missing columns, non-nullable nulls) block the pipeline.
+    # Range/null-rate/row-count issues are warnings — logged but not blocking.
+    passed = len(errors) == 0
+    return passed, {"passed": passed, "errors": errors, "warnings": warnings,
+                     "issues": errors + warnings}
 
 
 # ---------------------------------------------------------------------------
@@ -157,19 +161,26 @@ if __name__ == "__main__":
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     stats_path = output_dir / "stats_latest.json"
+    errors = results.get("errors", [])
+    warnings = results.get("warnings", [])
     summary = {
         "run_at": __import__("datetime").datetime.utcnow().isoformat(),
         "row_count": len(df),
         "resolution_km": args.resolution_km,
         "passed": passed,
-        "issue_count": len(results.get("issues", [])),
-        "issues": results.get("issues", []),
+        "error_count": len(errors),
+        "warning_count": len(warnings),
+        "errors": errors,
+        "warnings": warnings,
+        "issues": errors + warnings,
         "column_null_rates": {col: float(df[col].isna().mean()) for col in df.columns},
     }
     with open(stats_path, "w") as f:
         json.dump(summary, f, indent=2, default=str)
 
     log.info(f"Validation {'PASSED' if passed else 'FAILED'} — stats written to {stats_path}")
-    if not passed:
-        log.warning(f"Issues: {results.get('issues', [])[:5]}")
+    if errors:
+        log.error(f"Errors (blocking): {errors[:5]}")
         sys.exit(1)
+    if warnings:
+        log.warning(f"Warnings (non-blocking): {warnings[:5]}")

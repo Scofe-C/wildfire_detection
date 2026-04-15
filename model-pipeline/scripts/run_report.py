@@ -63,7 +63,6 @@ _DEMO_SCENARIOS: dict[str, dict] = {
         "xgboost_top_cells": [
             {"h3_index": "8928308280fffff", "probability": 0.15, "lat": 37.4, "lon": -119.5},
         ],
-        "cell2fire_geojson": None,
         "obj2_simulation": None,
         "propagator_summary": None,
         "telemetry": {
@@ -100,7 +99,6 @@ _DEMO_SCENARIOS: dict[str, dict] = {
             {"h3_index": "8928308280fffff", "probability": 0.81, "lat": 34.12, "lon": -118.32},
             {"h3_index": "8928308281fffff", "probability": 0.74, "lat": 34.14, "lon": -118.30},
         ],
-        "cell2fire_geojson": None,
         "obj2_simulation": {
             "ignition_cell": "8928308280fffff",
             "ignition_probability": 0.72,
@@ -154,7 +152,6 @@ _DEMO_SCENARIOS: dict[str, dict] = {
              "lat": 34.12 + i * 0.01, "lon": -118.32 + i * 0.01}
             for i in range(5)
         ],
-        "cell2fire_geojson": '{"type":"FeatureCollection","features":[]}',
         "obj2_simulation": {
             "ignition_cell": "8928308280fffff",
             "ignition_probability": 0.95,

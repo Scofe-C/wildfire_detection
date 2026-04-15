@@ -202,6 +202,25 @@
 </ul>
 {% endif %}
 
+{% if reasoning_trace %}
+<h2>Reasoning Trace</h2>
+<div style="background:#f8f9fa;border:1px solid #e0e0e0;border-radius:6px;padding:16px;margin:10px 0">
+    <p style="font-size:0.9em;color:#666;margin:0 0 12px 0">Key analytical steps used to generate this report — for reviewer audit.</p>
+    {% for step in reasoning_trace %}
+    <div style="border-left:3px solid {% if step.category == 'risk_evaluation' %}#e74c3c{% elif step.category == 'evacuation_decision' %}#8e44ad{% elif step.category == 'resource_planning' %}#f39c12{% elif step.category == 'advisory_integration' %}#27ae60{% else %}#3498db{% endif %};padding:8px 12px;margin-bottom:10px;background:white;border-radius:0 4px 4px 0">
+        <div style="font-size:0.8em;font-weight:bold;text-transform:uppercase;letter-spacing:0.05em;color:#888;margin-bottom:4px">
+            #{{ step.step_number }} — {{ step.category | replace("_", " ") }}
+        </div>
+        <div style="font-size:0.9em;margin-bottom:4px"><strong>Observation:</strong> {{ step.observation }}</div>
+        <div style="font-size:0.9em;margin-bottom:4px"><strong>Conclusion:</strong> {{ step.conclusion }}</div>
+        {% if step.data_cited %}
+        <div style="font-size:0.8em;color:#666">Data cited: {{ step.data_cited | join(", ") }}</div>
+        {% endif %}
+    </div>
+    {% endfor %}
+</div>
+{% endif %}
+
 <h2>Data Sources</h2>
 <ul>
 {% for src in data_sources_used %}

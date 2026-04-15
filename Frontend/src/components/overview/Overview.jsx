@@ -1,3 +1,4 @@
+import { useState, useEffect } from 'react';
 import {
   CheckCircle, XCircle, AlertTriangle, Database,
   BrainCircuit, Map, ArrowRight, Terminal, RefreshCw, TrendingUp,
@@ -9,6 +10,7 @@ import {
 import { OBJ1_RUNS } from '../../data/mockModelData';
 import { CALIFORNIA_CELLS, TEXAS_CELLS, getRiskTier } from '../../data/mockGridData';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
+import { apiUrl, normalizeCell, fmt } from '../../api';
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -116,7 +118,33 @@ function EventLogItem({ ts, level, component, msg }) {
 // ── main component ────────────────────────────────────────────────────────────
 
 export default function Overview({ onNavigate }) {
-  const allCells     = [...CALIFORNIA_CELLS, ...TEXAS_CELLS];
+  const [liveCells, setLiveCells] = useState(null);
+  const [loadingCells, setLoadingCells] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function fetchLive() {
+      try {
+        const [caRes, txRes] = await Promise.all([
+          fetch(apiUrl('/api/grid-cells?region=california')),
+          fetch(apiUrl('/api/grid-cells?region=texas')),
+        ]);
+        if (cancelled) return;
+        if (caRes.ok && txRes.ok) {
+          const ca = await caRes.json();
+          const tx = await txRes.json();
+          const cells = [...(ca.cells || []).map(c => normalizeCell({ ...c, region: 'california' })),
+                         ...(tx.cells || []).map(c => normalizeCell({ ...c, region: 'texas' }))];
+          setLiveCells(cells);
+        }
+      } catch { /* backend offline — fall back to mock */ }
+      if (!cancelled) setLoadingCells(false);
+    }
+    fetchLive();
+    return () => { cancelled = true; };
+  }, []);
+
+  const allCells     = liveCells || (loadingCells ? [] : [...CALIFORNIA_CELLS, ...TEXAS_CELLS]);
   const criticalCells = allCells.filter(c => getRiskTier(c.fire_risk_score) === 'CRITICAL');
   const highCells     = allCells.filter(c => getRiskTier(c.fire_risk_score) === 'HIGH');
   const prodRuns      = OBJ1_RUNS.filter(r => r.status === 'production');
@@ -397,36 +425,36 @@ export default function Overview({ onNavigate }) {
               </tr>
             </thead>
             <tbody>
-              {allCells
-                .sort((a, b) => b.fire_risk_score - a.fire_risk_score)
+              {[...allCells]
+                .sort((a, b) => (b.fire_risk_score ?? 0) - (a.fire_risk_score ?? 0))
                 .slice(0, 6)
                 .map(cell => {
                   const tier = getRiskTier(cell.fire_risk_score);
-                  const region = CALIFORNIA_CELLS.includes(cell) ? 'california' : 'texas';
+                  const region = cell.region || (CALIFORNIA_CELLS.includes(cell) ? 'california' : 'texas');
                   const isCritical = tier === 'CRITICAL';
                   return (
                     <tr
-                      key={cell.grid_id}
+                      key={cell.grid_id + region}
                       className={`border-b border-border-subtle/50 transition-colors ${
                         isCritical ? 'hover:bg-risk-critical/5' : 'hover:bg-surface-3/50'
                       }`}
                     >
                       <td className="py-1.5 pr-3 font-mono text-text-muted text-[10px]">
-                        {cell.grid_id.slice(0, 10)}…
+                        {cell.grid_id?.slice(0, 10)}…
                       </td>
                       <td className={`py-1.5 pr-3 font-medium ${isCritical ? 'text-risk-critical' : 'text-text-secondary'}`}>
                         {cell.name}
                       </td>
                       <td className="py-1.5 pr-3 text-text-muted font-mono capitalize">{region}</td>
                       <td className={`py-1.5 pr-3 font-mono font-semibold ${isCritical ? 'text-risk-critical' : 'text-text-primary'}`}>
-                        {cell.fire_risk_score.toFixed(3)}
+                        {fmt(cell.fire_risk_score, 3)}
                       </td>
                       <td className="py-1.5 pr-3"><RiskBadge tier={tier} /></td>
-                      <td className="py-1.5 pr-3 font-mono text-text-secondary">{cell.temperature_2m}°C</td>
-                      <td className="py-1.5 pr-3 font-mono text-text-secondary">{cell.vpd} kPa</td>
-                      <td className="py-1.5 pr-3 font-mono text-text-secondary">{cell.fire_weather_index}</td>
+                      <td className="py-1.5 pr-3 font-mono text-text-secondary">{fmt(cell.temperature_2m)}°C</td>
+                      <td className="py-1.5 pr-3 font-mono text-text-secondary">{fmt(cell.vpd)} kPa</td>
+                      <td className="py-1.5 pr-3 font-mono text-text-secondary">{fmt(cell.fire_weather_index)}</td>
                       <td className="py-1.5 pr-3 font-mono text-text-muted">{cell.fuel_model_fbfm40}</td>
-                      <td className="py-1.5 pr-3 font-mono text-text-secondary">{cell.active_fire_count}</td>
+                      <td className="py-1.5 pr-3 font-mono text-text-secondary">{cell.active_fire_count ?? 0}</td>
                     </tr>
                   );
                 })}

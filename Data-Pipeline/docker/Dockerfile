@@ -18,12 +18,17 @@ ARG CONSTRAINT_URL="https://raw.githubusercontent.com/apache/airflow/constraints
 
 WORKDIR /opt/airflow
 
-COPY requirements.txt /tmp/requirements.txt
+# Build context is wildfire_detection/ (parent of Data-Pipeline/)
+COPY Data-Pipeline/requirements.txt /tmp/requirements.txt
 
 # Install in the SAME runtime environment (no /install prefix)
 RUN python3 -m pip install --no-cache-dir \
     -r /tmp/requirements.txt \
     --constraint "${CONSTRAINT_URL}"
+
+# google-cloud-aiplatform installed separately — Airflow 2.8.1 constraint pins
+# it at 1.39.0 which conflicts with >=1.40.0; installing after avoids the conflict.
+RUN python3 -m pip install --no-cache-dir "google-cloud-aiplatform>=1.39.0"
 
 # Ensure site-packages is visible (safe)
 RUN PYVER="$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')" && \
@@ -33,10 +38,15 @@ RUN PYVER="$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.versi
 ENV AIRFLOW_HOME=/opt/airflow
 ENV PYTHONPATH="/opt/airflow:${PYTHONPATH}"
 
-COPY dags/ /opt/airflow/dags/
-COPY scripts/ /opt/airflow/scripts/
-COPY configs/ /opt/airflow/configs/
-COPY tests/ /opt/airflow/tests/
+COPY Data-Pipeline/dags/ /opt/airflow/dags/
+COPY Data-Pipeline/scripts/ /opt/airflow/scripts/
+COPY Data-Pipeline/configs/ /opt/airflow/configs/
+COPY Data-Pipeline/tests/ /opt/airflow/tests/
+
+# Bake model-pipeline source into image so inference imports work
+# without bind mounts (macOS Docker Desktop EDEADLK workaround)
+COPY model-pipeline/src/ /opt/model-pipeline/src/
+COPY model-pipeline/configs/ /opt/model-pipeline/configs/
 
 RUN mkdir -p /opt/airflow/data/raw/firms \
              /opt/airflow/data/raw/weather \

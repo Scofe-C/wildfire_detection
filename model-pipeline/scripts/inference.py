@@ -22,6 +22,7 @@ import argparse
 import io
 import json
 import logging
+import math
 import os
 from datetime import datetime, timezone
 from pathlib import Path
@@ -42,6 +43,34 @@ RISK_TIERS = [
     ("MEDIUM",   0.15),
     ("LOW",      0.0),
 ]
+
+# ── Canadian FWI constants — must match Data-Pipeline/process_weather.py exactly ──
+_FWI_FFMC0 = 85.0
+_FWI_DMC0  =  6.0
+_FWI_DC0   = 15.0
+_DMC_LE = [6.5, 7.5, 9.0, 12.8, 13.9, 13.9, 12.4, 10.9, 9.4, 8.0, 7.0, 6.0]
+_DC_LF  = [-1.6, -1.6, -1.6, 0.9, 3.8, 5.8, 6.4, 5.0, 2.4, 0.4, -1.6, -1.6]
+
+_DROUGHT_W_SOIL   = 0.40
+_DROUGHT_W_TEMP   = 0.25
+_DROUGHT_W_PRECIP = 0.35
+
+# Columns produced by the data pipeline that must be stripped before
+# calling full_pipeline(is_inference=True).
+_PIPELINE_ONLY_COLS = [
+    "active_fire_count", "mean_frp", "median_frp",
+    "max_confidence", "nearest_fire_distance_km",
+    "fire_detected_binary",
+    "canopy_base_height_m", "canopy_bulk_density", "evt_national_class",
+]
+
+
+def prepare_fused_for_inference(df: pd.DataFrame) -> pd.DataFrame:
+    """Strip pipeline-only columns from a fused parquet before preprocessing."""
+    drop = [c for c in _PIPELINE_ONLY_COLS if c in df.columns]
+    if drop:
+        logger.debug("Dropping pipeline-only columns before inference: %s", drop)
+    return df.drop(columns=drop)
 
 
 def assign_risk_tier(score: float) -> str:
@@ -86,7 +115,7 @@ def fetch_open_meteo_inference(grid_centroids: pd.DataFrame) -> pd.DataFrame:
                     "latitude": cell["latitude"],
                     "longitude": cell["longitude"],
                     "hourly": hourly_vars,
-                    "past_hours": 24,
+                    "past_hours": 6,   # must match backfill DEFAULT_FREQ_HOURS=6
                     "forecast_hours": 1,
                     "timezone": "UTC",
                 },
@@ -100,15 +129,20 @@ def fetch_open_meteo_inference(grid_centroids: pd.DataFrame) -> pd.DataFrame:
             temp     = float(np.nanmean(var_map["temperature_2m"]))
             humidity = float(np.nanmean(var_map["relative_humidity_2m"]))
             wind_spd = float(np.nanmean(var_map["wind_speed_10m"]))
-            wind_dir = float(np.nanmean(var_map["wind_direction_10m"]))  # median for circular
+            wind_dir = _circular_mean_degrees(var_map["wind_direction_10m"])
             precip   = float(np.nansum(var_map["precipitation"]))
             soil_mst = float(np.nanmean(var_map["soil_moisture_0_to_7cm"]))
             vpd      = float(np.nanmean(var_map["vapour_pressure_deficit"]))
 
-            # Derived features
-            fire_weather_index = _compute_fwi(temp, humidity, wind_spd, precip)
-            cum_wind_run = float(np.nansum(var_map["wind_speed_10m"]))  # sum over 24h
-            drought_proxy = _compute_drought_proxy(temp, humidity, precip, soil_mst)
+            # days_since_last_precipitation from 6h window
+            precip_hourly = var_map["precipitation"]
+            has_precip = np.nansum(precip_hourly >= 1.0) > 0
+            days_since_precip = 0.0 if has_precip else 1.0
+
+            # Derived features — identical algorithms to process_weather.py
+            fire_weather_index = _compute_fwi_scalar(temp, humidity, wind_spd, precip)
+            cum_wind_run = float(np.nansum(var_map["wind_speed_10m"]))  # sum over 6h window
+            drought_proxy = _compute_drought_proxy(soil_mst, temp, days_since_precip)
 
             row = {
                 "grid_id": cell["grid_id"],
@@ -134,20 +168,108 @@ def fetch_open_meteo_inference(grid_centroids: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(all_rows)
 
 
-def _compute_fwi(temp: float, humidity: float, wind_spd: float, precip: float) -> float:
-    """Simplified Canadian Fire Weather Index proxy."""
-    ffmc = max(0.0, 101.0 - humidity * 0.8 + temp * 0.2 - precip * 5.0)
-    dmc  = max(0.0, temp * 0.5 - humidity * 0.1 + 1.0)
-    isi  = wind_spd * ffmc / 100.0
-    bui  = dmc * 1.2
-    return float(isi * bui / 100.0)
+def _circular_mean_degrees(angles: np.ndarray) -> float:
+    """Circular mean of degree values — avoids 0°/360° wraparound error."""
+    rads = np.deg2rad(angles[~np.isnan(angles)])
+    if len(rads) == 0:
+        return 0.0
+    return float(np.rad2deg(np.arctan2(np.sin(rads).mean(), np.cos(rads).mean())) % 360)
 
 
-def _compute_drought_proxy(
-    temp: float, humidity: float, precip: float, soil_mst: float
-) -> float:
-    """Drought index proxy: higher = drier."""
-    return float(max(0.0, (temp / 40.0) * (1.0 - humidity / 100.0) * (1.0 - soil_mst) * 100.0))
+def _ffmc(T: float, H: float, W: float, ro: float) -> float:
+    mo = 147.2 * (101.0 - _FWI_FFMC0) / (59.5 + _FWI_FFMC0)
+    if ro > 0.5:
+        rf = ro - 0.5
+        mr = mo + 42.5 * rf * math.exp(-100.0 / (251.0 - mo)) * (1.0 - math.exp(-6.93 / rf))
+        if mo > 150:
+            mr += 0.0015 * (mo - 150.0) ** 2 * math.sqrt(rf)
+        mo = min(mr, 250.0)
+    ed = 0.942 * H ** 0.679 + 11.0 * math.exp((H - 100.0) / 10.0) + 0.18 * (21.1 - T) * (1.0 - math.exp(-0.115 * H))
+    ew = 0.618 * H ** 0.753 + 10.0 * math.exp((H - 100.0) / 10.0) + 0.18 * (21.1 - T) * (1.0 - math.exp(-0.115 * H))
+    if mo > ed:
+        ko = 0.424 * (1.0 - (H / 100.0) ** 1.7) + 0.0694 * math.sqrt(W) * (1.0 - (H / 100.0) ** 8)
+        kd = ko * 0.581 * math.exp(0.0365 * T)
+        m = ed + (mo - ed) * 10.0 ** (-kd)
+    elif mo < ew:
+        kl = 0.424 * (1.0 - ((100.0 - H) / 100.0) ** 1.7) + 0.0694 * math.sqrt(W) * (1.0 - ((100.0 - H) / 100.0) ** 8)
+        kw = kl * 0.581 * math.exp(0.0365 * T)
+        m = ew - (ew - mo) * 10.0 ** (-kw)
+    else:
+        m = mo
+    return 59.5 * (250.0 - m) / (147.2 + m)
+
+
+def _dmc(T: float, H: float, ro: float, month: int = 6) -> float:
+    if ro > 1.5:
+        re = 0.92 * ro - 1.27
+        mo_dmc = 20.0 + math.exp(5.6348 - _FWI_DMC0 / 43.43)
+        if _FWI_DMC0 <= 33:
+            b = 100.0 / (0.5 + 0.3 * _FWI_DMC0)
+        elif _FWI_DMC0 <= 65:
+            b = 14.0 - 1.3 * math.log(_FWI_DMC0)
+        else:
+            b = 6.2 * math.log(_FWI_DMC0) - 17.2
+        mr = mo_dmc + 1000.0 * re / (48.77 + b * re)
+        pr = 244.72 - 43.43 * math.log(mr - 20.0)
+        p0 = max(pr, 0.0)
+    else:
+        p0 = _FWI_DMC0
+    le = _DMC_LE[month - 1]
+    k = max(0.0, 1.894 * (T + 1.1) * (100.0 - H) * le * 1e-6)
+    return p0 + 100.0 * k
+
+
+def _dc(T: float, ro: float, month: int = 6) -> float:
+    if ro > 2.8:
+        rd = 0.83 * ro - 1.27
+        qo = 800.0 * math.exp(-_FWI_DC0 / 400.0)
+        qr = qo + 3.937 * rd
+        dr = 400.0 * math.log(800.0 / qr)
+        d0 = max(dr, 0.0)
+    else:
+        d0 = _FWI_DC0
+    lf = _DC_LF[month - 1]
+    v = max(0.0, 0.36 * (T + 2.8) + lf)
+    return d0 + 0.5 * v
+
+
+def _isi(W: float, ffmc: float) -> float:
+    fm = 147.2 * (101.0 - ffmc) / (59.5 + ffmc)
+    sf = 19.115 * math.exp(-0.1386 * fm) * (1.0 + fm ** 5.31 / 4.93e7)
+    return 0.208 * sf * math.exp(0.05039 * W)
+
+
+def _bui(dmc: float, dc: float) -> float:
+    if dmc <= 0.4 * dc:
+        return 0.8 * dmc * dc / (dmc + 0.4 * dc)
+    return dmc - (1.0 - 0.8 * dc / (dmc + 0.4 * dc)) * (0.92 + (0.0114 * dmc) ** 1.7)
+
+
+def _fwi_index(isi: float, bui: float) -> float:
+    bb = 0.1 * isi * (0.626 * bui ** 0.809 + 2.0) if bui <= 80 else 0.1 * isi * (1000.0 / (25.0 + 108.64 * math.exp(-0.023 * bui)))
+    return math.exp(2.72 * (0.434 * math.log(bb)) ** 0.647) if bb > 1.0 else bb
+
+
+def _compute_fwi_scalar(temp: float, humidity: float, wind_spd: float, precip: float) -> float:
+    """Full Canadian FWI (Van Wagner 1987) — matches process_weather.py exactly."""
+    try:
+        month = datetime.now().month
+        ffmc = _ffmc(temp, humidity, wind_spd, precip)
+        dmc  = _dmc(temp, humidity, precip, month)
+        dc   = _dc(temp, precip, month)
+        isi  = _isi(wind_spd, ffmc)
+        bui  = _bui(dmc, dc)
+        return float(_fwi_index(isi, bui))
+    except Exception:
+        return 0.0
+
+
+def _compute_drought_proxy(soil_mst: float, temp: float, days_since_precip: float) -> float:
+    """Weighted drought composite — matches process_weather.py exactly."""
+    soil_norm  = max(0.0, 1.0 - soil_mst)
+    temp_norm  = max(0.0, min(1.0, temp / 45.0))
+    precip_norm = min(1.0, days_since_precip / 30.0)
+    return float(_DROUGHT_W_SOIL * soil_norm + _DROUGHT_W_TEMP * temp_norm + _DROUGHT_W_PRECIP * precip_norm)
 
 
 _STATIC_PARQUET = (

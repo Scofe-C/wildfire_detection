@@ -64,7 +64,7 @@ SCHEDULE_INTERVAL = "0 */6 * * *"  # Fallback cron; watchdog_sensor_dag override
 # Resolution tiers (watchdog escalation):
 #   quiet mode:  64 km (H3 res 2) — coarse default scan, ~200 cells CA+TX
 #   fire mode:   22 km (H3 res 5) — fire-confirmed detailed scan, ~800-1000 cells CA
-DEFAULT_RESOLUTION_KM = 22  # Matches schema_config.yaml default_resolution_km
+DEFAULT_RESOLUTION_KM = 64  # Matches schema_config.yaml default_resolution_km
 
 # Region definitions — mirrors schema_config.yaml geographic_scope
 # Defined here so the DAG can build TaskGroups without reading the config at
@@ -518,22 +518,23 @@ def task_validate_schema(**context):
     resolution_km = context["params"].get("resolution_km", DEFAULT_RESOLUTION_KM)
 
     passed, results = run_validation(fused_df, registry, resolution_km=resolution_km)
-    validation_results = {"passed": passed, "issues": results.get("issues", [])}
+    errors = results.get("errors", [])
+    warnings = results.get("warnings", [])
+    validation_results = {"passed": passed, "errors": errors, "warnings": warnings,
+                          "issues": errors + warnings}
 
-    if validation_results["issues"]:
-        logger.warning(
-            f"Validation issues ({len(validation_results['issues'])}): "
-            + "; ".join(validation_results["issues"][:5])
+    if errors:
+        logger.error(
+            f"Validation ERRORS ({len(errors)}): " + "; ".join(errors[:5])
         )
-    else:
+    if warnings:
+        logger.info(
+            f"Validation warnings ({len(warnings)}): " + "; ".join(warnings[:5])
+        )
+    if not errors and not warnings:
         logger.info("Schema validation passed — all checks OK")
 
     context["ti"].xcom_push(key="validation_results", value=validation_results)
-
-    if not validation_results["passed"]:
-        logger.warning(
-            f"Schema validation issues (non-fatal): {validation_results['issues'][:5]}"
-        )
 
 
 def task_detect_anomalies(**context):
@@ -585,31 +586,31 @@ def task_export_to_parquet(**context):
     execution_date = context["execution_date"]
     resolution_km = context["params"].get("resolution_km", DEFAULT_RESOLUTION_KM)
 
-    date_str = execution_date.strftime("%Y-%m-%d")
-    year     = execution_date.strftime("%Y")
-    month    = execution_date.strftime("%m")
+    ts_str = execution_date.strftime("%Y-%m-%dT%H%M")
+    year   = execution_date.strftime("%Y")
+    month  = execution_date.strftime("%m")
 
     exported_paths = []
 
     if "region" in fused_df.columns and fused_df["region"].notna().any():
         for region in fused_df["region"].dropna().unique():
             region_df = fused_df[fused_df["region"] == region].copy()
-            region_df["date"] = date_str
+            region_df["date"] = ts_str
 
             output_dir = (
                 PROCESSED_DIR / f"{resolution_km}km"
                 / f"region={region}" / f"year={year}" / f"month={month}"
             )
             output_dir.mkdir(parents=True, exist_ok=True)
-            output_path = output_dir / f"features_{date_str}.parquet"
+            output_path = output_dir / f"features_{ts_str}.parquet"
             region_df = _cast_parquet_compatible(region_df)
             region_df.to_parquet(output_path, index=False, version="1.0")
             exported_paths.append(str(output_path))
             logger.info(f"Exported {region}: {len(region_df)} rows → {output_path}")
     else:
         logger.warning("'region' column absent — falling back to legacy date= partition")
-        fused_df["date"] = date_str
-        output_dir = PROCESSED_DIR / f"{resolution_km}km" / f"date={date_str}"
+        fused_df["date"] = ts_str
+        output_dir = PROCESSED_DIR / f"{resolution_km}km" / f"date={ts_str}"
         output_dir.mkdir(parents=True, exist_ok=True)
         output_path = output_dir / "features.parquet"
         fused_df = _cast_parquet_compatible(fused_df)
@@ -628,13 +629,13 @@ def task_export_to_parquet(**context):
         if "region" in fused_plain_df.columns and fused_plain_df["region"].notna().any():
             for region in fused_plain_df["region"].dropna().unique():
                 region_df = fused_plain_df[fused_plain_df["region"] == region].copy()
-                region_df["date"] = date_str
+                region_df["date"] = ts_str
                 output_dir = (
                     PROCESSED_DIR / "fused" / f"{resolution_km}km"
                     / f"region={region}" / f"year={year}" / f"month={month}"
                 )
                 output_dir.mkdir(parents=True, exist_ok=True)
-                output_path = output_dir / f"fused_{date_str}.parquet"
+                output_path = output_dir / f"fused_{ts_str}.parquet"
                 region_df = _cast_parquet_compatible(region_df)
                 region_df.to_parquet(output_path, index=False, version="1.0")
                 fused_exported_paths.append(str(output_path))
@@ -675,7 +676,7 @@ with DAG(
     tags=["wildfire", "mlops", "data-pipeline"],
     params={
         "resolution_km": DEFAULT_RESOLUTION_KM,
-        "weather_lookback_hours": 6,   # 6h for 22km (auto); override to 24 for 64km
+        "weather_lookback_hours": 6,   # must match backfill DEFAULT_FREQ_HOURS=6
         # Watchdog trigger params (set by watchdog_sensor_dag on fire detection)
         "trigger_source": "cron",         # "cron" | "watchdog_active" | "watchdog_emergency"
         "fire_cells": [],                 # H3 cell IDs confirmed by watchdog
@@ -730,6 +731,7 @@ with DAG(
                 python_callable=task_ingest_weather,
                 op_kwargs={"region": region_key},
                 provide_context=True,
+                pool="open_meteo_pool",  # serialize across regions to avoid 429s
             )
 
             process_f = PythonOperator(
@@ -822,34 +824,318 @@ with DAG(
     version = BashOperator(
         task_id="version_with_dvc",
         bash_command="""
-            set -euo pipefail
-            echo "=== DVC version step ==="
-            mkdir -p dvc
+            # Non-blocking: DVC/git are unavailable inside Docker containers.
+            # Wrap in a subshell so any failure exits 0 — the DAG continues.
+            (
+                set -euo pipefail
+                echo "=== DVC version step ==="
+                mkdir -p dvc
 
-            # Track ML-ready partitioned data (OBJ-1 input)
-            dvc add "data/processed/{{ params.resolution_km }}km" -f
-            cp "data/processed/{{ params.resolution_km }}km.dvc" \
-               "dvc/processed_{{ params.resolution_km }}km.dvc"
-            echo "DVC pointer updated: dvc/processed_{{ params.resolution_km }}km.dvc"
+                # Track ML-ready partitioned data (OBJ-1 input)
+                dvc add "data/processed/{{ params.resolution_km }}km" -f
+                cp "data/processed/{{ params.resolution_km }}km.dvc" \
+                   "dvc/processed_{{ params.resolution_km }}km.dvc"
+                echo "DVC pointer updated: dvc/processed_{{ params.resolution_km }}km.dvc"
 
-            # Track plain fused features (OBJ-2 input)
-            # data/processed/fused is owned by dvc.yaml fuse_features stage —
-            # use dvc commit instead of dvc add to avoid overlap error.
-            if [ -d "data/processed/fused/{{ params.resolution_km }}km" ]; then
-                dvc commit data/processed/fused -f
-                echo "DVC commit complete: data/processed/fused"
-            else
-                echo "Fused {{ params.resolution_km }}km dir not yet populated — skipping"
-            fi
+                # Track plain fused features (OBJ-2 input)
+                if [ -d "data/processed/fused/{{ params.resolution_km }}km" ]; then
+                    dvc commit data/processed/fused -f
+                    echo "DVC commit complete: data/processed/fused"
+                else
+                    echo "Fused {{ params.resolution_km }}km dir not yet populated — skipping"
+                fi
 
-            echo "=== DVC version step complete ==="
-            echo "Run on host: git add dvc/ && git commit -m 'data: run {{ execution_date }}' && dvc push"
+                echo "=== DVC version step complete ==="
+                echo "Run on host: git add dvc/ && git commit -m 'data: run {{ execution_date }}' && dvc push"
+            ) || echo "DVC versioning skipped (non-fatal — git/DVC not available in this environment)"
         """,
         cwd="/opt/airflow",
         dag=dag,
     )
 
-    fuse >> validate >> detect_anomalies >> export >> version
+    # ------------------------------------------------------------------
+    # Inference — score all grid cells using the production model.
+    # Reads fused_ml_features_path XCom, strips pipeline-only columns,
+    # runs full_pipeline(is_inference=True), scores, writes to GCS.
+    # trigger_rule="all_done": runs even if version_with_dvc is skipped.
+    # ------------------------------------------------------------------
+    def task_run_inference(**context):
+        import json
+        import io
+        import os
+        import sys
+        from datetime import datetime, timezone
+        from pathlib import Path as _Path
+        import pandas as _pd
+        import yaml as _yaml
+
+        # Add model-pipeline to sys.path
+        # In Docker: MODEL_PIPELINE_ROOT=/opt/model-pipeline (set in docker-compose.yaml)
+        # Locally: falls back to sibling directory of Data-Pipeline
+        model_pipeline_root = _Path(
+            os.environ.get("MODEL_PIPELINE_ROOT", str(PROJECT_ROOT.parent / "model-pipeline"))
+        )
+        if str(model_pipeline_root) not in sys.path:
+            sys.path.insert(0, str(model_pipeline_root))
+
+        from src.preprocessing.feature_engineering import full_pipeline
+
+        _PIPELINE_ONLY_COLS = [
+            "active_fire_count", "mean_frp", "median_frp",
+            "max_confidence", "nearest_fire_distance_km",
+            "fire_detected_binary",
+            "canopy_base_height_m", "canopy_bulk_density", "evt_national_class",
+        ]
+
+        # Region-specific risk tier thresholds — California raised to reduce
+        # false CRITICAL flags; Texas slightly raised from baseline.
+        _TIER_THRESHOLDS = {
+            "california": [("CRITICAL", 0.80), ("HIGH", 0.50), ("MEDIUM", 0.20)],
+            "texas":      [("CRITICAL", 0.75), ("HIGH", 0.45), ("MEDIUM", 0.18)],
+        }
+        _DEFAULT_TIERS = [("CRITICAL", 0.65), ("HIGH", 0.365), ("MEDIUM", 0.15)]
+
+        def assign_risk_tier(score: float, region: str = "") -> str:
+            tiers = _TIER_THRESHOLDS.get(region, _DEFAULT_TIERS)
+            for tier, lower in tiers:
+                if score >= lower:
+                    return tier
+            return "LOW"
+
+        # Resolve input: XCom from same run, or latest exported file on disk
+        fused_ml_path = context["ti"].xcom_pull(
+            task_ids="fuse_features", key="fused_ml_features_path"
+        )
+
+        if not fused_ml_path:
+            logger.info("run_inference: XCom empty — scanning export dir for latest file")
+            resolution_km = context["params"].get("resolution_km", DEFAULT_RESOLUTION_KM)
+            export_root = PROCESSED_DIR / f"{resolution_km}km"
+            candidates = sorted(
+                export_root.glob("region=*/year=*/month=*/features_*.parquet"),
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )
+            if not candidates:
+                logger.error("run_inference: no exported parquet files found under %s — aborting", export_root)
+                return
+            latest_mtime = candidates[0].stat().st_mtime
+            latest_files = [p for p in candidates if p.stat().st_mtime >= latest_mtime - 60]
+            fused_df = _pd.concat(
+                [_pd.read_parquet(p) for p in latest_files], ignore_index=True
+            )
+            logger.info("run_inference: loaded %d rows from %d file(s): %s",
+                        len(fused_df), len(latest_files), [p.name for p in latest_files])
+        else:
+            fused_df = _pd.read_parquet(fused_ml_path)
+            logger.info("run_inference: read %d rows from XCom path %s", len(fused_df), fused_ml_path)
+
+        # Save FIRMS aggregates per region BEFORE dropping pipeline-only cols
+        firms_by_region = {}
+        if "active_fire_count" in fused_df.columns and "region" in fused_df.columns:
+            for _r in fused_df["region"].dropna().unique():
+                _rdf = fused_df[fused_df["region"] == _r]
+                _count = int(_rdf["active_fire_count"].sum())
+                _hotspots = []
+                if _count > 0 and "mean_frp" in _rdf.columns:
+                    for _, _row in _rdf[_rdf["active_fire_count"] > 0].iterrows():
+                        _hotspots.append({
+                            "lat": float(_row.get("latitude", 0)),
+                            "lon": float(_row.get("longitude", 0)),
+                            "frp": float(_row.get("mean_frp", 0)),
+                            "confidence": float(_row.get("max_confidence", 80)),
+                        })
+                firms_by_region[_r] = {"count": _count, "hotspots": _hotspots}
+
+        drop_cols = [c for c in _PIPELINE_ONLY_COLS if c in fused_df.columns]
+        if drop_cols:
+            fused_df = fused_df.drop(columns=drop_cols)
+
+        cfg_path = model_pipeline_root / "configs" / "model_config.yaml"
+        with open(cfg_path, encoding="utf-8") as _f:
+            cfg = _yaml.safe_load(_f)
+
+        bucket = os.environ.get("GCS_BUCKET_NAME", cfg["data"]["gcs_bucket"])
+        run_timestamp = datetime.now(timezone.utc)
+
+        from src.tracking.vertex_registry import VertexRegistry
+        vai = cfg["tracking"]["vertex_ai"]
+        project_id = os.environ.get("GCP_PROJECT_ID", vai.get("project_id", ""))
+        location = vai.get("location", "us-central1")
+
+        all_scored = []
+        all_critical = []
+        inference_xcom = {}  # {region -> enriched inference dict} — written to GCS + XCom
+
+        for region in fused_df["region"].dropna().unique():
+            logger.info("run_inference: scoring region=%s", region)
+            region_df = fused_df[fused_df["region"] == region].copy()
+
+            try:
+                registry = VertexRegistry(
+                    project_id=project_id,
+                    location=location,
+                    display_name=f"wildfire-ignition-{region}",
+                    gcs_bucket=bucket,
+                )
+                model, medians, threshold = registry.load_production()
+                logger.info("[%s] Loaded Vertex AI production model, threshold=%.4f", region, threshold)
+            except Exception as exc:
+                logger.error("[%s] Model load failed: %s — skipping", region, exc)
+                continue
+
+            try:
+                X, _ = full_pipeline(region_df, model_type="xgb", is_inference=True, fit_medians=medians)
+            except Exception as exc:
+                logger.error("[%s] Preprocessing failed: %s — skipping", region, exc)
+                continue
+
+            import xgboost as _xgb
+            import lightgbm as _lgb
+            try:
+                if isinstance(model, _xgb.Booster):
+                    y_prob = model.predict(_xgb.DMatrix(X))
+                elif isinstance(model, _lgb.Booster):
+                    y_prob = model.predict(X)
+                elif hasattr(model, "predict_proba"):
+                    y_prob = model.predict_proba(X)[:, 1]
+                else:
+                    y_prob = model.predict(X)
+            except Exception as exc:
+                logger.error("[%s] Scoring failed: %s — skipping", region, exc)
+                continue
+
+            id_cols = ["grid_id", "region"]
+            for opt in ("latitude", "longitude"):
+                if opt in region_df.columns:
+                    id_cols.append(opt)
+            scored_df = region_df[id_cols].copy().reset_index(drop=True)
+            scored_df["timestamp"]       = run_timestamp
+            scored_df["fire_risk_score"] = y_prob
+            scored_df["fire_risk_flag"]  = (y_prob >= threshold).astype(int)
+            scored_df["risk_tier"]       = [assign_risk_tier(s, region) for s in y_prob]
+            scored_df["model_version"]   = "production"
+            scored_df["threshold_used"]  = threshold
+
+            n_flagged = int(scored_df["fire_risk_flag"].sum())
+            n_crit    = int((scored_df["risk_tier"] == "CRITICAL").sum())
+            logger.info("[%s] flagged=%d  CRITICAL=%d  max_score=%.4f",
+                        region, n_flagged, n_crit, float(scored_df["fire_risk_score"].max()))
+
+            # Build cells_list once — reused by GCS write
+            _cell_cols = ["grid_id", "fire_risk_score", "fire_risk_flag", "risk_tier"] + (
+                ["latitude", "longitude"] if "latitude" in scored_df.columns else []
+            )
+            cells_list = scored_df[_cell_cols].to_dict(orient="records")
+
+            # Weather telemetry from region_df (weather cols survive the drop)
+            _telemetry = {}
+            if "temperature_2m" in region_df.columns:
+                _telemetry["temperature_max"] = round(float(region_df["temperature_2m"].max()), 2)
+            if "wind_speed_10m" in region_df.columns:
+                _telemetry["wind_speed_mph"] = round(float(region_df["wind_speed_10m"].mean() * 0.6214), 2)
+            if "relative_humidity_2m" in region_df.columns:
+                _telemetry["relative_humidity"] = round(float(region_df["relative_humidity_2m"].mean()), 2)
+            if "soil_moisture_0_to_7cm" in region_df.columns:
+                _telemetry["soil_moisture"] = round(float(region_df["soil_moisture_0_to_7cm"].mean()), 4)
+
+            _firms = firms_by_region.get(region, {"count": 0, "hotspots": []})
+
+            # Enriched JSON — single source of truth for OBJ-3 server
+            region_payload = {
+                "run_timestamp": run_timestamp.isoformat(),
+                "model_version": "production",
+                "threshold": threshold,
+                "region": region,
+                "cells": cells_list,
+                "summary": {
+                    "total_cells":      len(scored_df),
+                    "flagged_cells":    n_flagged,
+                    "max_risk_score":   float(scored_df["fire_risk_score"].max()),
+                    "risk_tier_counts": scored_df["risk_tier"].value_counts().to_dict(),
+                },
+                "firms_hotspot_count": _firms["count"],
+                "firms_hotspots":      _firms["hotspots"],
+                "telemetry":           _telemetry,
+            }
+            inference_xcom[region] = region_payload
+
+            try:
+                from google.cloud import storage as _gcs
+                client = _gcs.Client()
+                bkt = client.bucket(bucket)
+                ts_str = run_timestamp.strftime("%Y%m%dT%H%MZ")
+                year   = run_timestamp.year
+                month  = f"{run_timestamp.month:02d}"
+
+                buf = io.BytesIO()
+                scored_df.to_parquet(buf, index=False)
+                bkt.blob(
+                    f"inference/region={region}/year={year}/month={month}/inference_{ts_str}.parquet"
+                ).upload_from_string(buf.getvalue(), content_type="application/octet-stream")
+
+                bkt.blob(f"inference/latest/{region}_latest.json").upload_from_string(
+                    json.dumps(region_payload, indent=2),
+                    content_type="application/json",
+                )
+                logger.info("[%s] GCS write complete", region)
+            except Exception as exc:
+                logger.warning("[%s] GCS write failed (non-fatal): %s", region, exc)
+
+            all_scored.append(scored_df)
+            if n_crit > 0:
+                all_critical.extend(
+                    scored_df[scored_df["risk_tier"] == "CRITICAL"][
+                        ["grid_id", "region", "fire_risk_score"]
+                    ].to_dict(orient="records")
+                )
+
+        if not all_scored:
+            logger.warning("run_inference: no regions scored successfully")
+            return
+
+        if all_critical:
+            try:
+                from src.notifications.alerter import SlackAlerter
+                top = all_critical[0]
+                SlackAlerter().alert_critical_fire_risk(
+                    region=str(top.get("region", "unknown")),
+                    grid_id=str(top.get("grid_id", "unknown")),
+                    probability=float(top.get("fire_risk_score", 0.0)),
+                )
+            except Exception as exc:
+                logger.warning("Slack alert failed (non-blocking): %s", exc)
+
+        context["ti"].xcom_push(key="inference_results", value=inference_xcom)
+        logger.info("run_inference complete — %d regions, %d CRITICAL cells",
+                    len(all_scored), len(all_critical))
+
+        # ── Trigger OBJ-3 server (non-blocking) ──────────────────────────────
+        obj3_url = os.environ.get("OBJ3_DASHBOARD_URL", "http://obj3-dashboard:8000")
+        scored_regions = list(inference_xcom.keys())
+        try:
+            import requests as _req
+            _res_km = context["params"].get("resolution_km", DEFAULT_RESOLUTION_KM)
+            resp = _req.post(
+                f"{obj3_url}/api/generate-from-pipeline",
+                json={"regions": scored_regions, "bucket": bucket, "resolution_km": _res_km},
+                timeout=300,
+            )
+            if resp.status_code == 200:
+                logger.info("OBJ-3 trigger OK: %s", resp.json())
+            else:
+                logger.warning("OBJ-3 trigger returned %d: %s", resp.status_code, resp.text[:500])
+        except Exception as exc:
+            logger.warning("OBJ-3 trigger failed (non-blocking): %s", exc)
+
+    run_inference = PythonOperator(
+        task_id="run_inference",
+        python_callable=task_run_inference,
+        provide_context=True,
+        trigger_rule="all_done",
+    )
+
+    fuse >> validate >> detect_anomalies >> export >> version >> run_inference
 
 
 # ---------------------------------------------------------------------------

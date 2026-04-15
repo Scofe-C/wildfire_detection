@@ -1,7 +1,7 @@
 """
-Weather formatting utilities for Cell2Fire.
+Weather formatting utilities for fire spread simulation.
 
-Converts pipeline weather DataFrames into Cell2Fire's expected CSV format.
+Converts pipeline weather DataFrames into the expected CSV format.
 """
 from __future__ import annotations
 
@@ -9,8 +9,6 @@ import logging
 from pathlib import Path
 
 import pandas as pd
-
-from .exceptions import Cell2FireError
 
 logger = logging.getLogger(__name__)
 
@@ -37,9 +35,9 @@ def format_weather_csv(
     weather_df: pd.DataFrame,
     output_path: str | Path,
 ) -> Path:
-    """Convert pipeline weather DataFrame to Cell2Fire CSV format.
+    """Convert pipeline weather DataFrame to spread simulation CSV format.
 
-    Cell2Fire expects columns:
+    Expected columns:
         datetime, ws (m/s), wd (degrees), tmp (°C), rh (%)
 
     Parameters
@@ -55,7 +53,7 @@ def format_weather_csv(
 
     Raises
     ------
-    Cell2FireError
+    ValueError
         If required columns are missing after mapping.
     """
     output_path = Path(output_path)
@@ -67,7 +65,7 @@ def format_weather_csv(
             out_df["datetime"] = pd.to_datetime(weather_df[ts_col])
             break
     else:
-        raise Cell2FireError(
+        raise ValueError(
             f"No timestamp column found. Available: {list(weather_df.columns)}"
         )
 
@@ -78,7 +76,7 @@ def format_weather_csv(
 
     missing = [c for c in _REQUIRED_COLS if c not in out_df.columns]
     if missing:
-        raise Cell2FireError(
+        raise ValueError(
             f"Missing weather columns after mapping: {missing}. "
             f"Available in input: {list(weather_df.columns)}"
         )

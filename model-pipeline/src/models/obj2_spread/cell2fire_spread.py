@@ -81,7 +81,7 @@ class Cell2FireSpread(BaseModel):
         else:
             raise Cell2FireError(f"Expected .json file or directory, got: {model_path}")
 
-        with open(config_file, encoding="utf-8") as f:
+        with open(config_file) as f:
             self._config = json.load(f)
 
         if "params" in self._config:

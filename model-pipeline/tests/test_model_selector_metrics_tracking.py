@@ -251,11 +251,8 @@ class TestVertexAISync:
         mock_run.__enter__ = MagicMock(return_value=mock_run)
         mock_run.__exit__ = MagicMock(return_value=False)
 
-        mock_experiment = MagicMock()
-        mock_experiment.start_run.return_value = mock_run
-
         mock_aiplatform = MagicMock()
-        mock_aiplatform.Experiment.get_or_create.return_value = mock_experiment
+        mock_aiplatform.start_run.return_value = mock_run
 
         with patch.dict("sys.modules", {"google.cloud.aiplatform": mock_aiplatform,
                                         "google.cloud": MagicMock(aiplatform=mock_aiplatform)}):
@@ -278,11 +275,8 @@ class TestVertexAISync:
         mock_run.__enter__ = MagicMock(return_value=mock_run)
         mock_run.__exit__ = MagicMock(return_value=False)
 
-        mock_experiment = MagicMock()
-        mock_experiment.start_run.return_value = mock_run
-
         mock_aiplatform = MagicMock()
-        mock_aiplatform.Experiment.get_or_create.return_value = mock_experiment
+        mock_aiplatform.start_run.return_value = mock_run
 
         with patch.dict("sys.modules", {"google.cloud.aiplatform": mock_aiplatform,
                                         "google.cloud": MagicMock(aiplatform=mock_aiplatform)}):
@@ -305,11 +299,8 @@ class TestVertexAISync:
         mock_run.__enter__ = MagicMock(return_value=mock_run)
         mock_run.__exit__ = MagicMock(return_value=False)
 
-        mock_experiment = MagicMock()
-        mock_experiment.start_run.return_value = mock_run
-
         mock_aiplatform = MagicMock()
-        mock_aiplatform.Experiment.get_or_create.return_value = mock_experiment
+        mock_aiplatform.start_run.return_value = mock_run
 
         with patch.dict("sys.modules", {"google.cloud.aiplatform": mock_aiplatform,
                                         "google.cloud": MagicMock(aiplatform=mock_aiplatform)}):
@@ -322,7 +313,7 @@ class TestVertexAISync:
             )
 
         # start_run should be called with "rollback-run-001"
-        mock_experiment.start_run.assert_called_with(run="rollback-run-001")
+        mock_aiplatform.start_run.assert_called_with(run="rollback-run-001")
 
 
 # ===========================================================================
@@ -391,16 +382,20 @@ class TestMLflowLogger:
         logger, mock_mlflow = self._make_logger()
         bias_report = {
             "gate_result": "PASS",
-            "disparity_between_groups": 0.03,
             "overall_fnr": 0.12,
-            "per_group_fnr": {"high_risk": 0.10, "low_risk": 0.13},
+            "slices": {
+                "nri": {
+                    "disparity": 0.03,
+                    "per_group_fnr": {"high_risk": 0.10, "low_risk": 0.13},
+                },
+            },
         }
         logger.log_bias_gate_result(bias_report)
         mock_mlflow.log_param.assert_called_once_with("bias_gate_result", "PASS")
         metric_calls = {c[0][0]: c[0][1] for c in mock_mlflow.log_metric.call_args_list}
-        assert metric_calls["bias_fnr_disparity"] == 0.03
         assert metric_calls["bias_overall_fnr"] == 0.12
-        assert metric_calls["bias_fnr_high_risk"] == 0.10
+        assert metric_calls["bias_disparity_nri"] == 0.03
+        assert metric_calls["bias_fnr_nri_high_risk"] == 0.10
 
     def test_log_validation_result(self) -> None:
         logger, mock_mlflow = self._make_logger()

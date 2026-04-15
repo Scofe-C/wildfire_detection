@@ -368,7 +368,6 @@ def sanity_check_output(
     -------
     dict with all_passed (bool), n_passed, n_total, checks (list).
     """
-    cfg = config or {}
     checks = []
 
     speed   = result.get("spread_speed_kmh", None)

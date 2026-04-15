@@ -206,24 +206,26 @@ class LightGBMFireRiskModel(BaseModel):
         self,
         y_true: np.ndarray,
         y_prob: np.ndarray,
-        target_recall: float = 0.90,
+        target_precision: float = 0.70,
     ) -> float:
-        """Find the highest threshold achieving >= target_recall (candidates[-1] fix)."""
+        """Find threshold that maximises F1 subject to precision >= target_precision."""
         from sklearn.metrics import precision_recall_curve
 
         prec, rec, thresholds = precision_recall_curve(y_true, y_prob)
-        candidates = np.where(rec[:-1] >= target_recall)[0]
+        f1_scores = 2 * prec[:-1] * rec[:-1] / (prec[:-1] + rec[:-1] + 1e-9)
+        candidates = np.where(prec[:-1] >= target_precision)[0]
         if len(candidates) == 0:
             logger.warning(
-                "No threshold achieves recall >= %.2f — using 0.5 as fallback", target_recall
+                "No threshold achieves precision >= %.2f — using max-F1 fallback", target_precision
             )
-            self._threshold = 0.5
+            idx = int(np.argmax(f1_scores))
         else:
-            idx = candidates[-1]
-            self._threshold = float(thresholds[idx])
+            idx = int(candidates[np.argmax(f1_scores[candidates])])
+        self._threshold = float(thresholds[idx])
 
         logger.info(
-            "Threshold tuned: %.4f (target recall=%.2f)", self._threshold, target_recall
+            "Threshold tuned: %.4f (precision=%.3f, recall=%.3f, target_precision=%.2f)",
+            self._threshold, prec[idx], rec[idx], target_precision,
         )
         return self._threshold
 

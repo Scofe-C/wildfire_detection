@@ -16,6 +16,7 @@
 version: '3.8'
 
 x-airflow-common-env: &airflow-common-env
+  MODEL_PIPELINE_ROOT: /opt/model-pipeline
   AIRFLOW__CORE__EXECUTOR: LocalExecutor
 
   # Both keys for Airflow 2.x compat (moved from [core] to [database] in 2.3+)
@@ -29,6 +30,7 @@ x-airflow-common-env: &airflow-common-env
   AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "true"
 
   FIRMS_MAP_KEY: ${FIRMS_MAP_KEY:-your_firms_api_key_here}
+  GEMINI_API_KEY: ${GEMINI_API_KEY:-}
   GCS_BUCKET_NAME: ${GCS_BUCKET_NAME:-wildfire-mlops-dev}
   GOOGLE_CLOUD_PROJECT: ${GOOGLE_CLOUD_PROJECT:-}
   SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}
@@ -67,8 +69,8 @@ services:
 
   airflow-init:
     build:
-      context: .
-      dockerfile: docker/Dockerfile
+      context: ..
+      dockerfile: Data-Pipeline/docker/Dockerfile
       target: airflow-init
     image: wildfire-airflow-init:local
     environment: *airflow-common-env
@@ -93,12 +95,14 @@ services:
           --password airflow \
         || true
 
+        airflow pools set open_meteo_pool 1 "Serialize Open-Meteo API calls to avoid 429s" || true
+
         echo "Airflow init complete."
 
   airflow-webserver:
     build:
-      context: .
-      dockerfile: docker/Dockerfile
+      context: ..
+      dockerfile: Data-Pipeline/docker/Dockerfile
       target: airflow-webserver
     image: wildfire-airflow-webserver:local
     environment: *airflow-common-env
@@ -119,8 +123,8 @@ services:
 
   airflow-scheduler:
     build:
-      context: .
-      dockerfile: docker/Dockerfile
+      context: ..
+      dockerfile: Data-Pipeline/docker/Dockerfile
       target: airflow-scheduler
     image: wildfire-airflow-scheduler:local
     environment: *airflow-common-env
@@ -136,6 +140,44 @@ services:
       interval: 30s
       timeout: 10s
       retries: 10
+
+  # OBJ-3 disaster report server (Gemini LLM)
+  obj3-dashboard:
+    build:
+      context: ../model-pipeline
+      dockerfile: Dockerfile
+      target: dashboard
+    image: wildfire-obj3-dashboard:local
+    environment:
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GOOGLE_APPLICATION_CREDENTIALS: /app/gcp-key.json
+      GOOGLE_CLOUD_PROJECT: ${GOOGLE_CLOUD_PROJECT:-}
+      GCS_BUCKET_NAME: ${GCS_BUCKET_NAME:-wildfire-mlops-dev}
+    volumes:
+      - ${GCP_KEY_PATH:-./gcp-key.json}:/app/gcp-key.json:ro
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail http://localhost:8000/api/status || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # React frontend (nginx serves static + proxies /api to backend)
+  frontend:
+    build:
+      context: ../Frontend
+      dockerfile: Dockerfile
+    image: wildfire-frontend:local
+    ports:
+      - "3000:3000"
+    depends_on:
+      - obj3-dashboard
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:3000/ || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
 
 volumes:
   postgres-data:

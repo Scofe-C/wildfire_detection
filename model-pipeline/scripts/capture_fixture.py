@@ -276,7 +276,6 @@ def assemble_pipeline_result(
         "firms_hotspot_count": len(hotspots),
         "firms_hotspots": hotspots,
         "xgboost_top_cells": xgboost_top_cells,
-        "cell2fire_geojson": None,
         "propagator_summary": propagator_summary,
         "telemetry": telem,
         "smap": smap_result,

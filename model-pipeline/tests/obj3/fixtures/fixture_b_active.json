@@ -7,7 +7,6 @@
   "xgboost_top_cells": [
     { "h3_index": "8928308280fffff", "probability": 0.81, "lat": 34.1, "lon": -118.3 }
   ],
-  "cell2fire_geojson": null,
   "propagator_summary": null,
   "telemetry": {
     "temperature_max": 38.0,

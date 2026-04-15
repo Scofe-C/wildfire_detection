@@ -90,7 +90,7 @@ class MLflowLogger:
                 safe_name = f"shap_{feature}".replace(" ", "_").replace("/", "_")
                 self._mlflow.log_metric(safe_name, float(value))
 
-    def log_threshold(self, threshold: float, recall_at_threshold: float) -> None:
+    def log_threshold(self, threshold: float, target_precision: float) -> None:
         """Log the operational decision threshold alongside the model.
 
         Logged as a metric (not a param) so it can be written after get_params()
@@ -98,7 +98,7 @@ class MLflowLogger:
         are immutable once written, metrics are not.
         """
         self._mlflow.log_metric("tuned_threshold", threshold)
-        self._mlflow.log_metric("recall_at_threshold", recall_at_threshold)
+        self._mlflow.log_metric("target_precision", target_precision)
 
 def compute_input_statistics(X: pd.DataFrame) -> dict[str, dict[str, float]]:
     stats = {}

@@ -1,5 +1,5 @@
 """
-Cell2Fire exceptions and configuration loader.
+Configuration loader for OBJ-2 fire spread simulation.
 """
 from __future__ import annotations
 
@@ -10,14 +10,6 @@ from typing import Any
 import yaml
 
 logger = logging.getLogger(__name__)
-
-
-class Cell2FireError(Exception):
-    """Raised when the C++ binary fails or inputs are invalid."""
-
-
-class Cell2FireNotInstalledError(Cell2FireError):
-    """Raised when the Cell2Fire binary is not found on PATH."""
 
 
 def load_obj2_config(

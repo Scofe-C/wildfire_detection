@@ -247,8 +247,6 @@ def validate_against_firms(
     tp = 0  # true positive: model predicted spread, fire actually spread
     fp = 0  # false positive: model predicted spread, fire didn't spread
     fn = 0  # false negative: fire spread but model didn't predict it
-    persistence_tp = 0  # fire stayed in same cell
-
     # Group events by origin timestamp for batch processing
     events_by_file: dict[str, list[ObservedSpread]] = {}
     for ev in events:

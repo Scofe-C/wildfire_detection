@@ -103,23 +103,23 @@ stages:
     deps:
     - path: data/processed/firms
       hash: md5
-      md5: 36eafb4bccdd8cea958c6a99e29e7db3.dir
-      size: 23671
+      md5: 58608ab36e80a58c835e7cb247ef923a.dir
+      size: 23440
       nfiles: 4
     - path: data/processed/weather
       hash: md5
-      md5: 3bd39a86a97370e2ce2411069719fa07.dir
-      size: 23574
+      md5: ec81670c35b221e3dd672f9ca472b14d.dir
+      size: 23466
       nfiles: 2
     - path: data/static
       hash: md5
-      md5: 049a257a22a9d5c6b47aac8917f3c813.dir
-      size: 17960
-      nfiles: 2
+      md5: 5c62a18e806c2ce03e73e6acc7415d58.dir
+      size: 285979
+      nfiles: 3
     - path: scripts/fusion/fuse_features.py
       hash: md5
-      md5: 8e1c929d5a42568d1688f5591a1c7789
-      size: 20010
+      md5: d7071f44265f80d3125b75d0ef805b51
+      size: 22270
     - path: scripts/utils/grid_utils.py
       hash: md5
       md5: 7f9deb26043f07fcbdaa77157b80a065
@@ -131,9 +131,9 @@ stages:
     outs:
     - path: data/processed/fused
       hash: md5
-      md5: 31f5aa5094724f9aa88b0b4f2463aeb4.dir
-      size: 147136
-      nfiles: 5
+      md5: ec254c40755c1af82b1c534a318da249.dir
+      size: 1621239
+      nfiles: 41
   validate_schema:
     cmd: python scripts/validation/validate_schema.py --input 
       data/processed/fused --resolution-km 64 --output-dir 
