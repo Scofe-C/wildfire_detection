@@ -44,7 +44,7 @@ x-airflow-common-volumes: &airflow-common-volumes
   - ./logs:/opt/airflow/logs
   - ./tests:/opt/airflow/tests
   # GCP service account key (create locally — never commit)
-  - ${GCP_KEY_PATH:-./gcp-key.json}:/opt/airflow/gcp-key.json:ro
+  - ${GCP_KEY_PATH:-../gcp-key.json}:/opt/airflow/gcp-key.json:ro
   # DVC config and pipeline definition (needed by version_with_dvc task)
   - ./.dvc:/opt/airflow/.dvc
   - ./dvc.yaml:/opt/airflow/dvc.yaml
@@ -154,7 +154,7 @@ services:
       GOOGLE_CLOUD_PROJECT: ${GOOGLE_CLOUD_PROJECT:-}
       GCS_BUCKET_NAME: ${GCS_BUCKET_NAME:-wildfire-mlops-dev}
     volumes:
-      - ${GCP_KEY_PATH:-./gcp-key.json}:/app/gcp-key.json:ro
+      - ${GCP_KEY_PATH:-../gcp-key.json}:/app/gcp-key.json:ro
     ports:
       - "8000:8000"
     healthcheck:

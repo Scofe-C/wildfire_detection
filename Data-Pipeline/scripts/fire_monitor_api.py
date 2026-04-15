@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -157,7 +158,8 @@ def start_api_background(port: int = 8001, state: dict | None = None) -> None:
     import uvicorn
 
     def _run() -> None:
-        uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
+        bind_host = os.getenv("BIND_HOST", "127.0.0.1")
+        uvicorn.run(app, host=bind_host, port=port, log_level="warning")
 
     thread = threading.Thread(target=_run, daemon=True, name="fire-monitor-api")
     thread.start()

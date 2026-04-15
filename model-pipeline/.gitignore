@@ -30,8 +30,9 @@ venv/
 
 # ---------- Secrets ----------
 .env
-.env.*
+.env.local
 gcp-key.json
+!.env.example
 
 # ---------- Runtime outputs (regenerable) ----------
 reports/

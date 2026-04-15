@@ -34,6 +34,11 @@ pydantic>=2.5.0,<3.0.0
 jinja2>=3.1.0,<4.0.0
 markdown>=3.5.0,<4.0.0
 
+# OBJ-3: Dashboard server (cross-platform: macOS, Linux, Windows)
+uvicorn>=0.27.0,<1.0.0
+fastapi>=0.109.0,<1.0.0
+python-multipart>=0.0.6,<1.0.0
+
 # OBJ-3: Phase 1 — Local Ollama
 ollama>=0.4.0,<1.0.0
 

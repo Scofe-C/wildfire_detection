@@ -43,11 +43,10 @@ from typing import Any
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-# Load .env files (FIRMS_MAP_KEY, GEMINI_API_KEY, etc.)
+# Load .env from repo root (single source of truth for all credentials)
 try:
     from dotenv import load_dotenv
-    load_dotenv(PROJECT_ROOT / ".env")
-    load_dotenv(PROJECT_ROOT.parent / "model-pipeline" / ".env")
+    load_dotenv(PROJECT_ROOT.parent / ".env")
 except ImportError:
     pass
 
