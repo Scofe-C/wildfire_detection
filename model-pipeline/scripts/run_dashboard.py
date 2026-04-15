@@ -2,7 +2,6 @@
 
 Usage
 -----
-    python scripts/run_dashboard.py
     python scripts/run_dashboard.py --port 8080 --no-browser
 
 What it does
