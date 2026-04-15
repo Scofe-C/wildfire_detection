@@ -363,6 +363,43 @@ async def get_pipeline_status() -> JSONResponse:
 
 
 # ---------------------------------------------------------------------------
+# Cloud Run endpoints — health probe, inference, monitoring
+# ---------------------------------------------------------------------------
+
+@app.get("/health")
+async def health() -> JSONResponse:
+    """Cloud Run readiness probe."""
+    from datetime import UTC, datetime
+    return JSONResponse({"status": "ok", "timestamp": datetime.now(UTC).isoformat()})
+
+
+@app.post("/monitor")
+async def monitor(request: Request) -> JSONResponse:
+    """Drift monitoring — called by Cloud Scheduler every 6 hours via POST /monitor."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    baseline_run_id = body.get("baseline_run_id", "latest")
+    gcs_bucket = body.get("gcs_bucket") or os.getenv("GCS_BUCKET_NAME")
+
+    try:
+        from src.monitoring.monitor_runner import run_monitoring_check
+        run_id = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+        result = await asyncio.to_thread(
+            run_monitoring_check,
+            run_id=run_id,
+            gcs_bucket=gcs_bucket,
+            baseline_run_id=baseline_run_id,
+        )
+        return JSONResponse(content=result, status_code=200)
+    except Exception as exc:
+        logger.exception("Monitoring check failed")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+# ---------------------------------------------------------------------------
 # API — Airflow proxy (DAG status + run history)
 # ---------------------------------------------------------------------------
 
