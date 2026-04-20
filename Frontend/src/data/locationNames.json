@@ -1,0 +1,333 @@
+[
+  {
+    "grid_id": "82268ffffffffff",
+    "location": "Pueblo",
+    "latitude": 38.200356,
+    "longitude": -104.687888
+  },
+  {
+    "grid_id": "8226d7fffffffff",
+    "location": "Dalhart",
+    "latitude": 35.756503,
+    "longitude": -102.472479
+  },
+  {
+    "grid_id": "8248dffffffffff",
+    "location": "Albuquerque",
+    "latitude": 35.480263,
+    "longitude": -106.211183
+  },
+  {
+    "grid_id": "824897fffffffff",
+    "location": "Corpus Christi",
+    "latitude": 28.099493,
+    "longitude": -96.474676
+  },
+  {
+    "grid_id": "824807fffffffff",
+    "location": "Los Mochis",
+    "latitude": 24.486527,
+    "longitude": -108.224634
+  },
+  {
+    "grid_id": "824887fffffffff",
+    "location": "Laredo",
+    "latitude": 27.945084,
+    "longitude": -99.915168
+  },
+  {
+    "grid_id": "8226c7fffffffff",
+    "location": "Woodward",
+    "latitude": 35.91523,
+    "longitude": -98.755732
+  },
+  {
+    "grid_id": "82444ffffffffff",
+    "location": "Texarkana",
+    "latitude": 33.377732,
+    "longitude": -93.220777
+  },
+  {
+    "grid_id": "82455ffffffffff",
+    "location": "Veracruz",
+    "latitude": 25.560097,
+    "longitude": -91.413517
+  },
+  {
+    "grid_id": "8248affffffffff",
+    "location": "Presidio",
+    "latitude": 27.70131,
+    "longitude": -103.393282
+  },
+  {
+    "grid_id": "8248f7fffffffff",
+    "location": "Chihuahua",
+    "latitude": 30.21862,
+    "longitude": -105.479934
+  },
+  {
+    "grid_id": "8226effffffffff",
+    "location": "Tulsa",
+    "latitude": 35.959293,
+    "longitude": -95.0915
+  },
+  {
+    "grid_id": "82265ffffffffff",
+    "location": "Jonesboro",
+    "latitude": 35.894607,
+    "longitude": -91.507791
+  },
+  {
+    "grid_id": "82454ffffffffff",
+    "location": "Tampico",
+    "latitude": 25.50195,
+    "longitude": -94.680108
+  },
+  {
+    "grid_id": "82481ffffffffff",
+    "location": "Hidalgo del Parral",
+    "latitude": 27.36777,
+    "longitude": -106.883771
+  },
+  {
+    "grid_id": "824817fffffffff",
+    "location": "Durango",
+    "latitude": 24.860067,
+    "longitude": -104.812068
+  },
+  {
+    "grid_id": "8248a7fffffffff",
+    "location": "Saltillo",
+    "latitude": 25.15414,
+    "longitude": -101.401315
+  },
+  {
+    "grid_id": "82446ffffffffff",
+    "location": "Lufkin",
+    "latitude": 30.774742,
+    "longitude": -94.876334
+  },
+  {
+    "grid_id": "822657fffffffff",
+    "location": "Sedalia",
+    "latitude": 38.460991,
+    "longitude": -93.358457
+  },
+  {
+    "grid_id": "8226e7fffffffff",
+    "location": "Wichita",
+    "latitude": 38.496006,
+    "longitude": -97.076629
+  },
+  {
+    "grid_id": "82269ffffffffff",
+    "location": "Cortez",
+    "latitude": 37.863444,
+    "longitude": -108.515457
+  },
+  {
+    "grid_id": "8226dffffffffff",
+    "location": "Abilene",
+    "latitude": 33.245943,
+    "longitude": -100.367086
+  },
+  {
+    "grid_id": "82489ffffffffff",
+    "location": "Fredericksburg",
+    "latitude": 30.687215,
+    "longitude": -98.368984
+  },
+  {
+    "grid_id": "8248e7fffffffff",
+    "location": "Hermosillo",
+    "latitude": 29.836209,
+    "longitude": -109.04437
+  },
+  {
+    "grid_id": "824467fffffffff",
+    "location": "Morgan City",
+    "latitude": 28.167361,
+    "longitude": -93.09544
+  },
+  {
+    "grid_id": "82488ffffffffff",
+    "location": "Del Rio",
+    "latitude": 30.502533,
+    "longitude": -101.91231
+  },
+  {
+    "grid_id": "8226cffffffffff",
+    "location": "Dallas",
+    "latitude": 33.36367,
+    "longitude": -96.761442
+  },
+  {
+    "grid_id": "8248d7fffffffff",
+    "location": "Roswell",
+    "latitude": 33.020613,
+    "longitude": -104.010386
+  },
+  {
+    "grid_id": "8248c7fffffffff",
+    "location": "Deming",
+    "latitude": 32.686726,
+    "longitude": -107.662249
+  },
+  {
+    "grid_id": "824447fffffffff",
+    "location": "Baton Rouge",
+    "latitude": 30.769735,
+    "longitude": -91.458505
+  },
+  {
+    "grid_id": "8226f7fffffffff",
+    "location": "Dodge City",
+    "latitude": 38.410759,
+    "longitude": -100.863705
+  },
+  {
+    "grid_id": "8248b7fffffffff",
+    "location": "McAllen",
+    "latitude": 25.367705,
+    "longitude": -98.016358
+  }
+,
+  {
+    "grid_id": "822937fffffffff",
+    "location": "Ensenada",
+    "latitude": 30.354437,
+    "longitude": -121.787719
+  },
+  {
+    "grid_id": "82291ffffffffff",
+    "location": "Monterey",
+    "latitude": 35.351579,
+    "longitude": -123.214462
+  },
+  {
+    "grid_id": "822887fffffffff",
+    "location": "McCall",
+    "latitude": 44.400306,
+    "longitude": -116.036346
+  },
+  {
+    "grid_id": "822827fffffffff",
+    "location": "Bodega Bay",
+    "latitude": 37.330339,
+    "longitude": -125.710645
+  },
+  {
+    "grid_id": "822997fffffffff",
+    "location": "Kanab",
+    "latitude": 37.402442,
+    "longitude": -112.312509
+  },
+  {
+    "grid_id": "822907fffffffff",
+    "location": "San Diego",
+    "latitude": 32.470766,
+    "longitude": -124.17341
+  },
+  {
+    "grid_id": "82485ffffffffff",
+    "location": "Mexicali",
+        "latitude": 31.705258,
+    "longitude": -114.87464
+  },
+  {
+    "grid_id": "8228b7fffffffff",
+    "location": "Burley",
+    "latitude": 42.336666,
+    "longitude": -113.430901
+  },
+  {
+    "grid_id": "8229affffffffff",
+  "location": "Hanford",
+    "latitude": 36.13581,
+    "longitude": -119.688987
+  },
+  {
+    "grid_id": "822807fffffffff",
+    "location": "Eureka",
+    "latitude": 40.131717,
+    "longitude": -124.76073
+  },
+  {
+    "grid_id": "82281ffffffffff",
+    "location": "Roseburg",
+    "latitude": 42.874491,
+    "longitude": -123.748579
+  },
+  {
+    "grid_id": "822917fffffffff",
+    "location": "Santa Barbara",
+    "latitude": 33.261654,
+    "longitude": -120.768696
+  },
+  {
+    "grid_id": "822837fffffffff",
+    "location": "Fairfield",
+    "latitude": 38.193209,
+    "longitude": -122.196197
+  },
+  {
+    "grid_id": "82298ffffffffff",
+    "location": "Hawthorne",
+    "latitude": 38.960282,
+    "longitude": -118.543846
+  },
+  {
+    "grid_id": "8228affffffffff",
+    "location": "Prineville",
+    "latitude": 43.698313,
+    "longitude": -119.961358
+  },
+  {
+    "grid_id": "8229b7fffffffff",
+    "location": "Kingman",
+    "latitude": 34.580911,
+    "longitude": -113.628332
+  },
+  {
+    "grid_id": "8229a7fffffffff",
+    "location": "Moreno Valley",
+    "latitude": 33.969092,
+    "longitude": -117.246454
+  },
+  {
+    "grid_id": "82484ffffffffff",
+    "location": "Ensenada",
+    "latitude": 31.07111,
+    "longitude": -118.380451
+  },
+  {
+    "grid_id": "822817fffffffff",
+    "location": "Susanville",
+    "latitude": 40.980162,
+    "longitude": -121.113641
+  },
+  {
+    "grid_id": "82299ffffffffff",
+    "location": "Ely",
+    "latitude": 39.617628,
+    "longitude": -114.776561
+  },
+  {
+    "grid_id": "82290ffffffffff",
+    "location": "Fort Bragg",
+    "latitude": 34.484625,
+    "longitude": -126.603415
+  },
+  {
+    "grid_id": "8228a7fffffffff",
+    "location": "Winnemucca",
+    "latitude": 41.719697,
+    "longitude": -117.328141
+  },
+  {
+    "grid_id": "822987fffffffff",
+    "location": "Tonopah",
+    "latitude": 36.823438,
+    "longitude": -116.046735
+  }
+]

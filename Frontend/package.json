@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "start": "concurrently -n api,ui -c blue,green \"cd ../model-pipeline && python scripts/run_dashboard.py --no-browser\" \"vite\"",
     "build": "vite build",
     "preview": "vite preview"
   },
@@ -12,9 +13,11 @@
     "@react-leaflet/core": "^2.1.0",
     "leaflet": "^1.9.4",
     "lucide-react": "^0.408.0",
+    "qrcode.react": "^4.2.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-leaflet": "^4.2.1",
+    "react-router-dom": "^7.14.1",
     "recharts": "^2.12.7"
   },
   "devDependencies": {
@@ -22,8 +25,9 @@
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "^4.3.1",
     "autoprefixer": "^10.4.19",
+    "concurrently": "^9.2.1",
     "postcss": "^8.4.39",
     "tailwindcss": "^3.4.6",
-    "vite": "^5.3.4"
+    "vite": "^8.0.8"
   }
 }

@@ -34,7 +34,10 @@ echo "GCS Bucket:  ${GCS_BUCKET}"
 echo "GCS Prefix:  ${GCS_PREFIX}"
 echo "Health Mark: ${HEALTH_MARKER}"
 
-INSTALL_DIR="/opt/wildfire"
+# REPO_ROOT mirrors the local repo root (one level above Data-Pipeline/).
+# docker-compose.yaml uses context: .. so Docker needs this parent to exist.
+REPO_ROOT="/opt/wildfire"
+INSTALL_DIR="${REPO_ROOT}/Data-Pipeline"
 
 # ---------------------------------------------------------------------------
 # Guard: skip re-install if Docker is already running and project exists
@@ -43,7 +46,8 @@ INSTALL_DIR="/opt/wildfire"
 if [[ -f "${INSTALL_DIR}/docker-compose.yaml" ]] && docker compose version &>/dev/null; then
     echo "→ Detected existing installation. Restarting containers..."
     cd "${INSTALL_DIR}"
-    docker compose up -d
+    AIRFLOW_SERVICES="postgres airflow-init airflow-webserver airflow-scheduler"
+    docker compose up -d ${AIRFLOW_SERVICES}
     echo "✓ Containers restarted after reboot"
 
     # Re-write health marker
@@ -86,15 +90,18 @@ echo "  Compose: $(docker compose version)"
 # ---------------------------------------------------------------------------
 echo "→ Downloading pipeline from GCS..."
 
-mkdir -p "${INSTALL_DIR}"
-cd "${INSTALL_DIR}"
-
+# Extract into REPO_ROOT preserving the Data-Pipeline/ subdirectory.
+# docker-compose.yaml has context: .. — Docker resolves that to REPO_ROOT,
+# which must contain Data-Pipeline/ as a child (same layout as local repo).
+mkdir -p "${REPO_ROOT}"
 gcloud storage cp "gs://${GCS_BUCKET}/${GCS_PREFIX}/pipeline.tar.gz" /tmp/pipeline.tar.gz --quiet
-gcloud storage cp "gs://${GCS_BUCKET}/${GCS_PREFIX}/.env" "${INSTALL_DIR}/.env" --quiet
 
-# Extract — tar contains Data-Pipeline/ at the top level; strip it
-tar -xzf /tmp/pipeline.tar.gz --strip-components=1
+# No --strip-components: tar expands to ${REPO_ROOT}/Data-Pipeline/
+tar -xzf /tmp/pipeline.tar.gz -C "${REPO_ROOT}"
 rm -f /tmp/pipeline.tar.gz
+
+# .env goes inside Data-Pipeline/ where docker-compose.yaml lives
+gcloud storage cp "gs://${GCS_BUCKET}/${GCS_PREFIX}/.env" "${INSTALL_DIR}/.env" --quiet
 
 echo "✓ Pipeline extracted to ${INSTALL_DIR}"
 
@@ -102,6 +109,7 @@ echo "✓ Pipeline extracted to ${INSTALL_DIR}"
 # Step 3: Create required data directories
 # ---------------------------------------------------------------------------
 echo "→ Creating data directories..."
+cd "${INSTALL_DIR}"
 mkdir -p data/raw/firms data/raw/weather
 mkdir -p data/processed/firms data/processed/weather data/processed/fused
 mkdir -p data/static
@@ -114,17 +122,21 @@ echo "✓ Data directories ready"
 # ---------------------------------------------------------------------------
 echo "→ Building and starting Airflow..."
 
-# Ensure the GCP key placeholder exists (VM uses metadata service, not key file)
-# Docker Compose expects the mount to exist even if it's empty.
-if [[ ! -f "${INSTALL_DIR}/gcp-key.json" ]]; then
-    echo '{}' > "${INSTALL_DIR}/gcp-key.json"
+# GCP key stub at REPO_ROOT (docker-compose default: ../gcp-key.json from INSTALL_DIR)
+if [[ ! -f "${REPO_ROOT}/gcp-key.json" ]]; then
+    echo '{}' > "${REPO_ROOT}/gcp-key.json"
 fi
 
-# Build images (this takes 3-5 minutes on e2-standard-8)
-docker compose build --quiet 2>&1 | tail -5
+# dvc.lock volume mount will fail if the file doesn't exist
+touch "${INSTALL_DIR}/dvc.lock"
 
-# Start services
-docker compose up -d
+# Build only the Airflow services (obj3-dashboard and frontend are deployed
+# separately to Cloud Run — their build contexts don't exist on this VM)
+AIRFLOW_SERVICES="postgres airflow-init airflow-webserver airflow-scheduler"
+docker compose build --quiet ${AIRFLOW_SERVICES} 2>&1 | tail -5
+
+# Start Airflow services (airflow-init runs to completion, then webserver/scheduler stay up)
+docker compose up -d ${AIRFLOW_SERVICES}
 
 echo "✓ Docker Compose services started"
 
@@ -138,14 +150,8 @@ ELAPSED=0
 HEALTHY=false
 
 while [[ ${ELAPSED} -lt ${MAX_WAIT} ]]; do
-    # Check if the webserver container is running and healthy
-    if docker compose ps --format json 2>/dev/null | grep -q '"Health":"healthy"'; then
-        HEALTHY=true
-        break
-    fi
-
-    # Fallback: try hitting the health endpoint directly
-    if curl -sf http://localhost:8080/health &>/dev/null; then
+    # Airflow 2.x health endpoint returns {"metadatabase":{"status":"healthy"},...}
+    if curl -sf http://localhost:8080/health 2>/dev/null | grep -q '"healthy"'; then
         HEALTHY=true
         break
     fi
@@ -160,9 +166,9 @@ if [[ "${HEALTHY}" == "true" ]]; then
 else
     echo "WARNING: Airflow webserver did not become healthy within ${MAX_WAIT}s"
     echo "  Container status:"
-    docker compose ps
+    docker compose -f "${INSTALL_DIR}/docker-compose.yaml" ps
     echo "  Recent logs:"
-    docker compose logs --tail=30 airflow-webserver 2>&1 || true
+    docker compose -f "${INSTALL_DIR}/docker-compose.yaml" logs --tail=30 airflow-webserver 2>&1 || true
     # Continue anyway — write a degraded health marker
 fi
 

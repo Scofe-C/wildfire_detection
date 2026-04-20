@@ -1,27 +1,45 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Wildfire Detection — Service Health Check
-# Polls all known endpoints and prints a color-coded status table.
+# PyroWatch — Service health check
+# Polls all service endpoints and prints a status table.
+# Usage: bash scripts/healthcheck.sh
 # =============================================================================
-set -euo pipefail
 
-R='\033[0;31m' G='\033[0;32m' Y='\033[1;33m' B='\033[0;34m' N='\033[0m'
+GREEN='\033[0;32m'; RED='\033[0;31m'; YELLOW='\033[0;33m'; NC='\033[0m'
 
-check() {
-  local name="$1" url="$2"
-  if curl -sf --max-time 3 "$url" > /dev/null 2>&1; then
-    printf "  %-26s ${G}UP${N}    %s\n" "$name" "$url"
-  else
-    printf "  %-26s ${R}DOWN${N}  %s\n" "$name" "$url"
-  fi
-}
+ENDPOINTS=(
+    "Airflow Webserver|http://localhost:8080/health|airflow / airflow"
+    "OBJ-3 Dashboard|http://localhost:8000/api/status|—"
+    "Frontend SPA|http://localhost:3000|—"
+)
 
 echo ""
-echo -e "${B}Service Health Check${N}"
-echo -e "${B}────────────────────────────────────────────${N}"
-check "Airflow Webserver"       "http://localhost:8080/health"
-check "OBJ-3 Dashboard"        "http://localhost:8000/api/status"
-check "Fire Monitor API"       "http://localhost:8001/status"
-check "MLflow UI"              "http://localhost:5000"
-echo -e "${B}────────────────────────────────────────────${N}"
+echo "  PyroWatch — Service Status"
+echo "  ──────────────────────────────────────────────────────────────"
+printf "  %-3s  %-22s %-38s %s\n" "ST" "Service" "URL" "Notes"
+echo "  ──────────────────────────────────────────────────────────────"
+
+ALL_UP=true
+
+for entry in "${ENDPOINTS[@]}"; do
+    IFS='|' read -r name url notes <<< "$entry"
+    # Try curl with a short timeout; suppress output
+    if curl -sf --max-time 5 "$url" &>/dev/null; then
+        printf "  ${GREEN}UP${NC}   %-22s %-38s %s\n" "$name" "$url" "$notes"
+    else
+        printf "  ${RED}DOWN${NC} %-22s %-38s %s\n" "$name" "$url" "$notes"
+        ALL_UP=false
+    fi
+done
+
+echo "  ──────────────────────────────────────────────────────────────"
+echo ""
+
+if $ALL_UP; then
+    echo -e "  ${GREEN}All services healthy.${NC}"
+else
+    echo -e "  ${YELLOW}Some services are down.${NC}"
+    echo "  Run 'make logs' to see container output."
+    echo "  If this is a fresh start, wait ~60s for Airflow to initialize."
+fi
 echo ""

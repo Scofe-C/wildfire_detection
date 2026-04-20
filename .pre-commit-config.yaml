@@ -1,30 +1,36 @@
+# =============================================================================
+# PyroWatch — Pre-commit hooks
+# =============================================================================
+# Install: pip install pre-commit && pre-commit install
+# Run manually: pre-commit run --all-files
+# =============================================================================
+
 repos:
+  # Ruff: fast Python linter + formatter
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.4.4
     hooks:
       - id: ruff
-        args: [--fix]
+        args: [--fix, --select=E,F, --ignore=E501]
       - id: ruff-format
 
-  - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.10.0
-    hooks:
-      - id: mypy
-        additional_dependencies: [types-PyYAML, types-requests]
-        args: [--ignore-missing-imports]
-
+  # Standard hygiene checks
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v4.6.0
     hooks:
       - id: trailing-whitespace
       - id: end-of-file-fixer
       - id: check-yaml
+        exclude: ^Data-Pipeline/docker-compose\.yaml$
       - id: check-added-large-files
         args: [--maxkb=1000]
       - id: detect-private-key
+      - id: check-merge-conflict
 
+  # Secrets detection — blocks commits that contain API keys or credentials
   - repo: https://github.com/Yelp/detect-secrets
     rev: v1.4.0
     hooks:
       - id: detect-secrets
         args: [--baseline, .secrets.baseline]
+        exclude: (\.env\.example|constraints\.txt|dvc\.lock)

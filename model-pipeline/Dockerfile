@@ -26,12 +26,7 @@ HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
 
 CMD ["pytest", "tests/", "-v", "--tb=short"]
 
-# ── Serve target — Cloud Run inference API ────────────────────────────────────
-FROM base AS serve
-RUN pip install --no-cache-dir uvicorn[standard] fastapi
-CMD ["python", "-m", "uvicorn", "src.api.inference_api:app", "--host", "0.0.0.0", "--port", "8080"]
-
-# ── API target — OBJ-3 disaster report server ────────────────────────────────
+# ── API target — OBJ-3 dashboard + Cloud Run server ──────────────────────────
 FROM base AS dashboard
 RUN pip install --no-cache-dir uvicorn[standard] fastapi python-multipart
 COPY templates/ templates/

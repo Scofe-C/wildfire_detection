@@ -61,11 +61,16 @@ if [[ ! -f "${ENV_FILE}" ]]; then
     exit 1
 fi
 
-# Export variables from .env (skip comments and blank lines)
-set -a
-# shellcheck disable=SC1090
-source <(grep -v '^\s*#' "${ENV_FILE}" | grep -v '^\s*$')
-set +a
+# Export variables from .env (skip comments and blank lines).
+# Read line-by-line to handle multi-byte characters in comments safely.
+while IFS= read -r line || [[ -n "${line}" ]]; do
+    # Skip blank lines and comment lines (including those with multi-byte chars)
+    [[ "${line}" =~ ^[[:space:]]*# ]] && continue
+    [[ -z "${line//[[:space:]]/}" ]] && continue
+    # Only export lines that look like VARNAME=value
+    [[ "${line}" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] || continue
+    export "${line?}"
+done < "${ENV_FILE}"
 echo "✓ Loaded .env"
 
 REQUIRED_VARS=("GCS_BUCKET_NAME" "FIRMS_MAP_KEY" "GOOGLE_CLOUD_PROJECT")
@@ -135,7 +140,8 @@ fi
 echo "→ Packaging project for upload..."
 STAGING_TAR="/tmp/wildfire-pipeline-gce.tar.gz"
 
-# Exclude heavy/unnecessary dirs from the tar
+# Exclude heavy/unnecessary dirs from the tar.
+# Only Data-Pipeline is needed — inference now runs in server.py (Cloud Run).
 tar -czf "${STAGING_TAR}" \
     -C "${PROJECT_ROOT}/.." \
     --exclude='Data-Pipeline/logs' \
@@ -196,7 +202,7 @@ STOP_MON=$(date -u -d "+${TTL_HOURS} hours" "+%-m" 2>/dev/null || \
 
 STOP_CRON="${STOP_MINUTE} ${STOP_HOUR} ${STOP_DOM} ${STOP_MON} *"
 
-gcloud compute resource-policies create vm-maintenance "${POLICY_NAME}" \
+gcloud compute resource-policies create instance-schedule "${POLICY_NAME}" \
     --region="${REGION}" \
     --vm-stop-schedule="${STOP_CRON}" \
     --timezone="UTC" \

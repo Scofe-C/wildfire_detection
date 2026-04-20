@@ -1,9 +1,8 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import {
   LayoutDashboard, GitBranch, BrainCircuit, Map, FileText, Flame,
-  ChevronRight, Activity, Layers, ChevronLeft, Play, RotateCcw,
+  ChevronRight, Activity, Layers, ChevronLeft,
 } from 'lucide-react';
-import Badge from '../ui/Badge';
 import StatusDot from '../ui/StatusDot';
 import { apiUrl } from '../../api';
 
@@ -23,9 +22,34 @@ const NAV_ITEMS = [
   { id: 'reports',        label: 'Incident Reports',   icon: FileText },
 ];
 
+// Derive display label + StatusDot status from Airflow response
+function dagDisplayState(dag) {
+  if (!dag) return { label: 'DAG: LOADING', dot: 'planned', badge: null };
+  if (!dag.airflow_online) return { label: 'DAG: OFFLINE', dot: 'broken', badge: null };
+  if (dag.is_paused) return { label: 'DAG: PAUSED', dot: 'partial', badge: null };
+  const s = dag.last_run_state;
+  if (s === 'running')  return { label: 'DAG: RUNNING', dot: 'working', badge: null };
+  if (s === 'failed')   return { label: 'DAG: FAILED',  dot: 'broken',  badge: 'critical' };
+  if (s === 'success')  return { label: 'DAG: IDLE',    dot: 'working', badge: null };
+  return { label: 'DAG: UNKNOWN', dot: 'partial', badge: null };
+}
+
 export default function Sidebar({ activeView, onNavigate }) {
   const [modelExpanded, setModelExpanded] = useState(true);
   const [collapsed, setCollapsed] = useState(false);
+  const [dagStatus, setDagStatus] = useState(null);
+
+  useEffect(() => {
+    async function fetchDagStatus() {
+      try {
+        const res = await fetch(apiUrl('/api/airflow/dag-status'));
+        if (res.ok) setDagStatus(await res.json());
+      } catch {}
+    }
+    fetchDagStatus();
+    const id = setInterval(fetchDagStatus, 30_000);
+    return () => clearInterval(id);
+  }, []);
 
   return (
     <aside
@@ -113,38 +137,18 @@ export default function Sidebar({ activeView, onNavigate }) {
         })}
       </nav>
 
-      {/* Pipeline quick-actions */}
-      {!collapsed && (
-        <div className="px-3 py-2 border-t border-sidebar-border space-y-1">
-          <div className="text-[9px] font-mono text-sidebar-text uppercase tracking-widest mb-1">Pipeline</div>
-          <button
-            onClick={() => window.open('http://localhost:8080', '_blank')}
-            className="w-full flex items-center gap-2 px-2 py-1.5 rounded-[5px] text-[11px] font-mono text-sidebar-text hover:text-white hover:bg-sidebar-hover transition-colors"
-          >
-            <Play className="w-3 h-3" />
-            <span>Open Airflow UI</span>
-          </button>
-          <button
-            onClick={async () => {
-              try { await fetch(apiUrl('/api/pipeline/trigger'), { method: 'POST' }); } catch {}
-            }}
-            className="w-full flex items-center gap-2 px-2 py-1.5 rounded-[5px] text-[11px] font-mono text-sidebar-text hover:text-white hover:bg-sidebar-hover transition-colors"
-          >
-            <RotateCcw className="w-3 h-3" />
-            <span>Trigger DAG Run</span>
-          </button>
-        </div>
-      )}
-
       {/* Footer */}
       <div className="px-3 py-3 border-t border-sidebar-border">
         <div className="flex items-center justify-between">
-          {!collapsed && (
-            <div className="flex items-center gap-2">
-              <StatusDot status="working" />
-              <span className="text-[10px] font-mono text-sidebar-text">DAG: RUNNING</span>
-            </div>
-          )}
+          {!collapsed && (() => {
+            const { label, dot } = dagDisplayState(dagStatus);
+            return (
+              <div className="flex items-center gap-2">
+                <StatusDot status={dot} />
+                <span className="text-[10px] font-mono text-sidebar-text">{label}</span>
+              </div>
+            );
+          })()}
           <button
             onClick={() => setCollapsed(v => !v)}
             className="w-6 h-6 flex items-center justify-center rounded text-sidebar-text hover:text-white hover:bg-sidebar-hover transition-colors"
@@ -152,10 +156,14 @@ export default function Sidebar({ activeView, onNavigate }) {
             <ChevronLeft className={`w-3.5 h-3.5 transition-transform ${collapsed ? 'rotate-180' : ''}`} />
           </button>
         </div>
-        {!collapsed && (
-          <div className="mt-1.5 flex gap-1.5">
-            <Badge color="critical">1 BROKEN</Badge>
-            <Badge color="medium">3 PARTIAL</Badge>
+        {!collapsed && dagStatus?.airflow_online && dagStatus?.last_run_start && (
+          <div className="mt-1.5 text-[9px] font-mono text-sidebar-text/60 truncate">
+            {dagStatus.last_run_start.slice(0, 16).replace('T', ' ')} UTC
+          </div>
+        )}
+        {!collapsed && dagStatus && !dagStatus.airflow_online && (
+          <div className="mt-1.5 text-[9px] font-mono text-sidebar-text/50">
+            Airflow unreachable
           </div>
         )}
       </div>
