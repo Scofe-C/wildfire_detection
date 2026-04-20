@@ -18,10 +18,13 @@ venv/
 gcp-key.json
 *.json.key
 
-# Data (tracked by DVC, not Git)
-**/data/raw/
-**/data/processed/
-**/data/static/
+# Data (tracked by DVC, not Git). Ignore contents of these dirs so we can
+# re-include the tiny .dvc sidecar pointers — those MUST be committed.
+**/data/raw/*
+**/data/processed/*
+**/data/static/*
+!**/data/processed/*.dvc
+!**/data/static/*.dvc
 
 # Airflow
 airflow.db

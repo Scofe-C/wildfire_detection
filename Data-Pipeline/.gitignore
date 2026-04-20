@@ -19,10 +19,15 @@ service_account*.json
 # Data directories — tracked by DVC, not Git
 # Commit the corresponding .dvc pointer files and dvc.lock instead.
 # ---------------------------------------------------------------------------
-/data/raw/
-/data/processed/
-/data/static/
-/models/
+# Ignore contents of these dirs (not the dirs themselves) so we can
+# selectively re-include the .dvc sidecar pointers below.
+/data/raw/*
+/data/processed/*
+/data/static/*
+/models/*
+!/data/processed/*.dvc
+!/data/static/*.dvc
+!/models/*.dvc
 
 # ---------------------------------------------------------------------------
 # DVC internal state — managed by DVC, not committed directly
