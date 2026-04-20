@@ -298,6 +298,66 @@ make status                   # verify all endpoints are healthy
 
 ---
 
+## Deploying on a Different Compute
+
+The project is fully containerized (root `docker-compose.yaml`, `Makefile`, `start.sh`), so deploying elsewhere mostly means "install Docker, clone the repo, run it". Three common targets:
+
+### 1. Any Linux VM (AWS EC2, Azure VM, Hetzner, on-prem server)
+
+```bash
+# one-time setup on the target VM
+sudo apt install docker.io docker-compose-plugin git
+git clone <repo-url> && cd wildfire_detection
+cp .env.example .env && nano .env       # fill in API keys, GCS bucket, Gemini key
+cp /path/to/gcp-key.json ./gcp-key.json # GCP service account
+
+# start everything
+make up-full      # or: docker compose --profile full up -d
+make status       # verifies Airflow :8080, Dashboard :8000, MLflow :5000
+
+# later
+make down
+git pull && make up-full
+```
+
+**Resource baseline:** 4 vCPU / 8 GB RAM / 40 GB disk. XGBoost is CPU-bound — no GPU needed.
+
+### 2. Swap GCP for another cloud
+
+The storage/registry layer is the only cloud-coupled part.
+
+| GCP today | Replace with |
+|---|---|
+| GCS bucket (data + model artifacts) | S3 / Azure Blob — swap `google.cloud.storage` calls to `boto3` / `azure.storage.blob`. DVC supports both remotes natively. |
+| Vertex AI registry | MLflow Model Registry (already in stack), SageMaker, or Azure ML |
+| Cloud Run (inference) | ECS Fargate / Azure Container Apps / plain Docker on the VM |
+| Cloud Scheduler (q6h drift monitor) | cron: `0 */6 * * * curl -X POST http://localhost:8000/monitor` |
+| Slack webhook | unchanged — just a URL |
+
+**No cloud at all:** everything except GCS works locally. Replace GCS with a volume mount and `dvc remote add -d local /mnt/dvc-storage`.
+
+### 3. Kubernetes (for multi-node / HA)
+
+Not wired up yet. You'd need Helm/Kustomize for each service. Only worth it if you need >1 replica of the inference API or autoscaling — for single-node workloads, Docker Compose is lower-ops.
+
+### Pre-deploy checklist
+
+1. `.env` filled in (API keys, bucket name, `LLM_BACKEND`, SA path)
+2. `gcp-key.json` present if using GCS/Vertex AI
+3. Outbound access to: `firms.modaps.eosdis.nasa.gov`, `api.open-meteo.com`, `generativelanguage.googleapis.com`, Slack webhook
+4. DVC remote configured and accessible (`dvc pull` works)
+5. Ports 8080 / 8000 / 5000 / 5173 open or reverse-proxied
+
+### Fastest demo path
+
+```bash
+git clone <repo> && cd wildfire_detection
+cp .env.example .env   # edit keys
+./start.sh             # zero-dep wrapper with Docker detection + health checks
+```
+
+---
+
 ## Directory Structure
 
 ```
