@@ -209,7 +209,10 @@ class VertexRegistry:
         with tempfile.TemporaryDirectory() as tmpdir:
             local_model_path = Path(tmpdir) / model_filename
             if winner_name == "xgboost":
-                winner._model.save_model(str(local_model_path))
+                # Use booster-level save; the sklearn wrapper's save_model()
+                # calls _get_type() which is strict in xgboost>=2 and can
+                # raise when sklearn metadata isn't fully populated.
+                winner._model.get_booster().save_model(str(local_model_path))
             else:
                 winner._model.booster_.save_model(str(local_model_path))
 
