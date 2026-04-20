@@ -108,14 +108,14 @@ jobs:
             wildfire-pipeline:test \
             python3 dags/wildfire_dag.py
 
-      # Validate dvc.yaml syntax and that every script dep file exists in the image.
-      # Catches YAML errors and missing references before dvc repro is run.
-      # Note: data/ paths are DVC-tracked and absent from the image — those are skipped.
+      # Validate dvc.yaml syntax and that every script dep file exists on disk.
+      # Runs on the host runner — no Docker needed for a pure YAML/path check.
+      # data/ and models/ paths are DVC-tracked, absent from the checkout, and skipped.
       - name: Validate dvc.yaml
+        working-directory: Data-Pipeline
         run: |
-          docker run --rm \
-            wildfire-pipeline:test \
-            python3 -c "
+          python3 -m pip install --quiet pyyaml
+          python3 - <<'PY'
           import yaml, os, sys
 
           with open('dvc.yaml') as f:
@@ -129,7 +129,6 @@ jobs:
           missing = []
           for stage_name, stage in stages.items():
               for dep in stage.get('deps', []):
-                  # Skip DVC-tracked data dirs — not present in the CI image
                   if dep.startswith('data/') or dep.startswith('models/'):
                       continue
                   if not os.path.exists(dep):
@@ -142,7 +141,7 @@ jobs:
               sys.exit(1)
 
           print(f'dvc.yaml OK — {len(stages)} stages, all dep files present')
-          "
+          PY
 
       # Run tests in a named container so artifacts can be copied out after exit.
       # `if: always()` on the copy step ensures artifacts are captured even on failure.

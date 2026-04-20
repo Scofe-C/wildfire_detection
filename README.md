@@ -16,22 +16,22 @@ The platform has two main layers:
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│ GCP CLOUD LAYER (fire_watchdog Cloud Function)              │
+│ MONITOR LOOP (Data-Pipeline/scripts/fire_monitor.py)        │
 │                                                             │
-│  Cloud Scheduler (every 15–30 min)                         │
-│    → Poll FIRMS/GOES for candidate fires                    │
+│  Poll FIRMS/GOES every 15–30 min                            │
 │    → 4-gate false alarm filter                              │
-│    → On confirmation: write trigger to GCS                  │
+│    → On confirmation: POST to fire_monitor_api (:8001)      │
+│    → Switches pipeline mode: quiet → active → emergency     │
 └───────────────────────────┬─────────────────────────────────┘
-                            ↓ (within 2 min)
+                            ↓
 ┌───────────────────────────┴─────────────────────────────────┐
-│ LOCAL AIRFLOW LAYER (Data + Model Pipeline)                 │
+│ AIRFLOW LAYER (Data + Model Pipeline)                       │
 │                                                             │
-│  wildfire_data_pipeline DAG (every 6h)                     │
-│    → Ingest → Process → Fuse → Validate → Export           │
+│  wildfire_data_pipeline DAG (every 6h, escalated on mode)   │
+│    → Ingest → Process → Fuse → Validate → Export            │
 │                                                             │
-│  model-pipeline orchestrator                               │
-│    → Load data → Train/Predict → Gate → Deploy             │
+│  model-pipeline orchestrator                                │
+│    → Load data → Train/Predict → Gate → Deploy              │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -111,16 +111,16 @@ VERSION
 
 ---
 
-## Real-Time Monitoring (`cloud/fire_watchdog/`)
+## Real-Time Monitoring
 
-A GCP Cloud Function polls FIRMS and GOES-R every 15–30 minutes. Before triggering the main pipeline, it applies a **4-gate false alarm filter**:
+`Data-Pipeline/scripts/fire_monitor.py` runs a continuous monitoring loop that polls FIRMS and GOES-R every 15–30 minutes. Before escalating the pipeline, it applies a **4-gate false alarm filter**:
 
 1. **Spatial clustering** — ≥3 detections within 50 km
 2. **Temporal persistence** — ≥2 consecutive GOES windows
 3. **VIIRS cross-reference** — MODIS-only detections require VIIRS confirmation
 4. **Industrial exclusion** — 2 km buffer from known industrial sources
 
-On confirmation, it writes a trigger JSON to GCS. The local `watchdog_sensor_dag` polls GCS every 60 seconds and triggers the main DAG with escalated parameters (finer grid, HRRR ingestion).
+On confirmation, the monitor switches the DAG to **active** or **emergency** mode (finer H3 grid, HRRR ingestion) via the control API at `:8001`.
 
 ### Operating Modes
 
@@ -251,12 +251,12 @@ SLACK_WEBHOOK_URL              # Optional: Slack alerts
 
 The test suite has 200+ pytest tests covering ingestion, processing, fusion, validation, bias analysis, export, utilities, DAG structure, and end-to-end integration (with mocked APIs).
 
-### 3 GitHub Actions Workflows
+### 4 GitHub Actions Workflows
 
-**`ci.yaml` — Data Pipeline CI** (push/PR to `main`/`develop`)
-1. Build Docker test image (cached)
+**`ci.yaml` — Data Pipeline CI** (push to `main`/`master`/`develop`/`dev_ack`, PR to `main`/`master`/`develop`)
+1. Build Docker test image (cached, repo root context)
 2. Validate Airflow DAG imports
-3. Validate `dvc.yaml` syntax + dep files
+3. Validate `dvc.yaml` syntax + dep files (host runner, no Docker)
 4. pytest suite (coverage >= 60%)
 5. ruff lint + mypy type check + pip-audit
 6. Dependency pin check
@@ -264,13 +264,16 @@ The test suite has 200+ pytest tests covering ingestion, processing, fusion, val
 **`model_ci.yml` — Model Pipeline CI/CD** (push/PR to `master`/`main`/`develop`, 9 stages)
 1. Lint (ruff + mypy)
 2. Unit tests (coverage >= 35%)
-3. Build + push Docker image to GCR (master only)
+3. Build + push Docker image to GCR (master only, gated on `ENABLE_GCP_DEPLOY`)
 4. Train CA + TX models
 5. AUC-PR gate (>= 0.89) — blocks deploy if model isn't accurate
 6. Bias gate (FNR disparity <= 5%) — blocks deploy if model is unfair
 7. Push to Vertex AI registry
 8. Deploy to Cloud Run (manual approval required) + smoke test
 9. Update Cloud Scheduler monitoring job (every 6h)
+
+**`frontend-ci.yml` — Frontend Build Check** (push/PR to `master`/`main`/`develop`)
+- `npm install` + `vite build` — catches missing imports, type errors, broken routes
 
 **`model_rollback.yml` — Manual Rollback** (workflow_dispatch only)
 - Swaps Vertex AI model labels to roll back to a known-good version
@@ -307,8 +310,8 @@ wildfire_detection/
 │
 ├── Data-Pipeline/
 │   ├── dags/                    # Airflow DAGs
-│   │   ├── wildfire_dag.py      # Main 6-hourly pipeline DAG
-│   │   └── watchdog_sensor_dag.py  # GCS trigger sensor
+│   │   ├── wildfire_dag.py            # Main 6-hourly pipeline DAG
+│   │   └── wildfire_local_test_dag.py # Local smoke-test DAG
 │   ├── scripts/
 │   │   ├── ingestion/           # FIRMS, weather, GOES, HRRR, field telemetry
 │   │   ├── processing/          # Per-source aggregation and cleaning
@@ -318,8 +321,6 @@ wildfire_detection/
 │   │   ├── fire_monitor.py      # Continuous monitoring loop (quiet/active/emergency)
 │   │   ├── fire_monitor_api.py  # Control dashboard API (:8001)
 │   │   └── utils/               # H3 grid, rate limiting, GCS state, schema loading
-│   ├── cloud/
-│   │   └── fire_watchdog/       # GCP Cloud Function (real-time monitor)
 │   ├── tests/                   # 200+ pytest tests
 │   ├── configs/
 │   │   └── schema_config.yaml   # 28-feature schema (single source of truth)
