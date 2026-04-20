@@ -5,7 +5,7 @@ These tests exist to prevent silent regressions — if any fix is reverted,
 one of these tests will catch it before it reaches production.
 """
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 import pandas as pd
 
 
@@ -23,9 +23,6 @@ class TestBug1XComResolution:
             return None   # load_static_layers was skipped
 
         ti.xcom_pull.side_effect = xcom_pull
-        context = {"ti": ti, "params": {"resolution_km": 64, "fire_cells": [],
-                                         "trigger_source": "cron", "h3_ring_max": 5,
-                                         "weather_lookback_hours": 24}}
 
         static_path = (
             ti.xcom_pull(task_ids="check_static_cache", key="static_features_path")
@@ -61,8 +58,7 @@ class TestBug2ResolutionAssertion:
     """Bug 2: resolution_km=None must raise immediately, not silently default."""
 
     def test_raises_on_missing_resolution_km(self, tmp_path):
-        from scripts.ingestion.ingest_weather import fetch_weather_data
-        grid = pd.DataFrame({
+        pd.DataFrame({
             "grid_id": ["cell_a"],
             "latitude": [34.0],
             "longitude": [-118.0],
@@ -83,59 +79,3 @@ class TestBug2ResolutionAssertion:
         lookback_for_cron = 2 if "emergency" in "cron" else 24
         assert lookback_for_emergency == 2
         assert lookback_for_cron == 24
-
-
-class TestBug3NeighborSearch:
-    """Bug 3: cKDTree must be used; row-wise apply(haversine) must not exist."""
-
-    def test_find_neighbors_uses_tree(self):
-        """_find_neighbors must accept a pre-built tree and use it."""
-        from scripts.fusion.priority_resolver import _find_neighbors, _build_spatial_index
-        fused = pd.DataFrame({
-            "grid_id": ["a", "b", "c"],
-            "latitude":  [34.0, 34.01, 35.0],
-            "longitude": [-118.0, -118.01, -119.0],
-        })
-        tree, _ = _build_spatial_index(fused)
-        assert tree is not None
-
-        # cell b is ~1.5 km from (34.005, -118.005) — within 5 km radius
-        neighbors = _find_neighbors(fused, 34.005, -118.005, 5.0, tree=tree)
-        neighbor_ids = fused.loc[neighbors, "grid_id"].tolist()
-        assert "a" in neighbor_ids
-        assert "b" in neighbor_ids
-        assert "c" not in neighbor_ids  # ~157 km away
-
-    def test_tree_built_once_not_per_row(self):
-        """resolve_priorities should build the spatial index once per call."""
-        from scripts.fusion.priority_resolver import resolve_priorities, _build_spatial_index
-
-        build_call_count = 0
-        original_build = _build_spatial_index
-
-        def counting_build(df):
-            nonlocal build_call_count
-            build_call_count += 1
-            return original_build(df)
-
-        fused = pd.DataFrame({
-            "grid_id":    ["a", "b", "c"],
-            "latitude":   [34.0, 34.01, 35.0],
-            "longitude":  [-118.0, -118.01, -119.0],
-            "timestamp":  pd.Timestamp("2026-08-15T18:00:00", tz="UTC"),
-        })
-        gt = pd.DataFrame({
-            "latitude":  [34.005, 34.005],   # two GT rows — tree must only build once
-            "longitude": [-118.005, -118.005],
-            "timestamp": pd.Timestamp("2026-08-15T18:00:00", tz="UTC"),
-            "active_fire_count": [10, 15],
-        })
-
-        with patch("scripts.fusion.priority_resolver._build_spatial_index",
-                   side_effect=counting_build):
-            resolve_priorities(fused, gt)
-
-        assert build_call_count == 1, (
-            f"_build_spatial_index was called {build_call_count} times — "
-            f"must be exactly 1 regardless of GT row count"
-        )

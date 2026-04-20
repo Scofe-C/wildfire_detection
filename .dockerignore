@@ -26,6 +26,8 @@ Frontend/node_modules/
 # Data (DVC-tracked, pulled at runtime)
 **/data/raw/
 **/data/processed/
+# Keep .dvc sidecar pointers — tiny YAML files needed by CI tests
+!**/data/processed/*.dvc
 
 # IDE / OS
 .vscode/

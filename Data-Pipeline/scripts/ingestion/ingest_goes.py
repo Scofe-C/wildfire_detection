@@ -219,7 +219,7 @@ def fetch_goes_s3_detections(
                     url = f"https://{bucket_name}.s3.amazonaws.com/{key}"
                     ds = xr.open_dataset(url, engine="netcdf4")
                     fire_mask = ds["Mask"].values
-                    lats = ds["goes_imager_projection"].attrs.get("latitude_of_projection_origin", 0)
+                    ds["goes_imager_projection"].attrs.get("latitude_of_projection_origin", 0)
 
                     # Get lat/lon arrays for pixel coordinates
                     # GOES uses a fixed grid projection; simplified bbox intersection

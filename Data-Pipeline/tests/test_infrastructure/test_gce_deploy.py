@@ -16,6 +16,9 @@ from pathlib import Path
 
 import pytest
 
+# Whole file tests deploy scripts under cloud/ which are not baked into the CI image.
+pytestmark = pytest.mark.integration
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 DEPLOY_SCRIPT = PROJECT_ROOT / "cloud" / "deploy_gce_test.sh"
 STARTUP_SCRIPT = PROJECT_ROOT / "cloud" / "gce_startup.sh"

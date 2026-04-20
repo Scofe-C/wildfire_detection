@@ -62,7 +62,6 @@ import rasterio.warp
 from rasterstats import zonal_stats
 from rasterio.crs import CRS
 from rasterio.enums import Resampling
-from rasterio.transform import from_bounds
 
 from scripts.utils.grid_utils import generate_full_grid
 

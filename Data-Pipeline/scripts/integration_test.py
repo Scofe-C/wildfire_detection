@@ -48,7 +48,7 @@ def run_integration_test():
     test_dir.mkdir(parents=True)
 
     raw_dir = test_dir / "raw"
-    processed_dir = test_dir / "processed"
+    test_dir / "processed"
     
     execution_date = datetime.now() - timedelta(days=1)
     resolution_km = 64 # Coarse resolution for fast testing

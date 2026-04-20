@@ -99,7 +99,6 @@ class TestStaticOnlyFusion:
 
     def test_quality_flag_4_when_all_static_null(self, empty_firms_df, empty_weather_df):
         """data_quality_flag must be 4 when all static columns are NaN (no caches)."""
-        import numpy as np
         from scripts.utils.grid_utils import generate_full_grid
         grid = generate_full_grid(64)
         empty_static = pd.DataFrame({
@@ -121,7 +120,6 @@ class TestStaticOnlyFusion:
 
     def test_quality_flag_5_when_partial_static_null(self, empty_firms_df, empty_weather_df):
         """data_quality_flag must be 5 for rows where some (not all) static cols are NaN."""
-        import numpy as np
         from scripts.utils.grid_utils import generate_full_grid
         grid = generate_full_grid(64)
         n = len(grid)
@@ -149,9 +147,9 @@ class TestStaticOnlyFusion:
         assert 4 not in flags, "flag=4 should not appear when some static cols are present"
         assert 5 in flags, "flag=5 expected for rows with partial static data"
 
+    @pytest.mark.integration
     def test_quality_flag_0_when_all_present(self, empty_firms_df):
         """data_quality_flag must be 0 when all non-placeholder static + dynamic cols are present."""
-        import numpy as np
         from scripts.utils.grid_utils import generate_full_grid
         grid = generate_full_grid(64)
         n = len(grid)

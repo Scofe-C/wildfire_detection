@@ -3,7 +3,7 @@ Tests for FireDetector — Four-Gate False Alarm Filter
 """
 import os
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 
 def _make_detection(lat, lon, frp=300.0, confidence=80):

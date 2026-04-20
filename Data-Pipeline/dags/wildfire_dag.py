@@ -37,7 +37,7 @@ Cross-platform:
 import os
 import sys
 import logging
-from datetime import datetime, timedelta
+from datetime import timedelta
 from pathlib import Path
 
 
@@ -98,7 +98,6 @@ def _cast_parquet_compatible(df: "pd.DataFrame") -> "pd.DataFrame":
     Casting to float64 / int32 and writing with version="1.0" keeps the data
     intact while using only encodings the Groovy loader understands.
     """
-    import pandas as pd
 
     df = df.copy()
     safe_casts = {

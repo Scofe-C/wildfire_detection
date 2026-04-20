@@ -42,6 +42,19 @@ COPY Data-Pipeline/dags/ /opt/airflow/dags/
 COPY Data-Pipeline/scripts/ /opt/airflow/scripts/
 COPY Data-Pipeline/configs/ /opt/airflow/configs/
 COPY Data-Pipeline/tests/ /opt/airflow/tests/
+COPY Data-Pipeline/pytest.ini /opt/airflow/pytest.ini
+
+# Needed by CI dependency-pin check step — reads these from WORKDIR.
+COPY Data-Pipeline/requirements.txt /opt/airflow/requirements.txt
+COPY Data-Pipeline/constraints.txt /opt/airflow/constraints.txt
+
+# DVC metadata files — needed by TestDVCConfig + TestDVCGCSMocked. Tiny,
+# no data blobs. .dvc/cache is intentionally excluded.
+COPY Data-Pipeline/dvc.yaml /opt/airflow/dvc.yaml
+COPY Data-Pipeline/dvc.lock /opt/airflow/dvc.lock
+COPY Data-Pipeline/.dvc/config /opt/airflow/.dvc/config
+COPY Data-Pipeline/data/processed/fused.dvc /opt/airflow/data/processed/fused.dvc
+COPY Data-Pipeline/data/processed/64km.dvc  /opt/airflow/data/processed/64km.dvc
 
 # model-pipeline/src is not needed — inference runs in server.py, not Airflow
 

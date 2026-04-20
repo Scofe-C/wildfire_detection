@@ -24,8 +24,6 @@ After running this script:
 """
 
 import json
-import os
-import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -177,8 +175,8 @@ def seed_static_features():
         output_path = output_dir / f"static_features_{RESOLUTION_KM}km.csv"
         df.to_csv(output_path, index=False)
         print(f"  Static features: {output_path} ({len(df)} rows, CSV fallback — pyarrow not installed)")
-        print(f"    NOTE: Install pyarrow ('pip install pyarrow') for parquet support,")
-        print(f"    or ignore this — the Docker container has pyarrow and will handle it.")
+        print("    NOTE: Install pyarrow ('pip install pyarrow') for parquet support,")
+        print("    or ignore this — the Docker container has pyarrow and will handle it.")
 
     return output_path
 
@@ -203,7 +201,7 @@ def create_dummy_gcp_key():
     # Write to repo root (single source of truth)
     output_path = PROJECT_ROOT.parent / "gcp-key.json"
     if output_path.exists():
-        print(f"  gcp-key.json: already exists, skipping (remove manually to regenerate)")
+        print("  gcp-key.json: already exists, skipping (remove manually to regenerate)")
         return output_path
 
     with open(output_path, "w",encoding="utf-8") as f:
@@ -217,7 +215,7 @@ def create_dot_env():
     # Write to repo root (single source of truth)
     env_path = PROJECT_ROOT.parent / ".env"
     if env_path.exists():
-        print(f"  .env: already exists, skipping (remove manually to regenerate)")
+        print("  .env: already exists, skipping (remove manually to regenerate)")
         return env_path
 
     env_content = """# Auto-generated for local testing — NOT for production
@@ -273,7 +271,7 @@ def main():
     print("     http://localhost:8080  (airflow / airflow)")
     print()
     print("4. Test individual tasks via CLI (recommended):")
-    print(f"     docker compose exec airflow-scheduler airflow tasks test \\")
+    print("     docker compose exec airflow-scheduler airflow tasks test \\")
     print(f"       wildfire_data_pipeline process_firms {DATE_STR}")
     print()
     print("   This bypasses ingest and feeds the seed data directly.")
@@ -287,7 +285,7 @@ def main():
     print("     - Click each failed task → 'Mark Success'")
     print("     - Downstream tasks will pick up the seed data and run")
     print()
-    print(f"Seed data paths (for XCom overrides if needed):")
+    print("Seed data paths (for XCom overrides if needed):")
     print(f"  firms_raw_path:         {firms_path}")
     print(f"  weather_raw_path:       {weather_path}")
     print(f"  static_features_path:   {static_path}")

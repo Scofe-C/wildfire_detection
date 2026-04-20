@@ -15,21 +15,13 @@ Test Coverage:
     - Derived feature calculations
     - Error handling and edge cases
 """
-import sys
-from pathlib import Path
-
-# Add project root to path
-project_root = Path(__file__).resolve().parent.parent.parent
-sys.path.insert(0, str(project_root))
-
-import pytest
-import pandas as pd
-import numpy as np
 from datetime import datetime, timedelta
-from unittest.mock import Mock, patch, MagicMock
+
+import numpy as np
+import pandas as pd
+import pytest
 
 from scripts.ingestion.ingest_weather import (
-    fetch_weather_data,
     _create_coordinate_batches,
     _parse_open_meteo_response,
     _fahrenheit_to_celsius,

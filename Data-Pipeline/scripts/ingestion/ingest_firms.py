@@ -11,9 +11,9 @@ import io
 import logging
 import os
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from pathlib import Path
-from typing import Optional, Union
+from typing import Optional
 
 import pandas as pd
 import requests

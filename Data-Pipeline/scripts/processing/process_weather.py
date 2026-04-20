@@ -355,7 +355,7 @@ def _compute_days_since_precip(df: pd.DataFrame) -> pd.Series:
     if "precipitation" not in df.columns or df["precipitation"].isna().all():
         return result
 
-    now_approx = df["timestamp"].max() if df["timestamp"].notna().any() else None
+    df["timestamp"].max() if df["timestamp"].notna().any() else None
 
     for grid_id, group in df.groupby("grid_id"):
         precip = group["precipitation"].fillna(0)

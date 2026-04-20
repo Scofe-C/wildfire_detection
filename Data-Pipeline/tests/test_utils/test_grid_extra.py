@@ -215,7 +215,6 @@ class TestGetParentCell:
 
     def test_parent_resolution_is_coarser(self, fine_cell):
         """The parent cell must be at a coarser H3 resolution."""
-        import h3
         from scripts.utils.grid_utils import get_parent_cell, _h3_get_resolution_compat
         parent = get_parent_cell(fine_cell, parent_resolution_km=64)
         child_res = _h3_get_resolution_compat(fine_cell)

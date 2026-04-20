@@ -222,7 +222,6 @@ def run_cycle(
     try:
         from scripts.ingestion.ingest_field_telemetry import (
             load_pending_field_telemetry,
-            batch_field_telemetry_to_dataframe,
         )
         FIELD_TELEMETRY_DIR.mkdir(parents=True, exist_ok=True)
         field_payloads = load_pending_field_telemetry(FIELD_TELEMETRY_DIR)
@@ -290,7 +289,7 @@ def run_cycle(
                 fire_cells = DEMO_FIRE_CELLS
                 logger.info("  Using demo fire_cells for focal weather fetch")
 
-            weather_path = fetch_weather_data(
+            fetch_weather_data(
                 grid_centroids=grid_centroids,
                 execution_date=execution_date,
                 lookback_hours=cfg["lookback_hours"],

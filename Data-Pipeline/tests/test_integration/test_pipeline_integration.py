@@ -161,7 +161,7 @@ class TestTemporalLagEndToEnd:
 
         # active_fire_count must come from T-1 (prev = 0)
         if "active_fire_count" in ml_fused.columns:
-            fire_cells = ml_fused[ml_fused["fire_detected_binary"] == 1]
+            ml_fused[ml_fused["fire_detected_binary"] == 1]
             # If any cell has fire_detected_binary=1 but active_fire_count=0,
             # that's the expected T-1 lag working correctly
             assert True  # shape is consistent

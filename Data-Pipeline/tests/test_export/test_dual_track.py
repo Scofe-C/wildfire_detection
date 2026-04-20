@@ -5,7 +5,6 @@ Verifies that Track A (tabular) and Track B (spatial) maintain consistency.
 
 import tempfile
 import shutil
-from pathlib import Path
 
 import numpy as np
 import pandas as pd

@@ -1522,7 +1522,6 @@ async def generate_from_pipeline(request: Request) -> JSONResponse:
 
         # ── Step 0: OBJ-1 — Run inference for all regions before per-region loop ──
         logger.info("[pipeline] Step 0: running OBJ-1 inference for regions: %s", regions)
-        import io as _io
         import yaml as _yaml
         import pandas as _pd
         import xgboost as _xgb

@@ -180,6 +180,8 @@ class TestRateLimiterBehaviour:
             for _ in range(10):
                 limiter.record_request()
         threads = [threading.Thread(target=do_requests) for _ in range(5)]
-        for t in threads: t.start()
-        for t in threads: t.join()
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
         assert isinstance(limiter._request_timestamps, list)

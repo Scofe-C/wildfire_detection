@@ -11,7 +11,6 @@ import pytest
 from scripts.fusion.fuse_features import (
     FIRE_CONTEXT_LAG_COLS,
     apply_temporal_lag,
-    fuse_features_for_ml,
 )
 
 

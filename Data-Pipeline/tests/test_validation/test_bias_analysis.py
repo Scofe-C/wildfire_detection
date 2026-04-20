@@ -16,8 +16,6 @@ Covers:
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -366,7 +364,6 @@ class TestRunCategoricalSlices:
     def test_small_slice_skipped(self, registry):
         """Slices with fewer than 10 rows must be omitted from results."""
         from scripts.validation.bias_analysis import (
-            _add_derived_columns,
             _compute_slice_stats,
             _run_categorical_slices,
         )

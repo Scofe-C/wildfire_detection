@@ -74,8 +74,8 @@ def _build_grid_indices(
     lat_step = resolution_km / 111.0  # ~111 km per degree latitude
     lon_step = resolution_km / (111.0 * np.cos(np.radians(np.mean(lats))))
 
-    lat_min, lat_max = lats.min(), lats.max()
-    lon_min, lon_max = lons.min(), lons.max()
+    lat_min, _lat_max = lats.min(), lats.max()
+    lon_min, _lon_max = lons.min(), lons.max()
 
     row_indices = ((lats - lat_min) / lat_step).astype(int)
     col_indices = ((lons - lon_min) / lon_step).astype(int)
@@ -242,7 +242,6 @@ if __name__ == "__main__":
     import argparse
     import logging
     from datetime import datetime
-    from pathlib import Path
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
     log = logging.getLogger(__name__)
@@ -272,8 +271,6 @@ if __name__ == "__main__":
         help="Date string for output filenames (e.g. 2026-02-22). Defaults to today.",
     )
     args = parser.parse_args()
-
-    import pandas as pd
 
     input_path = Path(args.input)
     if input_path.is_dir():

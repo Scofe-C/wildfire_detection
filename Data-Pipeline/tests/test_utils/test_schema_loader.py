@@ -10,7 +10,6 @@ both functions; its individual methods are used throughout the suite
 so they are not duplicated here.
 """
 
-import json
 from pathlib import Path
 
 import pandas as pd

@@ -13,18 +13,13 @@ Output: DataFrame with grid-level fire features ready for fusion
 """
 
 import logging
-from pathlib import Path
 from typing import Optional
 
-import numpy as np
 import pandas as pd
 
 from scripts.utils.grid_utils import (
-    generate_full_grid,
     points_to_grid_ids,
-    get_cell_neighbors,
 )
-from scripts.utils.schema_loader import get_registry
 
 logger = logging.getLogger(__name__)
 

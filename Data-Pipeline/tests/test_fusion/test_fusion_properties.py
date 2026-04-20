@@ -7,7 +7,6 @@ These find edge cases that example-based tests miss — especially important
 for fuse_features() which handles partial/empty/mismatched DataFrames.
 """
 import pandas as pd
-import numpy as np
 import pytest
 
 try:
@@ -93,27 +92,6 @@ def test_temporal_lag_does_not_mutate_input(fused):
     snapshot = fused["active_fire_count"].tolist()
     _ = apply_temporal_lag(fused, prev_fire_features=None)
     assert fused["active_fire_count"].tolist() == snapshot
-
-
-@given(fused=fused_df_strategy())
-@settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])
-def test_priority_resolver_noop_on_empty_gt(fused):
-    """resolve_priorities with empty GT must never change fire feature values."""
-    from scripts.fusion.priority_resolver import resolve_priorities
-
-    original_fire_count = fused["active_fire_count"].tolist()
-    result = resolve_priorities(fused, pd.DataFrame())
-    assert result["active_fire_count"].tolist() == original_fire_count
-
-
-@given(fused=fused_df_strategy())
-@settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])
-def test_priority_resolver_adds_priority_column(fused):
-    """resolve_priorities must always add data_source_priority column."""
-    from scripts.fusion.priority_resolver import resolve_priorities
-    result = resolve_priorities(fused, pd.DataFrame())
-    assert "data_source_priority" in result.columns
-    assert (result["data_source_priority"] == 2).all()
 
 
 @given(firms=firms_df())

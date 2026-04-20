@@ -15,14 +15,13 @@ Test categories:
 """
 
 from datetime import datetime, timezone
-from pathlib import Path
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pandas as pd
 import pytest
 try:
-    import xarray as xr
+    import xarray as xr  # noqa: F401
     XARRAY_AVAILABLE = True
 except ImportError:
     XARRAY_AVAILABLE = False
@@ -123,7 +122,7 @@ class TestCycleSelection:
         client.head_object.side_effect = head_object_side_effect
 
         with patch("boto3.client") as mock_boto3_client:
-            mock_boto3.client.return_value = client
+            mock_boto3_client.return_value = client
             result = _select_hrrr_cycle(execution_dt)
 
         assert result is not None
@@ -131,7 +130,7 @@ class TestCycleSelection:
 
     def test_returns_none_when_all_cycles_missing(self, execution_dt):
         pytest.importorskip("boto3")
-        from scripts.ingestion.ingest_hrrr import _select_hrrr_cycle, N_CYCLE_LOOKBACK
+        from scripts.ingestion.ingest_hrrr import _select_hrrr_cycle
 
         client = MagicMock()
         client.exceptions.ClientError = Exception
@@ -140,7 +139,7 @@ class TestCycleSelection:
         client.head_object.side_effect = Exception("404")
 
         with patch("boto3.client") as mock_boto3_client:
-            mock_boto3.client.return_value = client
+            mock_boto3_client.return_value = client
             result = _select_hrrr_cycle(execution_dt)
 
         assert result is None
@@ -165,7 +164,8 @@ class TestCycleSelection:
 class TestFieldFetching:
 
     def test_returns_fields_dict_on_success(self, execution_dt, mock_xarray_da):
-        import sys, types
+        import sys
+        import types
         da, ds = mock_xarray_da
 
         mock_herbie_instance = MagicMock()
@@ -195,7 +195,8 @@ class TestFieldFetching:
 
     def test_partial_failure_returns_available_fields(self, execution_dt, mock_xarray_da):
         """When one variable fails, others should still be returned."""
-        import sys, types
+        import sys
+        import types
         da, ds = mock_xarray_da
         call_count = 0
 

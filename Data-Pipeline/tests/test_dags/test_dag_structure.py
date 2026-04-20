@@ -41,8 +41,8 @@ class TestDAGStructure:
             "validate_schema",
             "detect_anomalies",
             "export_to_parquet",
-            "export_spatial",
             "version_with_dvc",
+            "trigger_model_server",
         }
         assert required.issubset(task_ids), (
             f"Missing tasks: {required - task_ids}"
@@ -76,21 +76,15 @@ class TestDAGStructure:
         )
 
     def test_export_tasks_depend_on_detect_anomalies(self, wildfire_dag):
-        """Both export tasks must be downstream of detect_anomalies."""
+        """export_to_parquet must be downstream of detect_anomalies."""
         export_parquet = wildfire_dag.get_task("export_to_parquet")
-        export_spatial = wildfire_dag.get_task("export_spatial")
-        detect = wildfire_dag.get_task("detect_anomalies")
-
         upstream_of_parquet = {t.task_id for t in export_parquet.upstream_list}
-        upstream_of_spatial = {t.task_id for t in export_spatial.upstream_list}
-
         assert "detect_anomalies" in upstream_of_parquet
-        assert "detect_anomalies" in upstream_of_spatial
 
-    def test_version_dvc_is_terminal(self, wildfire_dag):
-        """version_with_dvc must have no downstream tasks."""
-        dvc_task = wildfire_dag.get_task("version_with_dvc")
-        assert len(dvc_task.downstream_list) == 0
+    def test_trigger_model_server_is_terminal(self, wildfire_dag):
+        """trigger_model_server must have no downstream tasks."""
+        terminal = wildfire_dag.get_task("trigger_model_server")
+        assert len(terminal.downstream_list) == 0
 
 
 class TestXComKeyConsistency:

@@ -7,10 +7,6 @@ Covers the seven scenarios required by Section 3.6 of the assignment guide,
 plus tests for the three derived features added in the improvement plan.
 """
 
-import io
-import json
-from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pandas as pd
@@ -474,7 +470,6 @@ class TestFWI:
     def test_compute_fwi_nan_when_inputs_missing(self):
         """Rows with NaN inputs must produce NaN FWI (no crash)."""
         import pandas as pd
-        import numpy as np
         from scripts.processing.process_weather import _compute_fwi
         df = pd.DataFrame({
             "temperature_2m":        [np.nan],

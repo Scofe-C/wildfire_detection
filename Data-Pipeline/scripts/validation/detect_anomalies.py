@@ -273,7 +273,6 @@ def _update_baseline(
 if __name__ == "__main__":
     import argparse
     import logging
-    from datetime import datetime
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
 
@@ -302,9 +301,6 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    import json
-    import pandas as pd
-    from pathlib import Path
     from scripts.utils.schema_loader import get_registry
 
     registry = get_registry()

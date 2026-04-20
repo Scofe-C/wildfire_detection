@@ -19,10 +19,8 @@ Additional tests for new features (h3 compat shims, focal grid, pruning):
 """
 
 import math
-from pathlib import Path
 from unittest.mock import patch
 
-import geopandas as gpd
 import numpy as np
 import pandas as pd
 import pytest
@@ -109,7 +107,6 @@ class TestReprojectionAccuracy:
     def test_h3_cell_centroid_roundtrip(self):
         """Converting a known lat/lon to H3 and back should be within ~5km."""
         from scripts.utils.grid_utils import point_to_grid_id, _cell_to_latlng_compat
-        import h3
 
         # Los Angeles City Hall: a well-known reference point
         orig_lat, orig_lon = 34.0537, -118.2428
@@ -202,7 +199,6 @@ class TestZonalStatistics:
         from scripts.utils.grid_utils import (
             generate_grid_for_bbox,
             prune_non_vegetated_cells,
-            _grid_disk_compat,
         )
 
         small_bbox = [-122.0, 37.5, -121.0, 38.0]
@@ -243,8 +239,6 @@ class TestCachingBehavior:
 
     def test_static_cache_avoids_redownload(self, tmp_path):
         """process_static caches to parquet; second call skips download."""
-        import time
-        from unittest.mock import patch, MagicMock
 
         # Mock the actual LANDFIRE/SRTM download to be instant
         with patch("scripts.processing.process_static.load_and_process_static") as mock_fn:

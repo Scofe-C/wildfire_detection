@@ -20,7 +20,7 @@ Design principles:
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Optional
 
 from scripts.utils.grid_utils import (

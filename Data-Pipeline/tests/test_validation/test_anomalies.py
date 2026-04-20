@@ -9,8 +9,6 @@ from Section 5.5.
 """
 
 import json
-from datetime import datetime
-from pathlib import Path
 
 import pandas as pd
 import pytest
@@ -22,7 +20,6 @@ import pytest
 
 class DummyRegistry:
     anomaly_config = {"monitored_features": ["temperature_2m", "wind_speed_10m"]}
-    fire_season_months = [6, 7, 8, 9, 10, 11]
 
     def get_z_threshold(self, month):
         return 4.0 if month in self.fire_season_months else 3.5
@@ -54,7 +51,7 @@ def baseline_dir(tmp_path):
 @pytest.fixture
 def mature_baseline(baseline_dir):
     """Pre-seed a baseline with enough samples to activate detection."""
-    from scripts.validation.detect_anomalies import _DEFAULT_BASELINE_DIR, MIN_SAMPLE_COUNT
+    from scripts.validation.detect_anomalies import MIN_SAMPLE_COUNT
     baseline_dir.mkdir(parents=True, exist_ok=True)
     data = {
         "feature": "temperature_2m",
@@ -165,7 +162,7 @@ def test_detect_anomalies_respects_off_season_threshold(baseline_dir):
     df_safe = pd.DataFrame({"temperature_2m": [0.0] * 49 + [3.4]})
     reg = DummyRegistry()
     result = detect_anomalies(df_safe, reg, DateOffSeason(), baseline_dir=baseline_dir)
-    assert result == [], f"z=3.4 should not trigger off-season threshold 3.5"
+    assert result == [], "z=3.4 should not trigger off-season threshold 3.5"
 
     # z=3.6 SHOULD trigger
     df_alert = pd.DataFrame({"temperature_2m": [0.0] * 49 + [3.6]})

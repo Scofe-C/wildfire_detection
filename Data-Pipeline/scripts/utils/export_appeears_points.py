@@ -26,8 +26,8 @@ from pathlib import Path
 # Allow running as script from repo root
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-import pandas as pd
-from scripts.utils.grid_utils import generate_full_grid
+import pandas as pd  # noqa: E402
+from scripts.utils.grid_utils import generate_full_grid  # noqa: E402
 
 
 def export_appeears_csv(resolution_km: int = 64, output_path: str = "data/static/appeears_upload.csv") -> Path:
@@ -60,10 +60,10 @@ def export_appeears_csv(resolution_km: int = 64, output_path: str = "data/static
     print("  6. Date range: 01-01-2024 → 08-31-2024")
     print("  7. Submit, wait for email, download the results CSV")
     print("  8. Run:")
-    print(f"       python -m scripts.ingestion.ingest_ndvi \\")
-    print(f"           --appeears-csv <downloaded_results.csv> \\")
+    print("       python -m scripts.ingestion.ingest_ndvi \\")
+    print("           --appeears-csv <downloaded_results.csv> \\")
     print(f"           --resolution-km {resolution_km} \\")
-    print(f"           --output-dir data/static")
+    print("           --output-dir data/static")
     return out
 
 
