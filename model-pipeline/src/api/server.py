@@ -363,58 +363,357 @@ async def get_pipeline_status() -> JSONResponse:
 
 
 # ---------------------------------------------------------------------------
+# Cloud Run endpoints — health probe, inference, monitoring
+# ---------------------------------------------------------------------------
+
+@app.get("/health")
+async def health() -> JSONResponse:
+    """Cloud Run readiness probe."""
+    from datetime import UTC, datetime
+    return JSONResponse({"status": "ok", "timestamp": datetime.now(UTC).isoformat()})
+
+
+@app.post("/monitor")
+async def monitor(request: Request) -> JSONResponse:
+    """Drift monitoring — called by Cloud Scheduler every 6 hours via POST /monitor."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    baseline_run_id = body.get("baseline_run_id", "latest")
+    gcs_bucket = body.get("gcs_bucket") or os.getenv("GCS_BUCKET_NAME")
+
+    try:
+        from src.monitoring.monitor_runner import run_monitoring_check
+        run_id = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+        result = await asyncio.to_thread(
+            run_monitoring_check,
+            run_id=run_id,
+            gcs_bucket=gcs_bucket,
+            baseline_run_id=baseline_run_id,
+        )
+        return JSONResponse(content=result, status_code=200)
+    except Exception as exc:
+        logger.exception("Monitoring check failed")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+# ---------------------------------------------------------------------------
+# API — Airflow proxy (DAG status + run history)
+# ---------------------------------------------------------------------------
+
+_AIRFLOW_URL  = os.getenv("AIRFLOW_URL", "http://airflow-webserver:8080")
+_AIRFLOW_USER = os.getenv("AIRFLOW_USER", "admin")
+_AIRFLOW_PASS = os.getenv("AIRFLOW_PASS", "admin")
+_AIRFLOW_DAG  = "wildfire_data_pipeline"
+
+
+def _airflow_get(path: str) -> dict:
+    import base64
+    import urllib.request as _req
+
+    url  = f"{_AIRFLOW_URL}/api/v1/{path}"
+    cred = base64.b64encode(f"{_AIRFLOW_USER}:{_AIRFLOW_PASS}".encode()).decode()
+    request = _req.Request(url, headers={
+        "Authorization": f"Basic {cred}",
+        "Content-Type": "application/json",
+    })
+    with _req.urlopen(request, timeout=5) as resp:
+        return json.loads(resp.read())
+
+
+@app.get("/api/airflow/dag-status")
+async def airflow_dag_status() -> JSONResponse:
+    """Proxy Airflow GET /api/v1/dags/{dag_id} + last run state."""
+    def _fetch() -> dict:
+        try:
+            dag  = _airflow_get(f"dags/{_AIRFLOW_DAG}")
+            runs = _airflow_get(f"dags/{_AIRFLOW_DAG}/dagRuns?limit=1&order_by=-start_date")
+            last = (runs.get("dag_runs") or [{}])[0]
+            return {
+                "dag_id":            _AIRFLOW_DAG,
+                "is_paused":         dag.get("is_paused", False),
+                "is_active":         dag.get("is_active", True),
+                "schedule_interval": dag.get("schedule_interval"),
+                "last_run_state":    last.get("state"),
+                "last_run_start":    last.get("start_date"),
+                "last_run_end":      last.get("end_date"),
+                "airflow_online":    True,
+            }
+        except Exception as exc:
+            logger.warning("airflow dag-status failed: %s", exc)
+            return {"airflow_online": False, "error": str(exc)}
+
+    data = await asyncio.to_thread(_fetch)
+    return JSONResponse(data)
+
+
+@app.get("/api/airflow/dag-runs")
+async def airflow_dag_runs(limit: int = 8) -> JSONResponse:
+    """Proxy Airflow GET /api/v1/dags/{dag_id}/dagRuns — recent run history."""
+    def _fetch() -> dict:
+        try:
+            raw = _airflow_get(f"dags/{_AIRFLOW_DAG}/dagRuns?limit={limit}&order_by=-start_date")
+            result = []
+            for r in raw.get("dag_runs", []):
+                start = r.get("start_date")
+                end   = r.get("end_date")
+                dur   = None
+                if start and end:
+                    try:
+                        from datetime import datetime as _dt
+                        s = _dt.fromisoformat(start.replace("Z", "+00:00"))
+                        e = _dt.fromisoformat(end.replace("Z", "+00:00"))
+                        dur = int((e - s).total_seconds())
+                    except Exception:
+                        pass
+                result.append({
+                    "run_id":     r.get("dag_run_id"),
+                    "state":      r.get("state"),
+                    "start_date": start,
+                    "end_date":   end,
+                    "duration_s": dur,
+                })
+            return {"runs": result, "airflow_online": True}
+        except Exception as exc:
+            logger.warning("airflow dag-runs failed: %s", exc)
+            return {"runs": [], "airflow_online": False, "error": str(exc)}
+
+    data = await asyncio.to_thread(_fetch)
+    return JSONResponse(data)
+
+
+# ---------------------------------------------------------------------------
+# API — notifications
+# ---------------------------------------------------------------------------
+
+@app.get("/api/notifications")
+async def get_notifications() -> JSONResponse:
+    """Aggregate OBJ-1/2/3 pipeline events into notification feed for frontend bell."""
+
+    def _build() -> list[dict]:
+        _, bkt, _ = _gcs_client()
+        events: list[dict] = []
+
+        for region in ["california", "texas"]:
+            label = region.title()
+
+            # ── OBJ-1: ignition inference ──────────────────────────────────
+            inf_blob = bkt.blob(f"inference/latest/{region}_latest.json")
+            if inf_blob.exists():
+                try:
+                    d = json.loads(inf_blob.download_as_bytes())
+                    ts = d.get("run_timestamp", "")
+                    summary = d.get("summary", {})
+                    flagged  = summary.get("flagged_cells", 0)
+                    total    = summary.get("total_cells", 0)
+                    max_risk = summary.get("max_risk_score", 0)
+                    firms    = d.get("firms_hotspot_count", 0)
+                    tiers    = summary.get("risk_tier_counts", {})
+
+                    events.append({
+                        "id":        f"obj1_{region}_{ts}",
+                        "type":      "success",
+                        "source":    "OBJ-1",
+                        "title":     f"OBJ-1 Inference Complete — {label}",
+                        "message":   f"{flagged}/{total} cells flagged · max risk {max_risk:.2f}",
+                        "timestamp": ts,
+                        "region":    region,
+                    })
+
+                    if firms > 0:
+                        events.append({
+                            "id":        f"firms_{region}_{ts}",
+                            "type":      "fire",
+                            "source":    "FIRMS",
+                            "title":     f"Active Fire Hotspots — {label}",
+                            "message":   f"{firms} FIRMS hotspot(s) detected in region",
+                            "timestamp": ts,
+                            "region":    region,
+                        })
+
+                    critical = tiers.get("CRITICAL", 0)
+                    if critical > 0:
+                        events.append({
+                            "id":        f"critical_{region}_{ts}",
+                            "type":      "warning",
+                            "source":    "OBJ-1",
+                            "title":     f"Critical Risk Cells — {label}",
+                            "message":   f"{critical} cell(s) upgraded to CRITICAL tier",
+                            "timestamp": ts,
+                            "region":    region,
+                        })
+                except Exception:
+                    pass
+
+            # ── OBJ-2: fire spread simulation ─────────────────────────────
+            sim_blob = bkt.blob(f"simulation/latest/{region}_latest.json")
+            if sim_blob.exists():
+                try:
+                    d = json.loads(sim_blob.download_as_bytes())
+                    ts    = d.get("run_timestamp", "")
+                    speed = d.get("spread_speed_kmh", 0) or 0
+                    crown = d.get("crown_fire_status", "NO_CROWN") or "NO_CROWN"
+                    ntype = "warning" if crown not in ("NO_CROWN", "no_crown", "") else "success"
+                    events.append({
+                        "id":        f"obj2_{region}_{ts}",
+                        "type":      ntype,
+                        "source":    "OBJ-2",
+                        "title":     f"OBJ-2 Spread Simulation — {label}",
+                        "message":   f"Speed {speed:.1f} km/h · Crown: {crown.replace('_', ' ').title()}",
+                        "timestamp": ts,
+                        "region":    region,
+                    })
+                except Exception:
+                    pass
+
+        # ── OBJ-3: most recent reports from disk ───────────────────────────
+        reports_dir = _ROOT / "reports" / "disaster_reports"
+        if reports_dir.exists():
+            report_files = sorted(
+                (f for f in reports_dir.rglob("*.json")
+                 if "review_manifest" not in f.name and "incident_state" not in f.name),
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )[:6]
+            for json_file in report_files:
+                try:
+                    d = json.loads(json_file.read_text(encoding="utf-8"))
+                    ts     = d.get("generated_at", "")
+                    risk   = d.get("risk_level", "?")
+                    reg    = d.get("region", "unknown").title()
+                    rtype  = d.get("report_type", "report").replace("_", " ").title()
+                    ntype  = "warning" if risk in ("CRITICAL", "HIGH") else "success"
+                    events.append({
+                        "id":        f"obj3_{json_file.stem}",
+                        "type":      ntype,
+                        "source":    "OBJ-3",
+                        "title":     f"OBJ-3 Report Generated — {reg}",
+                        "message":   f"{rtype} · Risk level: {risk}",
+                        "timestamp": ts,
+                        "region":    d.get("region", ""),
+                    })
+                except Exception:
+                    continue
+
+        # Sort newest-first, cap at 30
+        events.sort(key=lambda e: e.get("timestamp", ""), reverse=True)
+        return events[:30]
+
+    try:
+        data = await asyncio.to_thread(_build)
+        return JSONResponse(data)
+    except Exception as exc:
+        logger.warning("notifications endpoint failed: %s", exc)
+        return JSONResponse([])
+
+
+# ---------------------------------------------------------------------------
 # API — list reports
 # ---------------------------------------------------------------------------
 
 @app.get("/api/reports")
 async def list_reports(limit: int = 50) -> JSONResponse:
-    reports_dir = _ROOT / "reports" / "disaster_reports"
-    if not reports_dir.exists():
-        return JSONResponse([])
+    seen_ids: set[str] = set()
+    entries: list[dict] = []
 
-    entries = []
-    for json_file in sorted(reports_dir.rglob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
-        if "review_manifest" in json_file.name or "incident_state" in json_file.name:
-            continue
+    def _append(entry: dict) -> None:
+        if entry["id"] not in seen_ids:
+            seen_ids.add(entry["id"])
+            entries.append(entry)
+
+    # ── GCS (always checked — source of truth in Cloud Run) ───────────────
+    gcs_bucket = os.getenv("GCS_BUCKET_NAME")
+    if gcs_bucket:
         try:
-            data = json.loads(json_file.read_text(encoding="utf-8"))
-            # Find companion HTML/MD
-            stem = json_file.stem
-            parent = json_file.parent
-            rendered = None
-            for ext in (".html", ".md"):
-                candidate = parent / (stem + ext)
-                if candidate.exists():
-                    # Use forward slashes — avoids URL encoding issues on Windows
-                    rendered = candidate.relative_to(_ROOT).as_posix()
-                    break
-            entries.append({
-                "id": stem,
-                "report_type": data.get("report_type", "unknown"),
-                "risk_level": data.get("risk_level", "?"),
-                "incident_id": data.get("incident_id", "?"),
-                "generated_at": data.get("generated_at", ""),
-                "confidence": data.get("report_confidence"),
-                "human_review_required": data.get("human_review_required", False),
-                "review_status": data.get("review_status", "?"),
-                "json_path": str(json_file.relative_to(_ROOT)),
-                "rendered_path": rendered,
-            })
-        except Exception:
-            continue
-        if len(entries) >= limit:
-            break
+            from google.cloud import storage as _gcs
+            _client = _gcs.Client()
+            blobs = _client.list_blobs(gcs_bucket, prefix="reports/obj3/")
+            for blob in sorted(blobs, key=lambda b: b.updated, reverse=True):
+                if not blob.name.endswith(".json"):
+                    continue
+                if "/latest/" in blob.name:
+                    continue
+                stem = blob.name.rsplit("/", 1)[-1].replace(".json", "")
+                if "review_manifest" in stem or "incident_state" in stem:
+                    continue
+                try:
+                    data = json.loads(blob.download_as_bytes())
+                    _append({
+                        "id": stem,
+                        "report_type": data.get("report_type", "unknown"),
+                        "risk_level": data.get("risk_level", "?"),
+                        "incident_id": data.get("incident_id", "?"),
+                        "generated_at": data.get("generated_at", ""),
+                        "confidence": data.get("report_confidence"),
+                        "human_review_required": data.get("human_review_required", False),
+                        "review_status": data.get("review_status", "?"),
+                        "json_path": blob.name,
+                        "rendered_path": None,
+                    })
+                except Exception:
+                    continue
+        except Exception as exc:
+            logger.warning("GCS report listing failed: %s", exc)
 
-    return JSONResponse(entries)
+    # ── Local disk (local dev / newly written reports not yet in GCS) ──────
+    reports_dir = _ROOT / "reports" / "disaster_reports"
+    if reports_dir.exists():
+        for json_file in sorted(reports_dir.rglob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
+            if "review_manifest" in json_file.name or "incident_state" in json_file.name:
+                continue
+            try:
+                data = json.loads(json_file.read_text(encoding="utf-8"))
+                stem = json_file.stem
+                parent = json_file.parent
+                rendered = None
+                for ext in (".html", ".md"):
+                    candidate = parent / (stem + ext)
+                    if candidate.exists():
+                        rendered = candidate.relative_to(_ROOT).as_posix()
+                        break
+                _append({
+                    "id": stem,
+                    "report_type": data.get("report_type", "unknown"),
+                    "risk_level": data.get("risk_level", "?"),
+                    "incident_id": data.get("incident_id", "?"),
+                    "generated_at": data.get("generated_at", ""),
+                    "confidence": data.get("report_confidence"),
+                    "human_review_required": data.get("human_review_required", False),
+                    "review_status": data.get("review_status", "?"),
+                    "json_path": str(json_file.relative_to(_ROOT)),
+                    "rendered_path": rendered,
+                })
+            except Exception:
+                continue
+
+    entries.sort(key=lambda e: e.get("generated_at", ""), reverse=True)
+    return JSONResponse(entries[:limit])
 
 
 @app.get("/api/reports/{report_id}")
 async def get_report(report_id: str) -> JSONResponse:
+    # ── Local disk first ───────────────────────────────────────────────────
     reports_dir = _ROOT / "reports" / "disaster_reports"
     matches = list(reports_dir.rglob(f"{report_id}.json"))
-    if not matches:
-        raise HTTPException(status_code=404, detail=f"Report {report_id} not found")
-    return JSONResponse(json.loads(matches[0].read_text(encoding="utf-8")))
+    if matches:
+        return JSONResponse(json.loads(matches[0].read_text(encoding="utf-8")))
+
+    # ── GCS fallback ───────────────────────────────────────────────────────
+    gcs_bucket = os.getenv("GCS_BUCKET_NAME")
+    if gcs_bucket:
+        try:
+            from google.cloud import storage as _gcs
+            _client = _gcs.Client()
+            blobs = list(_client.list_blobs(gcs_bucket, prefix="reports/obj3/"))
+            for blob in blobs:
+                if blob.name.endswith(f"{report_id}.json"):
+                    return JSONResponse(json.loads(blob.download_as_bytes()))
+        except Exception as exc:
+            logger.warning("GCS report fetch failed: %s", exc)
+
+    raise HTTPException(status_code=404, detail=f"Report {report_id} not found")
 
 
 @app.delete("/api/reports/{report_id}")
@@ -1183,7 +1482,7 @@ async def generate_from_pipeline(request: Request) -> JSONResponse:
     """OBJ-1 → OBJ-2 → OBJ-3 pipeline: read inference + fused from GCS,
     run fire spread simulation, generate disaster report.
 
-    Called by the Airflow ``run_inference`` task or the dashboard button.
+    Called by the Airflow ``trigger_model_server`` task or the dashboard button.
 
     Expected JSON body::
 
@@ -1221,6 +1520,208 @@ async def generate_from_pipeline(request: Request) -> JSONResponse:
         _TIER_MAP = {"CRITICAL": "CRITICAL", "HIGH": "HIGH", "MEDIUM": "MODERATE", "LOW": "LOW"}
         _TIER_ORDER = ["CRITICAL", "HIGH", "MEDIUM", "LOW"]
 
+        # ── Step 0: OBJ-1 — Run inference for all regions before per-region loop ──
+        logger.info("[pipeline] Step 0: running OBJ-1 inference for regions: %s", regions)
+        import io as _io
+        import yaml as _yaml
+        import pandas as _pd
+        import xgboost as _xgb
+        import lightgbm as _lgb
+        from src.preprocessing.feature_engineering import full_pipeline as _full_pipeline
+        from src.tracking.vertex_registry import VertexRegistry as _VertexRegistry
+
+        _config_path = Path(__file__).parents[2] / "configs" / "model_config.yaml"
+        with open(_config_path) as _f:
+            _model_cfg = _yaml.safe_load(_f)
+
+        # Complete list of pipeline-only columns — must be dropped before full_pipeline
+        _PIPELINE_ONLY_COLS = [
+            "active_fire_count", "mean_frp", "median_frp",
+            "max_confidence", "nearest_fire_distance_km",
+            "fire_detected_binary",
+            "canopy_base_height_m", "canopy_bulk_density", "evt_national_class",
+        ]
+
+        # Region-specific risk tier thresholds — California raised to reduce
+        # false CRITICAL flags; Texas slightly raised from baseline.
+        _TIER_THRESHOLDS = {
+            "california": [("CRITICAL", 0.80), ("HIGH", 0.50), ("MEDIUM", 0.20)],
+            "texas":      [("CRITICAL", 0.75), ("HIGH", 0.45), ("MEDIUM", 0.18)],
+        }
+        _DEFAULT_TIERS = [("CRITICAL", 0.65), ("HIGH", 0.365), ("MEDIUM", 0.15)]
+
+        def _assign_risk_tier(score: float, region: str = "") -> str:
+            tiers = _TIER_THRESHOLDS.get(region, _DEFAULT_TIERS)
+            for tier, lower in tiers:
+                if score >= lower:
+                    return tier
+            return "LOW"
+
+        _vai_cfg = _model_cfg.get("tracking", {}).get("vertex_ai", {})
+        _project_id = os.getenv("GOOGLE_CLOUD_PROJECT", _vai_cfg.get("project_id", ""))
+        _location = _vai_cfg.get("location", "us-central1")
+        _run_timestamp = datetime.now(UTC)
+        _all_critical: list[dict] = []
+
+        for _region in regions:
+            try:
+                # Read fused parquet from GCS
+                _fused_prefix = f"data/processed/fused/{resolution_km}km/region={_region}/"
+                _blobs = list(client.list_blobs(bucket, prefix=_fused_prefix))
+                if not _blobs:
+                    logger.warning("[OBJ-1] No fused parquet found for %s at %s", _region, _fused_prefix)
+                    continue
+
+                _parquet_buffers = []
+                for _blob in _blobs:
+                    if _blob.name.endswith(".parquet"):
+                        _buf = _io.BytesIO()
+                        _blob.download_to_file(_buf)
+                        _buf.seek(0)
+                        _parquet_buffers.append(_pd.read_parquet(_buf))
+
+                if not _parquet_buffers:
+                    logger.warning("[OBJ-1] No .parquet blobs for region %s", _region)
+                    continue
+
+                _region_df = _pd.concat(_parquet_buffers, ignore_index=True)
+
+                # Extract FIRMS aggregates BEFORE dropping pipeline-only columns
+                _firms_count = 0
+                _firms_hotspots: list[dict] = []
+                if "active_fire_count" in _region_df.columns:
+                    _firms_count = int(_region_df["active_fire_count"].sum())
+                    if _firms_count > 0 and "mean_frp" in _region_df.columns:
+                        for _, _row in _region_df[_region_df["active_fire_count"] > 0].iterrows():
+                            _firms_hotspots.append({
+                                "lat": float(_row.get("latitude", 0)),
+                                "lon": float(_row.get("longitude", 0)),
+                                "frp": float(_row.get("mean_frp", 0)),
+                                "confidence": float(_row.get("max_confidence", 80)),
+                            })
+
+                # Drop pipeline-only columns before preprocessing
+                _drop_cols = [c for c in _PIPELINE_ONLY_COLS if c in _region_df.columns]
+                if _drop_cols:
+                    _region_df = _region_df.drop(columns=_drop_cols)
+
+                # Load production model from Vertex AI registry
+                _registry = _VertexRegistry(
+                    project_id=_project_id,
+                    location=_location,
+                    display_name=f"wildfire-ignition-{_region}",
+                    gcs_bucket=bucket,
+                )
+                _model, _medians, _threshold = _registry.load_production()
+                logger.info("[OBJ-1] %s: model loaded, threshold=%.4f", _region, _threshold)
+
+                # Run preprocessing pipeline (returns tuple — unpack second element)
+                _X, _ = _full_pipeline(_region_df, model_type="xgb", is_inference=True, fit_medians=_medians)
+
+                # Score with model-type-specific API
+                if isinstance(_model, _xgb.Booster):
+                    _y_prob = _model.predict(_xgb.DMatrix(_X))
+                elif isinstance(_model, _lgb.Booster):
+                    _y_prob = _model.predict(_X)
+                elif hasattr(_model, "predict_proba"):
+                    _y_prob = _model.predict_proba(_X)[:, 1]
+                else:
+                    _y_prob = _model.predict(_X)
+
+                # Build scored dataframe
+                _id_cols = ["grid_id", "region"]
+                for _opt in ("latitude", "longitude"):
+                    if _opt in _region_df.columns:
+                        _id_cols.append(_opt)
+                _scored_df = _region_df[_id_cols].copy().reset_index(drop=True)
+                _scored_df["timestamp"]       = _run_timestamp
+                _scored_df["fire_risk_score"] = _y_prob
+                _scored_df["fire_risk_flag"]  = (_y_prob >= _threshold).astype(int)
+                _scored_df["risk_tier"]       = [_assign_risk_tier(s, _region) for s in _y_prob]
+                _scored_df["model_version"]   = "production"
+                _scored_df["threshold_used"]  = _threshold
+
+                _n_flagged = int(_scored_df["fire_risk_flag"].sum())
+                _n_crit    = int((_scored_df["risk_tier"] == "CRITICAL").sum())
+                logger.info("[OBJ-1] %s: flagged=%d  CRITICAL=%d  max_score=%.4f",
+                            _region, _n_flagged, _n_crit, float(_scored_df["fire_risk_score"].max()))
+
+                # Build cells list for JSON
+                _cell_cols = ["grid_id", "fire_risk_score", "fire_risk_flag", "risk_tier"] + (
+                    ["latitude", "longitude"] if "latitude" in _scored_df.columns else []
+                )
+                _cells_list = _scored_df[_cell_cols].to_dict(orient="records")
+
+                # Weather telemetry (from region_df — weather cols survive the drop)
+                _telemetry: dict = {}
+                if "temperature_2m" in _region_df.columns:
+                    _telemetry["temperature_max"] = round(float(_region_df["temperature_2m"].max()), 2)
+                if "wind_speed_10m" in _region_df.columns:
+                    _telemetry["wind_speed_mph"] = round(float(_region_df["wind_speed_10m"].mean() * 0.6214), 2)
+                if "relative_humidity_2m" in _region_df.columns:
+                    _telemetry["relative_humidity"] = round(float(_region_df["relative_humidity_2m"].mean()), 2)
+                if "soil_moisture_0_to_7cm" in _region_df.columns:
+                    _telemetry["soil_moisture"] = round(float(_region_df["soil_moisture_0_to_7cm"].mean()), 4)
+
+                # Enriched JSON — single source of truth for OBJ-3
+                _region_payload = {
+                    "run_timestamp":      _run_timestamp.isoformat(),
+                    "model_version":      "production",
+                    "threshold":          _threshold,
+                    "region":             _region,
+                    "cells":              _cells_list,
+                    "summary": {
+                        "total_cells":      len(_scored_df),
+                        "flagged_cells":    _n_flagged,
+                        "max_risk_score":   float(_scored_df["fire_risk_score"].max()),
+                        "risk_tier_counts": _scored_df["risk_tier"].value_counts().to_dict(),
+                    },
+                    "firms_hotspot_count": _firms_count,
+                    "firms_hotspots":      _firms_hotspots,
+                    "telemetry":           _telemetry,
+                }
+
+                # Write parquet + JSON to GCS
+                _ts_str = _run_timestamp.strftime("%Y%m%dT%H%MZ")
+                _year   = _run_timestamp.year
+                _month  = f"{_run_timestamp.month:02d}"
+
+                _pbuf = _io.BytesIO()
+                _scored_df.to_parquet(_pbuf, index=False)
+                bkt.blob(
+                    f"inference/region={_region}/year={_year}/month={_month}/inference_{_ts_str}.parquet"
+                ).upload_from_string(_pbuf.getvalue(), content_type="application/octet-stream")
+
+                bkt.blob(f"inference/latest/{_region}_latest.json").upload_from_string(
+                    json.dumps(_region_payload, indent=2, default=str),
+                    content_type="application/json",
+                )
+                logger.info("[OBJ-1] %s: GCS write complete (%d cells scored)", _region, len(_scored_df))
+
+                if _n_crit > 0:
+                    _all_critical.extend(
+                        _scored_df[_scored_df["risk_tier"] == "CRITICAL"][
+                            ["grid_id", "region", "fire_risk_score"]
+                        ].to_dict(orient="records")
+                    )
+
+            except Exception as _exc:
+                logger.warning("[OBJ-1] Inference failed for %s (non-blocking): %s", _region, _exc)
+
+        # Slack alert for CRITICAL cells
+        if _all_critical:
+            try:
+                from src.notifications.alerter import SlackAlerter
+                _top = _all_critical[0]
+                SlackAlerter().alert_critical_fire_risk(
+                    region=str(_top.get("region", "unknown")),
+                    grid_id=str(_top.get("grid_id", "unknown")),
+                    probability=float(_top.get("fire_risk_score", 0.0)),
+                )
+            except Exception as _exc:
+                logger.warning("[OBJ-1] Slack alert failed (non-blocking): %s", _exc)
+
+        # ── Per-region OBJ-2 + OBJ-3 ──────────────────────────────────────────
         for region in regions:
             # ── Step 1: Read OBJ-1 inference JSON from GCS ────────────────
             blob_path = f"inference/latest/{region}_latest.json"

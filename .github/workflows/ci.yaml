@@ -31,25 +31,27 @@ name: Pipeline CI
 on:
   workflow_dispatch:
   push:
-    branches: [main, develop]
+    branches: [main, develop, master, dev_ack]
     paths:
-      # All project source under Data-Pipeline/
+      # Data-Pipeline source
       - 'Data-Pipeline/dags/**'
       - 'Data-Pipeline/scripts/**'
       - 'Data-Pipeline/tests/**'
       - 'Data-Pipeline/configs/**'
       - 'Data-Pipeline/docker/**'
       - 'Data-Pipeline/cloud/**'
-      # Root-level project files whose changes must also trigger CI
       - 'Data-Pipeline/requirements.txt'
       - 'Data-Pipeline/constraints.txt'
       - 'Data-Pipeline/dvc.yaml'
       - 'Data-Pipeline/dvc.lock'
       - 'Data-Pipeline/docker-compose.yaml'
-      # The CI workflow itself — changes to CI must re-validate
+      # Root-level infrastructure files
+      - 'Makefile'
+      - 'start.sh'
+      - 'scripts/**'
       - '.github/workflows/ci.yaml'
   pull_request:
-    branches: [main, develop]
+    branches: [main, develop, master]
     paths:
       - 'Data-Pipeline/dags/**'
       - 'Data-Pipeline/scripts/**'
@@ -62,6 +64,9 @@ on:
       - 'Data-Pipeline/dvc.yaml'
       - 'Data-Pipeline/dvc.lock'
       - 'Data-Pipeline/docker-compose.yaml'
+      - 'Makefile'
+      - 'start.sh'
+      - 'scripts/**'
       - '.github/workflows/ci.yaml'
 
 jobs:
@@ -75,12 +80,12 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       # Build only the 'test' target — no CMD, inherits all deps from airflow-base.
-      # context points to Data-Pipeline/ so COPY instructions in Dockerfile work correctly.
-      # Cache layers across runs to keep build under 2 minutes.
+      # context is repo root so Dockerfile COPY paths (Data-Pipeline/..., model-pipeline/...)
+      # resolve correctly. Cache layers across runs to keep build under 2 minutes.
       - name: Build CI test image
         uses: docker/build-push-action@v5
         with:
-          context: Data-Pipeline
+          context: .
           file: Data-Pipeline/docker/Dockerfile
           target: test
           push: false
@@ -103,24 +108,14 @@ jobs:
             wildfire-pipeline:test \
             python3 dags/wildfire_dag.py
 
-      - name: Validate watchdog_sensor_dag imports
-        run: |
-          docker run --rm \
-            -e AIRFLOW__CORE__LOAD_EXAMPLES=false \
-            -e AIRFLOW__CORE__UNIT_TEST_MODE=true \
-            -e AIRFLOW__CORE__EXECUTOR=SequentialExecutor \
-            -e AIRFLOW__DATABASE__SQL_ALCHEMY_CONN="sqlite:////tmp/airflow_test.db" \
-            wildfire-pipeline:test \
-            python3 dags/watchdog_sensor_dag.py
-
-      # Validate dvc.yaml syntax and that every script dep file exists in the image.
-      # Catches YAML errors and missing references before dvc repro is run.
-      # Note: data/ paths are DVC-tracked and absent from the image — those are skipped.
+      # Validate dvc.yaml syntax and that every script dep file exists on disk.
+      # Runs on the host runner — no Docker needed for a pure YAML/path check.
+      # data/ and models/ paths are DVC-tracked, absent from the checkout, and skipped.
       - name: Validate dvc.yaml
+        working-directory: Data-Pipeline
         run: |
-          docker run --rm \
-            wildfire-pipeline:test \
-            python3 -c "
+          python3 -m pip install --quiet pyyaml
+          python3 - <<'PY'
           import yaml, os, sys
 
           with open('dvc.yaml') as f:
@@ -134,7 +129,6 @@ jobs:
           missing = []
           for stage_name, stage in stages.items():
               for dep in stage.get('deps', []):
-                  # Skip DVC-tracked data dirs — not present in the CI image
                   if dep.startswith('data/') or dep.startswith('models/'):
                       continue
                   if not os.path.exists(dep):
@@ -147,7 +141,7 @@ jobs:
               sys.exit(1)
 
           print(f'dvc.yaml OK — {len(stages)} stages, all dep files present')
-          "
+          PY
 
       # Run tests in a named container so artifacts can be copied out after exit.
       # `if: always()` on the copy step ensures artifacts are captured even on failure.

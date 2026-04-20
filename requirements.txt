@@ -1,0 +1,86 @@
+# =============================================================================
+# PyroWatch Wildfire MLOps — Root Requirements
+# =============================================================================
+# This file covers local development and running the model-pipeline natively.
+# The Data-Pipeline runs entirely in Docker — see Data-Pipeline/requirements.txt.
+# The Frontend is built with npm — see Frontend/package.json.
+#
+# Quick install:
+#   pip install -r requirements.txt
+#
+# To run the full stack:
+#   make up-full               # starts all services via Docker
+#
+# To run model-pipeline tests locally:
+#   make test
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Model Pipeline — core ML + API server
+# ---------------------------------------------------------------------------
+numpy>=1.24.0,<2.0.0
+pandas>=2.0.0,<3.0.0
+pyarrow>=14.0.0
+scikit-learn>=1.3.0,<2.0.0
+pyyaml>=6.0
+xgboost>=2.0.0,<3.0.0
+lightgbm>=4.0.0,<5.0.0
+shap>=0.44.0,<1.0.0
+fairlearn>=0.10.0,<1.0.0
+
+# ---------------------------------------------------------------------------
+# Geospatial
+# ---------------------------------------------------------------------------
+geopandas>=0.14.0,<1.0.0
+shapely>=2.0.0,<3.0.0
+h3>=4.0.0,<5.0.0
+rasterio>=1.3.0,<2.0.0
+
+# ---------------------------------------------------------------------------
+# OBJ-3 — Dashboard API server (FastAPI + Gemini)
+# ---------------------------------------------------------------------------
+fastapi>=0.109.0,<1.0.0
+uvicorn>=0.27.0,<1.0.0
+python-multipart>=0.0.6,<1.0.0
+pydantic>=2.5.0,<3.0.0
+jinja2>=3.1.0,<4.0.0
+markdown>=3.5.0,<4.0.0
+
+# OBJ-3 LLM backends — use at least one
+google-generativeai>=0.8.0      # Gemini Developer API (free tier)
+google-genai>=1.0.0             # Vertex AI unified SDK
+ollama>=0.4.0,<1.0.0            # Local Ollama (free, no API key)
+
+# ---------------------------------------------------------------------------
+# GCP
+# ---------------------------------------------------------------------------
+google-cloud-storage>=2.14.0,<3.0.0
+google-cloud-aiplatform>=1.40.0,<2.0.0
+google-auth>=2.27.0
+
+# ---------------------------------------------------------------------------
+# MLflow experiment tracking
+# ---------------------------------------------------------------------------
+mlflow>=2.10.0,<3.0.0
+
+# ---------------------------------------------------------------------------
+# Data Pipeline — shared utilities (non-Airflow, non-Docker)
+# Used by fire_monitor.py and reporting scripts when run natively
+# ---------------------------------------------------------------------------
+requests>=2.31.0
+python-json-logger>=2.0.0
+google-cloud-storage>=2.14.0,<3.0.0   # already above, listed for clarity
+
+# ---------------------------------------------------------------------------
+# Developer tooling
+# ---------------------------------------------------------------------------
+python-dotenv>=1.0.0,<2.0.0
+pytest>=7.4.0,<9.0.0
+pytest-cov>=4.1.0
+pytest-mock>=3.12.0
+ruff>=0.2.0
+mypy>=1.8.0
+types-PyYAML>=6.0.12
+types-requests>=2.31.0
+types-Markdown>=3.5.0
+pre-commit>=3.7.0

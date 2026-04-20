@@ -43,10 +43,7 @@ COPY Data-Pipeline/scripts/ /opt/airflow/scripts/
 COPY Data-Pipeline/configs/ /opt/airflow/configs/
 COPY Data-Pipeline/tests/ /opt/airflow/tests/
 
-# Bake model-pipeline source into image so inference imports work
-# without bind mounts (macOS Docker Desktop EDEADLK workaround)
-COPY model-pipeline/src/ /opt/model-pipeline/src/
-COPY model-pipeline/configs/ /opt/model-pipeline/configs/
+# model-pipeline/src is not needed — inference runs in server.py, not Airflow
 
 RUN mkdir -p /opt/airflow/data/raw/firms \
              /opt/airflow/data/raw/weather \

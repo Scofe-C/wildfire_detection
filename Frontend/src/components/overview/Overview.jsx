@@ -120,6 +120,7 @@ function EventLogItem({ ts, level, component, msg }) {
 export default function Overview({ onNavigate }) {
   const [liveCells, setLiveCells] = useState(null);
   const [loadingCells, setLoadingCells] = useState(true);
+  const [airflowRuns, setAirflowRuns] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -144,17 +145,58 @@ export default function Overview({ onNavigate }) {
     return () => { cancelled = true; };
   }, []);
 
+  // Fetch Airflow run history
+  useEffect(() => {
+    async function fetchAirflow() {
+      try {
+        const res = await fetch(apiUrl('/api/airflow/dag-runs?limit=8'));
+        if (res.ok) {
+          const data = await res.json();
+          if (data.airflow_online && data.runs?.length) setAirflowRuns(data.runs);
+        }
+      } catch {}
+    }
+    fetchAirflow();
+    const id = setInterval(fetchAirflow, 30_000);
+    return () => clearInterval(id);
+  }, []);
+
   const allCells     = liveCells || (loadingCells ? [] : [...CALIFORNIA_CELLS, ...TEXAS_CELLS]);
   const criticalCells = allCells.filter(c => getRiskTier(c.fire_risk_score) === 'CRITICAL');
   const highCells     = allCells.filter(c => getRiskTier(c.fire_risk_score) === 'HIGH');
   const prodRuns      = OBJ1_RUNS.filter(r => r.status === 'production');
 
-  const historyData = PIPELINE_HISTORY.slice(0, 8).map((h, i) => ({
-    name: `R${i + 1}`,
-    duration: h.duration_s,
-    status: h.status,
-  }));
+  // Pipeline run history — prefer live Airflow data, fall back to mock
+  const historyData = airflowRuns
+    ? [...airflowRuns].reverse().map((r, i) => ({
+        name: `R${i + 1}`,
+        duration: r.duration_s ?? 0,
+        status: r.state === 'success' ? 'success' : r.state === 'running' ? 'warning' : 'failed',
+        run_id: r.run_id,
+        start_date: r.start_date,
+      }))
+    : PIPELINE_HISTORY.slice(0, 8).map((h, i) => ({
+        name: `R${i + 1}`,
+        duration: h.duration_s,
+        status: h.status,
+      }));
   const barColor = (s) => s === 'success' ? '#10b981' : s === 'warning' ? '#f59e0b' : '#ff3333';
+
+  // Recent events — prefer live Airflow runs, fall back to mock
+  const recentEvents = airflowRuns
+    ? airflowRuns.map(r => ({
+        ts: r.start_date || '',
+        level: r.state === 'failed' ? 'error' : r.state === 'running' ? 'warning' : 'info',
+        component: 'wildfire_data_pipeline',
+        msg: r.state === 'running'
+          ? `DAG run in progress — started ${r.start_date ? r.start_date.slice(5, 16).replace('T', ' ') : '—'} UTC`
+          : r.state === 'success'
+          ? `DAG run completed · ${r.duration_s != null ? `${r.duration_s}s` : '—'} · ${r.run_id?.slice(0, 28) ?? ''}`
+          : r.state === 'failed'
+          ? `DAG run FAILED — ${r.run_id?.slice(0, 32) ?? ''}`
+          : `DAG run queued — ${r.run_id?.slice(0, 32) ?? ''}`,
+      }))
+    : RECENT_EVENTS;
 
   const brokenCount  = COMPONENT_STATUS.filter(c => c.status === 'broken').length;
   const partialCount = COMPONENT_STATUS.filter(c => c.status === 'partial').length;
@@ -264,9 +306,12 @@ export default function Overview({ onNavigate }) {
 
         {/* Pipeline run history chart */}
         <div className="col-span-2 bg-surface-2 border border-border-subtle rounded-lg p-4">
-          <h2 className="text-text-secondary text-xs font-semibold uppercase tracking-wider mb-3">
+          <h2 className="text-text-secondary text-xs font-semibold uppercase tracking-wider mb-3 flex items-center gap-2">
             Pipeline Run History
-            <span className="text-text-muted font-normal normal-case ml-2">(last 8 × 6-hr runs)</span>
+            {airflowRuns
+              ? <span className="text-[9px] font-mono text-accent-green font-normal normal-case bg-accent-green/10 border border-accent-green/25 px-1.5 py-0.5 rounded">LIVE · Airflow</span>
+              : <span className="text-text-muted font-normal normal-case text-[10px] ml-1">(mock · Airflow offline)</span>
+            }
           </h2>
           <ResponsiveContainer width="100%" height={100}>
             <BarChart data={historyData} margin={{ top: 2, right: 2, left: -20, bottom: 2 }}>
@@ -298,10 +343,11 @@ export default function Overview({ onNavigate }) {
         <div className="bg-surface-2 border border-border-subtle rounded-lg p-4 flex flex-col">
           <div className="flex items-center gap-2 mb-2">
             <Terminal className="w-3 h-3 text-text-muted flex-shrink-0" />
-            <h2 className="text-text-secondary text-xs font-semibold uppercase tracking-wider">Recent Events</h2>
+            <h2 className="text-text-secondary text-xs font-semibold uppercase tracking-wider flex-1">Recent Events</h2>
+            {airflowRuns && <span className="text-[8px] font-mono text-accent-green">LIVE</span>}
           </div>
           <div className="flex-1 overflow-y-auto divide-y divide-border-subtle/50 max-h-[152px]">
-            {RECENT_EVENTS.map((e, i) => (
+            {recentEvents.map((e, i) => (
               <EventLogItem key={i} {...e} />
             ))}
           </div>
