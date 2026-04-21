@@ -142,7 +142,8 @@ export default function Overview({ onNavigate }) {
       if (!cancelled) setLoadingCells(false);
     }
     fetchLive();
-    return () => { cancelled = true; };
+    const id = setInterval(fetchLive, 60_000); // refresh every 60s
+    return () => { cancelled = true; clearInterval(id); };
   }, []);
 
   // Fetch Airflow run history
