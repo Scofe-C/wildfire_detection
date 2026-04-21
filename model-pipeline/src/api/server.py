@@ -658,12 +658,21 @@ async def get_notifications() -> JSONResponse:
 @app.get("/api/reports")
 async def list_reports(limit: int = 50) -> JSONResponse:
     seen_ids: set[str] = set()
+    seen_content: set[tuple] = set()  # (generated_at, incident_id) — dedup GCS vs local-disk copies of same report
     entries: list[dict] = []
 
     def _append(entry: dict) -> None:
-        if entry["id"] not in seen_ids:
-            seen_ids.add(entry["id"])
-            entries.append(entry)
+        if entry["id"] in seen_ids:
+            return
+        content_key = (entry.get("generated_at", ""), entry.get("incident_id", ""))
+        # Only dedup when both parts are non-empty + non-default — avoids collapsing
+        # unrelated reports that both happen to be missing fields.
+        if all(content_key) and content_key != ("", "?") and content_key in seen_content:
+            return
+        seen_ids.add(entry["id"])
+        if all(content_key):
+            seen_content.add(content_key)
+        entries.append(entry)
 
     # ── GCS (always checked — source of truth in Cloud Run) ───────────────
     gcs_bucket = os.getenv("GCS_BUCKET_NAME")
