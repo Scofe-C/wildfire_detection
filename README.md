@@ -1,425 +1,562 @@
+# Wildfire Detection & Response Platform — MLOps Deployment
 
-hoe# Wildfire Detection MLOps Platform
-
-A production-grade MLOps platform for wildfire detection and disaster response in California and Texas, built for Northeastern University's MLOps course (February 2026).
-
----
-
-## What It Does
-
-The system monitors active wildfires using multi-source satellite and weather data, runs ML models to classify fire risk and simulate spread, and generates automated disaster response reports using LLMs. It operates continuously, escalating from quiet background scans to real-time emergency mode when a fire is confirmed.
+A production-grade wildfire risk intelligence platform combining ignition prediction (OBJ-1, XGBoost), fire spread simulation (OBJ-2, Monte Carlo), and LLM-generated disaster reports (OBJ-3, Gemini + RAG), orchestrated through a fully automated CI/CD pipeline on **Google Cloud Platform**.
 
 ---
 
-## System Architecture
+## 1. Deployment type: **Cloud** (GCP)
 
-The platform has two main layers:
+Following the Deployment PDF's taxonomy, this is a **cloud deployment** on Google Cloud Platform. Every artifact — models, containers, data, inference endpoints, the operator dashboard, and the orchestrator — runs on GCP managed services. No edge components.
+
+### GCP services used
+
+| Service | Role |
+|---|---|
+| **Cloud Run** | Serves the model inference backend (`wildfire-inference`) and the React dashboard (`wildfire-frontend`) |
+| **Cloud Functions (Gen 2)** | `dag-trigger` — HTTP endpoint called by Cloud Scheduler every 30 min to kick off the Airflow DAG |
+| **Cloud Scheduler** | Cron jobs: (a) `wildfire-dag-trigger` → fires `dag-trigger` every 30 min; (b) `wildfire-monitor` → fires drift-detection every 6 h |
+| **GCE (Compute Engine)** | `wildfire-test-vm` (e2-standard-8) hosts Airflow (postgres + webserver + scheduler via Docker Compose) |
+| **Vertex AI Model Registry** | Canonical store for trained models with `env=production` / `env=archived` labels; auto-promote on CI push, auto-archive prior prod |
+| **Cloud Storage (GCS)** | `wildfire-mlops-123` bucket — fused feature parquets, inference JSON, simulation JSON, OBJ-3 reports, model artifacts, DVC remote |
+| **Container Registry (GCR)** | `gcr.io/wildfire-mlops-123/` — model-pipeline image, wildfire-frontend image |
+| **Cloud Build** | Runs `gcloud builds submit` for containerized image builds (triggered by CI/CD) |
+| **Cloud Logging** | Structured logs from all Cloud Run services; queryable via `gcloud logging read` |
+| **Secret Manager / GitHub Secrets** | `GCP_SA_KEY`, `FIRMS_MAP_KEY`, `GEMINI_API_KEY`, `SLACK_WEBHOOK_URL`, `MLFLOW_TRACKING_URI` |
+
+### Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│ MONITOR LOOP (Data-Pipeline/scripts/fire_monitor.py)        │
-│                                                             │
-│  Poll FIRMS/GOES every 15–30 min                            │
-│    → 4-gate false alarm filter                              │
-│    → On confirmation: POST to fire_monitor_api (:8001)      │
-│    → Switches pipeline mode: quiet → active → emergency     │
-└───────────────────────────┬─────────────────────────────────┘
-                            ↓
-┌───────────────────────────┴─────────────────────────────────┐
-│ AIRFLOW LAYER (Data + Model Pipeline)                       │
-│                                                             │
-│  wildfire_data_pipeline DAG (every 6h, escalated on mode)   │
-│    → Ingest → Process → Fuse → Validate → Export            │
-│                                                             │
-│  model-pipeline orchestrator                                │
-│    → Load data → Train/Predict → Gate → Deploy              │
-└─────────────────────────────────────────────────────────────┘
-```
-
-The project is split into three subdirectories:
-
-| Directory | Role |
-|-----------|------|
-| `Data-Pipeline/` | Data ingestion, feature engineering, Airflow orchestration |
-| `model-pipeline/` | ML model training, validation, bias gating, deployment, OBJ-3 dashboard |
-| `Frontend/` | React + Vite + Tailwind SPA — fire map, model pipeline views, OBJ-3 reporter |
-
----
-
-## Data Sources
-
-| Source | Type | Frequency | Role |
-|--------|------|-----------|------|
-| NASA FIRMS (VIIRS, MODIS) | Active fire detections | ~3h latency | Primary fire label |
-| GOES-R ABI FDC | Geostationary fire pixels | Every 10 min | Watchdog quick-check |
-| Open-Meteo | Hourly weather | Hourly | Primary weather |
-| NWS API | Forecast weather | Hourly | Weather fallback |
-| NOAA HRRR | Rapid-refresh weather | 15 min | Emergency/active mode |
-| LANDFIRE 2022 | Fuel model (FBFM40), canopy | Static (cached) | Fuel features |
-| USGS SRTM 30m | Elevation, slope, aspect | Static | Terrain features |
-
-All features are fused onto an **H3 hexagonal grid** (22 km resolution by default, escalating to finer resolution on fire confirmation). The full feature set is defined as a single source of truth in `configs/schema_config.yaml` — 28 features across fire, weather, terrain, and fuel categories.
-
----
-
-## Data Pipeline (`Data-Pipeline/`)
-
-The Airflow DAG runs on 6-hour UTC boundaries and processes California and Texas in parallel via TaskGroups.
-
-### Stages
-
-```
-INGEST
-  ├─ FIRMS: Active fire detections (24h lookback)
-  ├─ Weather: Open-Meteo → NWS fallback → HRRR (emergency)
-  └─ Static: LANDFIRE/SRTM (cached)
-        ↓
-PROCESS
-  ├─ FIRMS: Spatial join to H3, FRP clipping, fire feature aggregation
-  ├─ Weather: 6h rolling aggregation, derived indices (VPD, drought proxy, wind run)
-  └─ Static: Zonal statistics over H3 cells
-        ↓
-FUSE
-  • Left-join all sources onto master H3 grid
-  • Priority hierarchy: ground_truth > satellite > model
-  • Gap-fill: forward-fill, NWS fallback, HRRR substitution
-  • Data quality flags (0–5) per cell
-        ↓
-VALIDATE
-  • Great Expectations schema checks (28 features, null rates, value ranges)
-  • Seasonal z-score anomaly detection (Welford online updates)
-  • Slack alert on anomalies
-        ↓
-EXPORT
-  • Parquet: partitioned by region/year/month
-  • Spatial: H3 grid arrays (.npz) + adjacency matrix
-        ↓
-VERSION
-  • DVC tracks Parquet blobs in GCS
-  • Git tracks code, configs, .dvc lock files
-```
-
-### Data Quality Flags
-
-| Flag | Meaning |
-|------|---------|
-| 0 | All sources present |
-| 1 | Weather gap-filled via NWS |
-| 2 | Weather forward-filled from previous window |
-| 3 | HRRR substituted for Open-Meteo |
-| 4 | FIRMS absent (fire features set to 0) |
-| 5 | Multiple sources missing — excluded from training |
-
----
-
-## Real-Time Monitoring
-
-`Data-Pipeline/scripts/fire_monitor.py` runs a continuous monitoring loop that polls FIRMS and GOES-R every 15–30 minutes. Before escalating the pipeline, it applies a **4-gate false alarm filter**:
-
-1. **Spatial clustering** — ≥3 detections within 50 km
-2. **Temporal persistence** — ≥2 consecutive GOES windows
-3. **VIIRS cross-reference** — MODIS-only detections require VIIRS confirmation
-4. **Industrial exclusion** — 2 km buffer from known industrial sources
-
-On confirmation, the monitor switches the DAG to **active** or **emergency** mode (finer H3 grid, HRRR ingestion) via the control API at `:8001`.
-
-### Operating Modes
-
-| Mode | Grid Resolution | Trigger |
-|------|----------------|---------|
-| Quiet | 64 km | Scheduled (6h) |
-| Active | 22 km | Watchdog fire candidate |
-| Emergency | 22 km + HRRR | FRP > 500 MW confirmed |
-
----
-
-## ML Models (`model-pipeline/`)
-
-### OBJ-1 — XGBoost Fire Occurrence Classifier
-
-Classifies each H3 cell as fire / no-fire given current conditions.
-
-- **Input**: 7 core features — temperature, relative humidity, wind speed/direction, precipitation, lagged fire detection, lagged active fire count
-- **Output**: Binary prediction + fire probability [0, 1]
-- **Hyperparameters**: `max_depth=6`, `n_estimators=100`, `scale_pos_weight` auto-computed for class imbalance
-- **Decision threshold**: 0.239 (tuned for >= 90% recall on LA fires)
-- **Validation gate**: AUC-PR >= 0.89 required before deployment (CI-enforced)
-
-### OBJ-2 — Cell2Fire Physics-Based Spread Simulator
-
-Wraps the Cell2Fire C++ simulator to model how a confirmed fire spreads over terrain.
-
-- **Input**: DEM (elevation), fuel model (FBFM40), canopy data, weather CSV, ignition point coordinates
-- **Output**: Burn probability grid per timestep
-- **Method**: 100 Monte Carlo simulations at 30 m cell resolution, 1-hour timesteps
-- **Validation**: Dice coefficient ≥ 0.50 vs. historical CAL FIRE perimeters
-- **Config**: Parameter sweep over `n_simulations` (50–500), `fire_period` (0.5–4h), grid resolution (30–90 m)
-
-### OBJ-3 — Gemini LLM Disaster Reporting
-
-Generates structured incident reports using a state-machine-driven LLM orchestrator.
-
-- **Backends**: Ollama (local) → Gemini Developer API → Vertex AI (swappable without code change)
-- **Report types**: `incident_brief`, `tactical_operations`, `strategic_impact`, `lessons_learned`
-- **Context**: Fire metadata, incident history, operational mode, pre-computed disaster knowledge corpus
-- **Output**: JSON + Markdown + HTML (Jinja2 rendered)
-- **State machine**: quiet → active → emergency (with admin overrides)
-- **Validation**: Schema validity, section completeness, confidence scoring
-
----
-
-## Training & Deployment Pipeline
-
-```
-1. dvc pull               # Get latest versioned Parquet backfill from GCS
-2. Bias analysis gate     # 4-dimension slicing: geography, fuel tier, season, data quality
-                          #   → KL divergence must be < 0.1 nats
-                          #   → Fire rate disparity must be < 5%
-                          #   → DVC enforces bias_report.json before training proceeds
-3. Train OBJ-1 (XGBoost)  # MLflow experiment tracking; artifacts saved to models/ignition/
-4. Validate               # AUC-PR >= 0.89 gate (all regions)
-5. Bias gate (post-train) # Fairlearn FNR disparity < 5% (FEMA NRI vulnerability stratification)
-6. Train OBJ-2 (Cell2Fire) parameter sweep
-7. Build OBJ-3 (Gemini) corpus embeddings
-8. Push to GCS model registry
-9. Slack notification     # PASS / FAIL with root cause analysis
-```
-
-Model rollback is automatic if any validation or bias gate fails.
-
----
-
-## Fairness & Bias Detection
-
-Bias is checked at two points:
-
-- **Pre-training** (data level): 4-dimensional slicing across geography, fuel tier, season, and data quality. KL divergence and fire rate disparity are computed per slice.
-- **Pre-deployment** (model level): Fairlearn-based false negative rate (FNR) disparity check, stratified by FEMA National Risk Index (NRI) vulnerability zones. Disparity must be < 5%.
-
-DVC enforces both gates — training cannot proceed if the pre-training bias report fails, and deployment cannot proceed if the model-level FNR gate fails.
-
----
-
-## Versioning & Reproducibility
-
-| Tool | What It Tracks |
-|------|---------------|
-| DVC | Parquet data blobs in GCS (immutable, content-hashed) |
-| Git | Code, configs, `.dvc` lock files |
-| MLflow / Vertex AI | Model hyperparameters, metrics, artifacts per run |
-
-To reproduce any historical state:
-```bash
-git checkout <commit>
-dvc pull          # Restores exact data state for that commit
-dvc repro         # Re-runs pipeline from that state
+│  GitHub (Scofe-C/wildfire_detection)                        │
+│   ├── .github/workflows/ci.yaml           (Airflow CI/CD)   │
+│   ├── .github/workflows/frontend-ci.yml   (Frontend CI/CD)  │
+│   ├── .github/workflows/model_ci.yml      (Model CI/CD)     │
+│   ├── .github/workflows/deploy-all.yml    (Orchestrator)    │
+│   └── .github/workflows/model_rollback.yml                  │
+└──────────────┬──────────────────────────────────────────────┘
+               │ push / schedule / workflow_dispatch
+               ▼
+┌─────────────────────────────────────────────────────────────┐
+│  GitHub Actions runners                                     │
+│   • Cloud Build submit                                      │
+│   • gcloud run deploy                                       │
+│   • gcloud compute instances reset                          │
+│   • Train + bias gate + Vertex AI registry push             │
+└──────────────┬──────────────────────────────────────────────┘
+               │
+               ▼
+┌───────────────────────────────────────────────────────────────┐
+│  GCP (project wildfire-mlops-123, region us-central1)         │
+│                                                               │
+│  Cloud Scheduler                                              │
+│    ├── wildfire-dag-trigger  (*/30 * * * *)                   │
+│    └── wildfire-monitor      (0 */6 * * *)                    │
+│              │                      │                         │
+│              ▼                      ▼                         │
+│  Cloud Function             Cloud Run (wildfire-inference)    │
+│   dag-trigger                  POST /monitor                  │
+│     │                               │                         │
+│     │ POST /dagRuns                 │ drift_detector.py       │
+│     ▼                               │ → if threshold tripped: │
+│  GCE VM (wildfire-test-vm)          │   POST workflow_dispatch│
+│   Docker Compose:                   ▼                         │
+│     ├── postgres                GitHub Actions                │
+│     ├── airflow-webserver          (model_ci.yml)             │
+│     └── airflow-scheduler                                     │
+│      running wildfire_data_pipeline DAG (21 tasks)            │
+│          │                                                    │
+│          ▼                                                    │
+│   trigger_model_server task POSTs to                          │
+│   Cloud Run (wildfire-inference)                              │
+│      /api/generate-from-pipeline                              │
+│       ├── OBJ-1 XGBoost inference (per region)                │
+│       │    uses Vertex AI Model Registry production model     │
+│       ├── OBJ-2 Monte Carlo fire spread                       │
+│       └── OBJ-3 Gemini 2.5 Flash report                       │
+│                                                               │
+│   Outputs → GCS wildfire-mlops-123:                           │
+│     inference/latest/*.json                                   │
+│     simulation/latest/*.json                                  │
+│     reports/obj3/{region}/*.json                              │
+│                                                               │
+│  Cloud Run (wildfire-frontend)                                │
+│     React + nginx; /api/* proxied to wildfire-inference       │
+└───────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## Configuration Files
+## 2. Deployment Automation
 
-| File | Purpose |
-|------|---------|
-| `Data-Pipeline/configs/schema_config.yaml` | Single source of truth: 28 features, H3 resolution maps, region bboxes, source URLs, data quality flags |
-| `model-pipeline/configs/feature_schema.yaml` | Data contract: column dtypes, bounds, required flags |
-| `model-pipeline/configs/model_config.yaml` | Validation thresholds (AUC-PR, FNR), MLflow/GCS paths, Slack config, OBJ-2/OBJ-3 params |
-| `model-pipeline/configs/reporting_config.yaml` | LLM backends, corpus paths, report schemas, Jinja2 templates |
-| `Data-Pipeline/dvc.yaml` | Data pipeline stages + dependencies |
-| `model-pipeline/dvc.yaml` | Model pipeline stages: `validate_model`, `bias_gate` |
-| `docker-compose.yaml` | Root-level unified compose — Airflow + Dashboard + Monitor + MLflow (profiles) |
-| `Data-Pipeline/docker-compose.yaml` | Sub-project Airflow + Postgres dev environment |
-| `Makefile` | Developer entry point: `make up`, `make up-full`, `make status`, `make test` |
+Five CI/CD workflows in `.github/workflows/` handle every deploy target. None require manual steps once the repo is set up.
 
-### Required Environment Variables
+### `ci.yaml` — Data-Pipeline (Airflow on GCE)
 
-All set in a single `.env` file at the repo root:
+**Trigger**: Push to `master` touching `Data-Pipeline/**` or the workflow file.
+
+**Jobs**:
+1. `test` — Docker-based pytest (coverage ≥40%), DAG import validation, dvc.yaml syntax, ruff lint, pip-audit
+2. `deploy-airflow` — runs on `push` to `master` with `vars.ENABLE_GCP_DEPLOY == 'true'`:
+   - Tar repo tree → `/tmp/pipeline.tar.gz`
+   - `gsutil cp` → `gs://wildfire-mlops-123/gce-test/pipeline.tar.gz`
+   - Generate `.env` from GitHub secrets → upload to `gs://.../gce-test/.env`
+   - `gcloud compute instances reset wildfire-test-vm` — the VM's startup script (`Data-Pipeline/cloud/gce_startup.sh`) re-fetches the tarball and runs `docker compose up -d --build`
+   - Poll `http://<vm-ip>:8080/health` until Airflow returns 200
+   - Slack notify
+
+### `frontend-ci.yml` — React dashboard (Cloud Run)
+
+**Trigger**: Push to `master` touching `Frontend/**` or the workflow file.
+
+**Jobs**:
+1. `build` — Node 20, `npm install --legacy-peer-deps`, `npm run build`, upload `dist/` artifact
+2. `deploy` — runs on `push` to `master` with `ENABLE_GCP_DEPLOY=true`:
+   - `gcloud builds submit Frontend/` → pushes `gcr.io/.../wildfire-frontend:latest`
+   - `gcloud run deploy wildfire-frontend` (port 3000, 256Mi, public)
+   - Smoke test `/`
+   - Slack notify
+
+### `model_ci.yml` — Model pipeline (Cloud Run + Vertex AI)
+
+**Trigger**: (a) push to `master` touching `model-pipeline/**`, (b) nightly cron `0 0 * * *`, (c) `workflow_dispatch` with `triggered_by` input (used by monitor for drift-based retraining).
+
+**Stages**:
+| Stage | Purpose | Runs when |
+|---|---|---|
+| 1 | Unit tests (pytest, coverage ≥35%) | always |
+| 3 | Container build + push (`gcr.io/.../model-pipeline:latest`) | `master` + `ENABLE_GCP_DEPLOY=true` |
+| 4–7 | Train both regional models, AUC-PR gate (CA ≥ 0.89, TX ≥ 0.78), bias gate (FNR disparity ≤ 0.15 across region/season/fuel), Vertex AI registry push with `env=production` label (auto-archives prior prod) | same gate |
+| 8 | `gcloud run deploy wildfire-inference` (port 8000, 4Gi, public), smoke test `/health`, Slack on success/failure | same gate |
+| 9 | Create/update `wildfire-monitor` Cloud Scheduler job (drift checks every 6 h) | same gate |
+
+### `deploy-all.yml` — Orchestrator
+
+**Trigger**: `workflow_dispatch` or push touching `DEPLOY_ALL` sentinel file.
+
+Dispatches all three deploy workflows in parallel via the GitHub API:
 
 ```bash
-FIRMS_MAP_KEY                  # NASA FIRMS API key
-GCS_BUCKET_NAME                # GCS bucket (e.g. wildfire-mlops-123)
-GCP_KEY_PATH                   # Path to GCP service account JSON (repo root)
-GOOGLE_APPLICATION_CREDENTIALS # Same path as GCP_KEY_PATH
-GOOGLE_CLOUD_PROJECT           # GCP project ID
-GEMINI_API_KEY                 # Google AI Studio key (OBJ-3 reports)
-LLM_BACKEND                    # gemini_dev | ollama | vertex_ai
-SLACK_WEBHOOK_URL              # Optional: Slack alerts
+gh workflow run "Deploy everything" --ref master
+```
+
+### `model_rollback.yml` — One-click rollback
+
+Calls `VertexRegistry.rollback()` — demotes current production to archived and promotes the most-recent archived back to production. Subsequent inference requests pick up the restored model without any redeployment.
+
+### Global kill switch
+
+`vars.ENABLE_GCP_DEPLOY` (repo-level GitHub Actions variable). When set to `false`, every GCP-touching stage in all three workflows skips — only lint/test stages still run. Used during iterative dev to avoid wasting CI minutes + Vertex training compute.
+
+---
+
+## 3. Connection to Repository
+
+Auto-trigger on push is configured per workflow via the `on.push.branches + paths` filter. In addition:
+
+- `model_ci.yml` is callable from code via the GitHub REST API's `workflow_dispatch`, which `monitor_runner._trigger_github_retrain()` uses for drift-driven retrains.
+- A repo-level Personal Access Token with `workflow` scope is stored in **GCP Secret Manager** (`github-pat-model-retrain` secret — consumed only at request time by the `/monitor` endpoint).
+- `GCP_SA_KEY` GitHub secret authenticates the CI runner to GCP via `google-github-actions/auth@v2`; the `cicd-deployer@wildfire-mlops-123.iam.gserviceaccount.com` service account holds the roles needed for every deploy target (see §9).
+
+---
+
+## 4. Replication steps
+
+### 4.1 Prerequisites
+
+- GCP project with billing enabled (this project uses `wildfire-mlops-123`, region `us-central1`)
+- `gcloud` CLI installed and authenticated (`gcloud auth login`)
+- `gh` CLI installed and authenticated (`gh auth login`)
+- Python 3.11 (for local training/debugging; CI uses its own runner image)
+- NASA FIRMS API key (free tier at https://firms.modaps.eosdis.nasa.gov/api/)
+- Google Cloud API key with Gemini access (aistudio.google.com) OR Vertex AI enabled on the project
+- (Optional) Slack workspace + incoming webhook URL for alerts
+
+### 4.2 One-time GCP setup
+
+```bash
+# Set project + region
+export PROJECT=wildfire-mlops-123
+export REGION=us-central1
+gcloud config set project $PROJECT
+gcloud config set run/region $REGION
+
+# Enable required APIs
+gcloud services enable \
+  run.googleapis.com \
+  cloudfunctions.googleapis.com \
+  cloudscheduler.googleapis.com \
+  cloudbuild.googleapis.com \
+  compute.googleapis.com \
+  aiplatform.googleapis.com \
+  storage.googleapis.com \
+  artifactregistry.googleapis.com \
+  logging.googleapis.com
+
+# Create GCS bucket (if not already)
+gcloud storage buckets create gs://$PROJECT --location=$REGION
+
+# Create CI/CD service account + grant roles
+gcloud iam service-accounts create cicd-deployer \
+  --display-name="CI/CD Deployer"
+
+for role in \
+  roles/run.admin \
+  roles/storage.admin \
+  roles/aiplatform.user \
+  roles/cloudfunctions.developer \
+  roles/cloudscheduler.admin \
+  roles/artifactregistry.writer \
+  roles/compute.instanceAdmin.v1 \
+  roles/iam.serviceAccountUser; do
+  gcloud projects add-iam-policy-binding $PROJECT \
+    --member="serviceAccount:cicd-deployer@${PROJECT}.iam.gserviceaccount.com" \
+    --role="$role" --condition=None
+done
+
+# Create SA key + upload to GitHub secrets (see 4.3)
+gcloud iam service-accounts keys create /tmp/sa-key.json \
+  --iam-account=cicd-deployer@${PROJECT}.iam.gserviceaccount.com
+```
+
+### 4.3 Clone + set GitHub secrets
+
+```bash
+git clone https://github.com/Scofe-C/wildfire_detection.git
+cd wildfire_detection
+
+# Authenticate gh CLI (if not already)
+gh auth login
+
+# Upload secrets
+gh secret set GCP_SA_KEY < /tmp/sa-key.json
+gh secret set GCP_SA_EMAIL --body "cicd-deployer@wildfire-mlops-123.iam.gserviceaccount.com"
+gh secret set GCP_PROJECT_ID --body "wildfire-mlops-123"
+gh secret set FIRMS_MAP_KEY --body "<your NASA FIRMS key>"
+gh secret set FIRMS_MAP_KEY_2 --body "<second FIRMS key for failover>"
+gh secret set GOOGLE_API_KEY --body "<Google AI Studio key>"
+gh secret set GEMINI_API_KEY --body "<Gemini key (can equal GOOGLE_API_KEY)>"
+gh secret set SLACK_WEBHOOK_URL --body "<Slack incoming webhook URL>"
+gh secret set MLFLOW_TRACKING_URI --body "sqlite:///mlruns.db"
+
+# Set repo variable — master switch for GCP deploys
+gh variable set ENABLE_GCP_DEPLOY --body "true"
+
+# Cleanup
+rm /tmp/sa-key.json
+```
+
+### 4.4 One-time GCE VM provisioning (Airflow)
+
+```bash
+cd Data-Pipeline
+# Populate .env from .env.example (local dev only; CI regenerates this per deploy)
+cp .env.example .env && vi .env    # fill in keys
+
+# Provision the VM (creates instance + attaches startup-script metadata)
+./cloud/deploy_gce_test.sh
+```
+
+This is only required once. Subsequent updates come automatically from CI — the VM's startup script re-fetches `gs://wildfire-mlops-123/gce-test/pipeline.tar.gz` + `.env` on every boot.
+
+### 4.5 Cloud Function `dag-trigger` provisioning
+
+```bash
+cd Data-Pipeline
+./cloud/deploy.sh
+```
+
+Deploys the `dag-trigger` Cloud Function + `wildfire-dag-trigger` Cloud Scheduler job (every 30 min).
+
+### 4.6 First deploy — fire all three pipelines
+
+```bash
+gh workflow run "Deploy everything" --ref master
+gh run watch   # follow live progress
+```
+
+This triggers (in parallel):
+- `ci.yaml` → builds source tarball + generates `.env` → GCS → resets VM → Airflow comes up with fresh code
+- `frontend-ci.yml` → Cloud Build → Cloud Run deploys `wildfire-frontend`
+- `model_ci.yml` → train both regional models → Vertex AI registry push → Cloud Run deploys `wildfire-inference`
+
+Total end-to-end time: ~10 minutes (Model CI is the slowest).
+
+### 4.7 Verify deployment
+
+```bash
+# All three Cloud Run / GCE services should be healthy
+gcloud run services list --region=us-central1
+gcloud compute instances list
+
+# Backend health
+curl -s https://wildfire-inference-987262292513.us-central1.run.app/api/status | jq .
+# Expect: reporter_loaded: true, backend: "vertex_ai", gemini.api_key_set: true
+
+# Frontend
+curl -sf -o /dev/null -w "%{http_code}\n" https://wildfire-frontend-987262292513.us-central1.run.app/
+# Expect: 200
+
+# Frontend proxy to backend
+curl -s https://wildfire-frontend-987262292513.us-central1.run.app/api/reports?limit=3 | jq '.[]|.id'
+
+# Airflow webserver
+VM_IP=$(gcloud compute instances describe wildfire-test-vm --zone=us-central1-a --format='value(networkInterfaces[0].accessConfigs[0].natIP)')
+curl -sf -o /dev/null -w "%{http_code}\n" http://$VM_IP:8080/health
+# Expect: 200
+
+# Manually trigger an end-to-end pipeline run
+curl -u airflow:airflow -X POST \
+  http://$VM_IP:8080/api/v1/dags/wildfire_data_pipeline/dagRuns \
+  -H 'Content-Type: application/json' \
+  -d '{"dag_run_id":"manual_'$(date +%s)'","conf":{}}'
+```
+
+### 4.8 Verifying OBJ-1 → OBJ-2 → OBJ-3 end-to-end
+
+```bash
+# Scheduler + Cloud Function will eventually drive this, but to test directly:
+curl -s -X POST https://wildfire-inference-987262292513.us-central1.run.app/api/generate-from-pipeline \
+  -H 'Content-Type: application/json' \
+  -d '{"regions":["california","texas"]}' | jq .
+
+# Inspect GCS outputs
+gsutil ls gs://wildfire-mlops-123/inference/latest/
+gsutil ls gs://wildfire-mlops-123/simulation/latest/
+gsutil ls gs://wildfire-mlops-123/reports/obj3/latest/
+
+# Inspect Vertex AI Model Registry
+gcloud ai models list --region=us-central1 \
+  --filter='displayName:wildfire-ignition-california OR displayName:wildfire-ignition-texas'
 ```
 
 ---
 
-## Testing & CI/CD
+## 5. Model Monitoring and Retraining
 
-The test suite has 200+ pytest tests covering ingestion, processing, fusion, validation, bias analysis, export, utilities, DAG structure, and end-to-end integration (with mocked APIs).
+### 5.1 Performance and data drift monitoring
 
-### 4 GitHub Actions Workflows
+The `/monitor` endpoint on `wildfire-inference` (implemented in `model-pipeline/src/monitoring/monitor_runner.py`, invoked every 6 h by the `wildfire-monitor` Cloud Scheduler job) performs three checks:
 
-**`ci.yaml` — Data Pipeline CI** (push to `main`/`master`/`develop`/`dev_ack`, PR to `main`/`master`/`develop`)
-1. Build Docker test image (cached, repo root context)
-2. Validate Airflow DAG imports
-3. Validate `dvc.yaml` syntax + dep files (host runner, no Docker)
-4. pytest suite (coverage >= 60%)
-5. ruff lint + mypy type check + pip-audit
-6. Dependency pin check
+1. **Feature distribution drift** (`drift_detector.py`)
+   - **PSI** (Population Stability Index) on every numeric feature against the stored training baseline
+   - **Jensen-Shannon divergence** as a second-opinion metric
+   - Baseline parquets stored at `gs://wildfire-mlops-123/model-artifacts/baselines/{region}/`
+   - Threshold: PSI > 0.2 on any single feature
 
-**`model_ci.yml` — Model Pipeline CI/CD** (push/PR to `master`/`main`/`develop`, 9 stages)
-1. Lint (ruff + mypy)
-2. Unit tests (coverage >= 35%)
-3. Build + push Docker image to GCR (master only, gated on `ENABLE_GCP_DEPLOY`)
-4. Train CA + TX models
-5. AUC-PR gate (>= 0.89) — blocks deploy if model isn't accurate
-6. Bias gate (FNR disparity <= 5%) — blocks deploy if model is unfair
-7. Push to Vertex AI registry
-8. Deploy to Cloud Run (manual approval required) + smoke test
-9. Update Cloud Scheduler monitoring job (every 6h)
+2. **SHAP feature-importance drift**
+   - Compares current-batch SHAP importances to training-time SHAP baseline
+   - Threshold: relative importance of any top-5 feature drops >0.05 vs. baseline (especially soil moisture, which is the dominant wildfire signal)
 
-**`frontend-ci.yml` — Frontend Build Check** (push/PR to `master`/`main`/`develop`)
-- `npm install` + `vite build` — catches missing imports, type errors, broken routes
+3. **Model performance degradation**
+   - Computed from recent inference vs. actuals (where FIRMS data acts as near-real-time ground truth)
+   - Threshold: rolling PR-AUC drops below the region's deployment gate (CA: 0.89, TX: 0.78)
 
-**`model_rollback.yml` — Manual Rollback** (workflow_dispatch only)
-- Swaps Vertex AI model labels to roll back to a known-good version
-- Requires production environment approval
+Thresholds are configured in `model-pipeline/configs/model_config.yaml` under `validation:` and can be tuned without code changes.
 
-### Startup
+### 5.2 Automatic retraining trigger
 
-```bash
-cp .env.example .env          # fill in API keys
-make up-full                  # Airflow + Dashboard + Monitor + MLflow
-make status                   # verify all endpoints are healthy
+When any threshold is crossed, `monitor_runner._trigger_github_retrain()` POSTs to the GitHub REST API:
+
+```
+POST /repos/Scofe-C/wildfire_detection/actions/workflows/model_ci.yml/dispatches
+Body: { "ref": "master", "inputs": { "triggered_by": "drift_detection" } }
 ```
 
-| Service | URL |
-|---------|-----|
-| Airflow | http://localhost:8080 (airflow / airflow) |
-| OBJ-3 Dashboard | http://localhost:8000 |
-| Fire Monitor | http://localhost:8001 |
-| MLflow | http://localhost:5000 |
-| Frontend SPA | http://localhost:5173 (npm run dev) |
+This kicks off a full `model_ci.yml` run:
+
+```
+Stage 1  Unit tests
+Stage 3  Container build + push
+Stage 4  Train both regional models
+Stage 5  AUC-PR gate (PASS required; else rollback)
+Stage 6  Bias gate (FNR disparity ≤ 0.15; else rollback)
+Stage 7  Vertex AI registry push (new model → env=production, old → env=archived)
+Stage 8  gcloud run deploy wildfire-inference
+Stage 9  Update wildfire-monitor Cloud Scheduler
+```
+
+If any gate fails, `model_ci.yml` aborts, Slack is notified, and the existing production model stays active (no rollback needed since no promotion happened).
+
+If a previous deploy causes regressions, run:
+```bash
+gh workflow run model_rollback.yml --ref master
+```
+which invokes `VertexRegistry.rollback()` — atomically re-promotes the most recently archived model. Subsequent inference calls pick it up with no re-deploy needed.
+
+### 5.3 Manually simulate drift → retrain → redeploy (for the video demo)
+
+```bash
+gh workflow run model_ci.yml --ref master -f triggered_by=drift_detection
+```
+
+Identical to what `monitor_runner` would do when drift is detected.
+
+### 5.4 Notifications
+
+Slack webhook fires on every:
+- Airflow task failure after 3 consecutive retries (from `Data-Pipeline/dags/utils/slack_notify.py`)
+- **Retraining triggered** (from `monitor_runner`, before the workflow dispatch)
+- **Training success + new model deployed** (`alert_success` in `src/notifications/alerter.py`, fired from `model_ci.yml` Stage 8)
+- **Training failure / deploy failure** (`alert_validation_failure`, `alert_rollback`)
+- CRITICAL fire risk cells detected in inference (`alert_critical_fire_risk`)
+- Data drift warning (`alert_data_drift` from the drift detector)
+
+Slack message includes the GitHub commit SHA for traceability.
+
+### 5.5 Pipeline resilience guardrails
+
+- **Weather circuit breaker** — `Data-Pipeline/scripts/fusion/fuse_features.py` aborts fusion if weather null rate > 80% in any region; prevents model poisoning by stale forward-fills.
+- **Two-tier weather fallback** — Open-Meteo → NWS → last-known-good; serialized through an Airflow pool to avoid 429 rate limits.
+- **Data leakage prevention** — OBJ-1 inference drops 8 FIRMS-derived "pipeline-only" columns before running `full_pipeline`; any leak raises `ValueError` loudly.
+- **Idempotent retrain** — `VertexRegistry.push()` atomically demotes prior `env=production` to `env=archived` before promoting the new version, so even interrupted runs leave the registry in a consistent state.
 
 ---
 
-## Deploying on a Different Compute
+## 6. Logging & Observability
 
-The project is fully containerized (root `docker-compose.yaml`, `Makefile`, `start.sh`), so deploying elsewhere mostly means "install Docker, clone the repo, run it". Three common targets:
+| Signal | Where | How to access |
+|---|---|---|
+| Cloud Run request/response logs | Cloud Logging | `gcloud logging read 'resource.type="cloud_run_revision" AND resource.labels.service_name="wildfire-inference"' --limit=50` |
+| OBJ-1 / OBJ-2 / OBJ-3 execution traces | Cloud Logging (filter `textPayload=~"OBJ-[123]"`) | Same command with added filter |
+| Airflow DAG run history, task logs, Gantt | Airflow webserver | `http://<vm-ip>:8080` — credentials `airflow/airflow` |
+| Training metrics, SHAP plots, run history | MLflow | `mlflow ui` (local; backing store is `sqlite:///mlruns.db`) or Vertex AI Experiments |
+| Cloud Scheduler job state + last-run result | GCP console | `gcloud scheduler jobs describe wildfire-monitor --location=us-central1` |
+| Model registry state (which model is prod) | Vertex AI Model Registry | `gcloud ai models list --region=us-central1` |
+| Pipeline status, aggregated OBJ-1/2/3 events | Frontend UI | `/api/notifications` endpoint aggregates from GCS → bell icon in dashboard |
+| Alert history | Slack | Channel receiving `SLACK_WEBHOOK_URL` notifications |
 
-### 1. Any Linux VM (AWS EC2, Azure VM, Hetzner, on-prem server)
-
-```bash
-# one-time setup on the target VM
-sudo apt install docker.io docker-compose-plugin git
-git clone <repo-url> && cd wildfire_detection
-cp .env.example .env && nano .env       # fill in API keys, GCS bucket, Gemini key
-cp /path/to/gcp-key.json ./gcp-key.json # GCP service account
-
-# start everything
-make up-full      # or: docker compose --profile full up -d
-make status       # verifies Airflow :8080, Dashboard :8000, MLflow :5000
-
-# later
-make down
-git pull && make up-full
-```
-
-**Resource baseline:** 4 vCPU / 8 GB RAM / 40 GB disk. XGBoost is CPU-bound — no GPU needed.
-
-### 2. Swap GCP for another cloud
-
-The storage/registry layer is the only cloud-coupled part.
-
-| GCP today | Replace with |
-|---|---|
-| GCS bucket (data + model artifacts) | S3 / Azure Blob — swap `google.cloud.storage` calls to `boto3` / `azure.storage.blob`. DVC supports both remotes natively. |
-| Vertex AI registry | MLflow Model Registry (already in stack), SageMaker, or Azure ML |
-| Cloud Run (inference) | ECS Fargate / Azure Container Apps / plain Docker on the VM |
-| Cloud Scheduler (q6h drift monitor) | cron: `0 */6 * * * curl -X POST http://localhost:8000/monitor` |
-| Slack webhook | unchanged — just a URL |
-
-**No cloud at all:** everything except GCS works locally. Replace GCS with a volume mount and `dvc remote add -d local /mnt/dvc-storage`.
-
-### 3. Kubernetes (for multi-node / HA)
-
-Not wired up yet. You'd need Helm/Kustomize for each service. Only worth it if you need >1 replica of the inference API or autoscaling — for single-node workloads, Docker Compose is lower-ops.
-
-### Pre-deploy checklist
-
-1. `.env` filled in (API keys, bucket name, `LLM_BACKEND`, SA path)
-2. `gcp-key.json` present if using GCS/Vertex AI
-3. Outbound access to: `firms.modaps.eosdis.nasa.gov`, `api.open-meteo.com`, `generativelanguage.googleapis.com`, Slack webhook
-4. DVC remote configured and accessible (`dvc pull` works)
-5. Ports 8080 / 8000 / 5000 / 5173 open or reverse-proxied
-
-### Fastest demo path
-
-```bash
-git clone <repo> && cd wildfire_detection
-cp .env.example .env   # edit keys
-./start.sh             # zero-dep wrapper with Docker detection + health checks
-```
+Cloud Logging retains structured logs for 30 days. For longer retention, export to a BigQuery sink (not configured by default).
 
 ---
 
-## Directory Structure
+## 7. Code & Environment Layout
 
 ```
 wildfire_detection/
-├── .env.example                 # Unified env template (single .env at root)
-├── docker-compose.yaml          # Root compose — all services with profiles
-├── Makefile                     # make up / make up-full / make status / make test
-├── start.sh                     # Zero-dep Docker startup wrapper
-├── .github/workflows/           # CI/CD (ci.yaml, model_ci.yml, model_rollback.yml)
-├── .pre-commit-config.yaml      # Pre-commit hooks (ruff, mypy, secrets)
+├── .github/workflows/
+│   ├── ci.yaml                 # Data-Pipeline / Airflow CI/CD
+│   ├── frontend-ci.yml         # Frontend CI/CD
+│   ├── model_ci.yml            # Model pipeline CI/CD (train + deploy)
+│   ├── model_rollback.yml      # One-click rollback workflow
+│   └── deploy-all.yml          # Orchestrator — fires all three in parallel
 │
-├── Data-Pipeline/
-│   ├── dags/                    # Airflow DAGs
-│   │   ├── wildfire_dag.py            # Main 6-hourly pipeline DAG
-│   │   └── wildfire_local_test_dag.py # Local smoke-test DAG
-│   ├── scripts/
-│   │   ├── ingestion/           # FIRMS, weather, GOES, HRRR, field telemetry
-│   │   ├── processing/          # Per-source aggregation and cleaning
-│   │   ├── fusion/              # Feature joining onto H3 grid
-│   │   ├── validation/          # Schema, anomaly detection, bias analysis
-│   │   ├── export/              # Parquet + spatial .npz output
-│   │   ├── fire_monitor.py      # Continuous monitoring loop (quiet/active/emergency)
-│   │   ├── fire_monitor_api.py  # Control dashboard API (:8001)
-│   │   └── utils/               # H3 grid, rate limiting, GCS state, schema loading
-│   ├── tests/                   # 200+ pytest tests
-│   ├── configs/
-│   │   └── schema_config.yaml   # 28-feature schema (single source of truth)
-│   ├── docker/                  # Multi-stage Dockerfile
-│   ├── docker-compose.yaml      # Sub-project compose (Airflow + OBJ-3 dashboard)
-│   └── dvc.yaml
+├── Data-Pipeline/              # Airflow DAG + data ingestion
+│   ├── dags/wildfire_dag.py    # 21-task DAG (CA+TX sharded ingest, fuse, anomaly, DVC, trigger model server)
+│   ├── scripts/                # Ingestion (FIRMS, Open-Meteo, NWS, HRRR, GOES), processing, fusion, validation, anomaly
+│   ├── configs/                # Pipeline + schema configs
+│   ├── docker/Dockerfile       # airflow-base + airflow-init + airflow-webserver + airflow-scheduler multi-stage
+│   ├── docker-compose.yaml     # Local dev + VM runtime
+│   ├── cloud/
+│   │   ├── deploy.sh           # Deploy Cloud Function + Cloud Scheduler
+│   │   ├── deploy_gce_test.sh  # One-time VM provisioning
+│   │   ├── gce_startup.sh      # VM boot script (fetches tarball from GCS, runs docker compose)
+│   │   └── dag_trigger/main.py # Cloud Function — triggers Airflow DAG via REST API
+│   └── tests/                  # pytest suite
 │
-├── model-pipeline/
+├── model-pipeline/             # Training + inference + OBJ-3 reporting
 │   ├── src/
-│   │   ├── data/                # Parquet loader + schema validation
-│   │   ├── api/                 # FastAPI server (dashboard + inference API)
+│   │   ├── api/server.py       # FastAPI — OBJ-1 inference, /monitor, /api/generate-from-pipeline, /api/reports
+│   │   ├── preprocessing/feature_engineering.py   # full_pipeline (train+inference, returns (X, state) with medians)
 │   │   ├── models/
-│   │   │   ├── obj1_xgboost/    # Fire occurrence classifier
-│   │   │   ├── obj2_spread/     # Rothermel + Cell2Fire spread simulator
-│   │   │   └── obj3_gemini/     # LLM disaster report orchestrator
-│   │   ├── validation/          # AUC-PR, F1, FNR metrics
-│   │   ├── bias/                # Fairlearn FNR disparity gate
-│   │   ├── tracking/            # MLflow + Vertex AI
-│   │   ├── notifications/       # Slack webhook alerts
-│   │   └── pipeline/            # Orchestrator + OBJ-1/2→OBJ-3 bridge
-│   ├── dashboard/               # OBJ-3 report viewer HTML
+│   │   │   ├── obj1_ignition/  # XGBoost + LightGBM training
+│   │   │   ├── obj2_spread/    # Monte Carlo fire spread (Rothermel + Byram)
+│   │   │   └── obj3_gemini/    # LLM reporter (Vertex AI Gemini + RAG corpus)
+│   │   ├── pipeline/orchestrator.py               # Train → validate → bias gate → registry push → alert chain
+│   │   ├── tracking/vertex_registry.py            # push, load_production, rollback
+│   │   ├── monitoring/
+│   │   │   ├── monitor_runner.py                  # /monitor endpoint implementation + _trigger_github_retrain
+│   │   │   ├── drift_detector.py                  # PSI, JS divergence, SHAP drift
+│   │   │   └── performance_monitor.py             # Rolling PR-AUC, precision at threshold
+│   │   ├── reports/report_manager.py              # Local + GCS persistence for OBJ-3 reports
+│   │   ├── bias/                                  # Fairlearn-based bias gate
+│   │   ├── validation/model_selector.py           # AUC-PR + F1 gate
+│   │   └── notifications/alerter.py               # Slack webhook
 │   ├── configs/
-│   │   ├── feature_schema.yaml
-│   │   ├── model_config.yaml
-│   │   └── reporting_config.yaml
-│   ├── models/ignition/         # Trained model artifacts (DVC-tracked)
-│   ├── reports/                 # Validation + bias + disaster reports
-│   └── dvc.yaml
+│   │   ├── model_config.yaml                      # AUC-PR gates, bias thresholds, decision thresholds
+│   │   └── reporting_config.yaml                  # LLM backend, RAG corpus, incident tracker
+│   ├── corpus/                                    # RAG reference docs (FEMA NRI, Scott-Burgan fuel types)
+│   ├── templates/                                 # Jinja2 templates for rendered OBJ-3 HTML/MD
+│   └── Dockerfile                                 # base + dashboard (Cloud Run) targets
 │
-└── Frontend/                    # React + Vite + Tailwind SPA
-    ├── src/
-    │   ├── components/
-    │   │   ├── fire-map/        # H3 fire map with risk visualization
-    │   │   ├── model-pipeline/  # OBJ-3 reporter UI
-    │   │   ├── layout/          # Header, Sidebar
-    │   │   └── ui/              # Shared components (Badge, Card, Spinner, etc.)
-    │   ├── hooks/               # API hooks
-    │   └── api.js               # Backend API client
-    ├── package.json
-    └── tailwind.config.js
+├── Frontend/                   # React + Vite + Tailwind operator dashboard
+│   ├── src/components/         # Overview, DataPipeline, OBJ1/2/3 panels, FireMap, RiskMonitor, IncidentReports
+│   ├── src/hooks/useAPI.js     # SWR-style fetch hook with auto-stop polling
+│   ├── src/api.js              # apiUrl + normalizeCell helpers
+│   ├── nginx.conf              # Reverse proxies /api/* to wildfire-inference
+│   └── Dockerfile              # node build → nginx serve multi-stage
+│
+└── README.md                   # This document
 ```
+
+---
+
+## 8. Service Account IAM — reference
+
+`cicd-deployer@wildfire-mlops-123.iam.gserviceaccount.com` is the SA whose key is stored as `GCP_SA_KEY` in GitHub secrets. It holds:
+
+| Role | Needed for |
+|---|---|
+| `roles/run.admin` | Create/update Cloud Run services (backend + frontend) |
+| `roles/storage.admin` | Upload tarballs, read/write GCS buckets (model artifacts, reports, inference JSON) |
+| `roles/aiplatform.user` | Vertex AI Model Registry push/load/rollback, Gemini API calls |
+| `roles/cloudfunctions.developer` | Deploy the `dag-trigger` Cloud Function |
+| `roles/cloudscheduler.admin` | Reconcile `wildfire-monitor` job from model_ci Stage 9 |
+| `roles/artifactregistry.writer` | Push images to GCR via Cloud Build |
+| `roles/compute.instanceAdmin.v1` | Reset/start `wildfire-test-vm` from ci.yaml |
+| `roles/iam.serviceAccountUser` | Act as other SAs when needed by gcloud commands |
+
+The GCE VM itself runs as the default Compute SA with `roles/editor` + `cloud-platform` OAuth scope — sufficient for the Airflow containers to read/write GCS and call Vertex AI.
+
+---
+
+## 9. Troubleshooting
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| Frontend shows blank data | Backend `wildfire-inference` is down or the Cloud Run URL in `Frontend/nginx.conf` is stale | `gcloud run services describe wildfire-inference --region=us-central1` to confirm, or re-deploy frontend |
+| `/api/status` returns 403 | Cloud Run deploy ran with `--no-allow-unauthenticated` (older CI config) | Re-run the updated `model_ci.yml` Stage 8 (current version uses `--allow-unauthenticated`) |
+| Cloud Scheduler 400 on DAG trigger | Airflow run_id prefix `scheduled__` is reserved | Cloud Function uses `cloudscheduler__` prefix (committed in this repo) |
+| OBJ-1 inference JSON has too many cells | OBJ-1 block reading all parquet snapshots instead of newest | Fixed in server.py — reads only the newest parquet sorted by name descending |
+| OBJ-3 reporter fails to load on Cloud Run | `.gitignore` pattern `reports/` excluded `src/reports/` Python package from build context | `.gitignore` narrowed to `reports/disaster_reports/` etc. |
+| CI deploy skipped | `vars.ENABLE_GCP_DEPLOY` is `false`, or pushed commit didn't touch any path in the workflow's filter | `gh variable set ENABLE_GCP_DEPLOY --body "true"`; touch a relevant file or use `gh workflow run "Deploy everything"` |
+| Airflow VM deploy skipped | `cicd-deployer` missing `compute.instanceAdmin.v1` role | Grant via `gcloud projects add-iam-policy-binding` (see §4.2) |
+
+---
+
+## 10. Evaluation Criteria Coverage (per Deployment PDF §8)
+
+| PDF criterion | Where in this repo |
+|---|---|
+| Correctness & Completeness | CI/CD fully automated end-to-end — `.github/workflows/` directory |
+| Documentation & Replication Steps | §4 of this README; all commands runnable end-to-end |
+| Model Optimization (Edge) | N/A — cloud deployment |
+| Automated CI/CD Integration | `.github/workflows/` with `on.push` auto-triggers + `workflow_dispatch` API support |
+| Logs & Monitoring | §6 — Cloud Logging, Airflow UI, MLflow, Slack, in-app notifications |
+| Model Monitoring & Retraining | §5 — `monitor_runner.py` + 6-h Cloud Scheduler + workflow_dispatch |
+| Video Demonstration | Separately submitted |
+
+---
+
+## 11. Live endpoints (reference — these may rotate on redeploy)
+
+| Service | URL |
+|---|---|
+| Backend inference | `https://wildfire-inference-987262292513.us-central1.run.app` |
+| Frontend dashboard | `https://wildfire-frontend-987262292513.us-central1.run.app` |
+| Airflow webserver | `http://<vm-external-ip>:8080` (get with `gcloud compute instances describe wildfire-test-vm --format='value(networkInterfaces[0].accessConfigs[0].natIP)'`) |
+| Cloud Function (dag-trigger) | `https://dag-trigger-axwugrteea-uc.a.run.app` |
+| GitHub Actions | `https://github.com/Scofe-C/wildfire_detection/actions` |
+
+---
+
+## 12. Key tunables
+
+Location | Setting | Typical values
+---|---|---
+`model-pipeline/configs/model_config.yaml` | `validation.auc_pr_threshold` | CA 0.89, TX 0.78 — deployment gate
+`model-pipeline/configs/model_config.yaml` | `bias_gate.max_disparity` | 0.15 — FNR disparity across region/season/fuel slices
+`model-pipeline/configs/model_config.yaml` | `validation.xgb_decision_threshold` | 0.365 — baseline floor for threshold tuning (per-run tune overrides this)
+`model-pipeline/configs/reporting_config.yaml` | `llm_backend` | `vertex_ai` (primary), `gemini_dev` (fallback), `ollama` (local)
+`Data-Pipeline/dags/wildfire_dag.py` | `SCHEDULE_INTERVAL` | `None` — triggered externally via Cloud Scheduler → Cloud Function
+`Data-Pipeline/scripts/fusion/fuse_features.py` | `null_rate_threshold` | 0.80 — circuit breaker for weather data
+GitHub repo variable | `ENABLE_GCP_DEPLOY` | `true` / `false` — master switch for Stage 3+ GCP actions
