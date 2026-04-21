@@ -35,7 +35,11 @@ gcp-key.json
 !.env.example
 
 # ---------- Runtime outputs (regenerable) ----------
-reports/
+# Narrow patterns so we don't accidentally exclude src/reports/ (Python package).
+reports/disaster_reports/
+reports/validation/
+reports/bias_gate/
+reports/visualizations/
 review_manifest.json
 
 # ---------- Corpus (large binaries — distribute via GCS/shared drive) ----------

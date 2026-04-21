@@ -1629,26 +1629,27 @@ async def generate_from_pipeline(request: Request) -> JSONResponse:
 
         for _region in regions:
             try:
-                # Read fused parquet from GCS
+                # Read the LATEST fused parquet from GCS — filenames are sorted
+                # with ISO timestamps, so lexicographic desc == newest first.
+                # Previous bug: reading every parquet concatenated N snapshots
+                # × C cells → inference JSON had 851 rows for 23 grid cells.
                 _fused_prefix = f"data/processed/fused/{resolution_km}km/region={_region}/"
-                _blobs = list(client.list_blobs(bucket, prefix=_fused_prefix))
-                if not _blobs:
+                _parquet_blobs = sorted(
+                    (b for b in client.list_blobs(bucket, prefix=_fused_prefix)
+                     if b.name.endswith(".parquet")),
+                    key=lambda b: b.name,
+                    reverse=True,
+                )
+                if not _parquet_blobs:
                     logger.warning("[OBJ-1] No fused parquet found for %s at %s", _region, _fused_prefix)
                     continue
 
-                _parquet_buffers = []
-                for _blob in _blobs:
-                    if _blob.name.endswith(".parquet"):
-                        _buf = _io.BytesIO()
-                        _blob.download_to_file(_buf)
-                        _buf.seek(0)
-                        _parquet_buffers.append(_pd.read_parquet(_buf))
-
-                if not _parquet_buffers:
-                    logger.warning("[OBJ-1] No .parquet blobs for region %s", _region)
-                    continue
-
-                _region_df = _pd.concat(_parquet_buffers, ignore_index=True)
+                _latest = _parquet_blobs[0]
+                _buf = _io.BytesIO()
+                _latest.download_to_file(_buf)
+                _buf.seek(0)
+                _region_df = _pd.read_parquet(_buf)
+                logger.info("[OBJ-1] %s: loaded %d rows from %s", _region, len(_region_df), _latest.name)
 
                 # Extract FIRMS aggregates BEFORE dropping pipeline-only columns
                 _firms_count = 0
