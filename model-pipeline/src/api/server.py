@@ -657,22 +657,8 @@ async def get_notifications() -> JSONResponse:
 
 @app.get("/api/reports")
 async def list_reports(limit: int = 50) -> JSONResponse:
-    seen_ids: set[str] = set()
-    seen_content: set[tuple] = set()  # (generated_at, incident_id) — dedup GCS vs local-disk copies of same report
+    """List OBJ-3 reports from GCS only (local disk is ephemeral on Cloud Run)."""
     entries: list[dict] = []
-
-    def _append(entry: dict) -> None:
-        if entry["id"] in seen_ids:
-            return
-        content_key = (entry.get("generated_at", ""), entry.get("incident_id", ""))
-        # Only dedup when both parts are non-empty + non-default — avoids collapsing
-        # unrelated reports that both happen to be missing fields.
-        if all(content_key) and content_key != ("", "?") and content_key in seen_content:
-            return
-        seen_ids.add(entry["id"])
-        if all(content_key):
-            seen_content.add(content_key)
-        entries.append(entry)
 
     # ── GCS (always checked — source of truth in Cloud Run) ───────────────
     gcs_bucket = os.getenv("GCS_BUCKET_NAME")
@@ -691,7 +677,7 @@ async def list_reports(limit: int = 50) -> JSONResponse:
                     continue
                 try:
                     data = json.loads(blob.download_as_bytes())
-                    _append({
+                    entries.append({
                         "id": stem,
                         "title": data.get("incident_name") or data.get("title") or data.get("report_type", "Report"),
                         "report_type": data.get("report_type", "unknown"),
@@ -710,52 +696,13 @@ async def list_reports(limit: int = 50) -> JSONResponse:
         except Exception as exc:
             logger.warning("GCS report listing failed: %s", exc)
 
-    # ── Local disk (local dev / newly written reports not yet in GCS) ──────
-    reports_dir = _ROOT / "reports" / "disaster_reports"
-    if reports_dir.exists():
-        for json_file in sorted(reports_dir.rglob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
-            if "review_manifest" in json_file.name or "incident_state" in json_file.name:
-                continue
-            try:
-                data = json.loads(json_file.read_text(encoding="utf-8"))
-                stem = json_file.stem
-                parent = json_file.parent
-                rendered = None
-                for ext in (".html", ".md"):
-                    candidate = parent / (stem + ext)
-                    if candidate.exists():
-                        rendered = candidate.relative_to(_ROOT).as_posix()
-                        break
-                _append({
-                    "id": stem,
-                    "title": data.get("incident_name") or data.get("title") or data.get("report_type", "Report"),
-                    "report_type": data.get("report_type", "unknown"),
-                    "risk_level": data.get("risk_level", "?"),
-                    "incident_id": data.get("incident_id", "?"),
-                    "generated_at": data.get("generated_at", ""),
-                    "confidence": data.get("report_confidence"),
-                    "human_review_required": data.get("human_review_required", False),
-                    "review_status": data.get("review_status", "?"),
-                    "operating_mode": data.get("operating_mode"),
-                    "json_path": str(json_file.relative_to(_ROOT)),
-                    "rendered_path": rendered,
-                })
-            except Exception:
-                continue
-
     entries.sort(key=lambda e: e.get("generated_at", ""), reverse=True)
     return JSONResponse(entries[:limit])
 
 
 @app.get("/api/reports/{report_id}")
 async def get_report(report_id: str) -> JSONResponse:
-    # ── Local disk first ───────────────────────────────────────────────────
-    reports_dir = _ROOT / "reports" / "disaster_reports"
-    matches = list(reports_dir.rglob(f"{report_id}.json"))
-    if matches:
-        return JSONResponse(json.loads(matches[0].read_text(encoding="utf-8")))
-
-    # ── GCS fallback ───────────────────────────────────────────────────────
+    """Fetch a single report from GCS by id (filename stem)."""
     gcs_bucket = os.getenv("GCS_BUCKET_NAME")
     if gcs_bucket:
         try:
@@ -827,27 +774,20 @@ async def render_report_on_demand(report_id: str, format: str = "auto") -> HTMLR
     from src.models.obj3_gemini.renderer import render_html, render_markdown, markdown_to_html  # noqa
     from src.models.obj3_gemini.schemas import SCHEMA_MAP  # noqa
 
-    # ── Try local disk first ────────────────────────────────────────────
+    # ── GCS only (source of truth; local disk is ephemeral on Cloud Run) ──
     data: dict | None = None
-    reports_dir = _ROOT / "reports" / "disaster_reports"
-    matches = list(reports_dir.rglob(f"{report_id}.json"))
-    if matches:
-        data = json.loads(matches[0].read_text(encoding="utf-8"))
-
-    # ── GCS fallback ─────────────────────────────────────────────────────
-    if data is None:
-        gcs_bucket = os.getenv("GCS_BUCKET_NAME")
-        if gcs_bucket:
-            try:
-                from google.cloud import storage as _gcs
-                _client = _gcs.Client()
-                blobs = list(_client.list_blobs(gcs_bucket, prefix="reports/obj3/"))
-                for blob in blobs:
-                    if blob.name.endswith(f"{report_id}.json"):
-                        data = json.loads(blob.download_as_bytes())
-                        break
-            except Exception as exc:
-                logger.warning("GCS report fetch for render failed: %s", exc)
+    gcs_bucket = os.getenv("GCS_BUCKET_NAME")
+    if gcs_bucket:
+        try:
+            from google.cloud import storage as _gcs
+            _client = _gcs.Client()
+            blobs = list(_client.list_blobs(gcs_bucket, prefix="reports/obj3/"))
+            for blob in blobs:
+                if blob.name.endswith(f"{report_id}.json"):
+                    data = json.loads(blob.download_as_bytes())
+                    break
+        except Exception as exc:
+            logger.warning("GCS report fetch for render failed: %s", exc)
 
     if data is None:
         raise HTTPException(status_code=404, detail=f"Report {report_id} not found")
