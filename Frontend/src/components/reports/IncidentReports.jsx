@@ -350,7 +350,7 @@ function ReportCard({ report }) {
 
 export default function IncidentReports() {
   const [modeFilter, setModeFilter] = useState('all');
-  const { data: liveReports } = useAPI('/api/reports?limit=50');
+  const { data: liveReports } = useAPI('/api/reports?limit=500');
 
   // Normalize list items to a stable card shape
   const reports = (liveReports && liveReports.length > 0)
