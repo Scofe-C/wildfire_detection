@@ -11,7 +11,7 @@
 # Triggers on any change to Frontend/ source or this workflow file.
 # =============================================================================
 
-name: Frontend CI
+name: Frontend CI/CD
 
 on:
   push:
@@ -25,6 +25,12 @@ on:
       - 'Frontend/**'
       - '.github/workflows/frontend-ci.yml'
   workflow_dispatch:
+
+env:
+  GCP_REGION: "us-central1"
+  GCP_PROJECT: "wildfire-mlops-123"
+  IMAGE: "gcr.io/wildfire-mlops-123/wildfire-frontend:latest"
+  SERVICE: "wildfire-frontend"
 
 jobs:
   build:
@@ -56,3 +62,59 @@ jobs:
           name: frontend-dist-${{ github.sha }}
           path: Frontend/dist/
           retention-days: 3
+
+  deploy:
+    name: "Deploy to Cloud Run"
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master' && vars.ENABLE_GCP_DEPLOY == 'true'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Build & push image via Cloud Build
+        run: |
+          gcloud builds submit \
+            --tag ${{ env.IMAGE }} \
+            --project ${{ env.GCP_PROJECT }} \
+            Frontend
+
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy ${{ env.SERVICE }} \
+            --image ${{ env.IMAGE }} \
+            --region ${{ env.GCP_REGION }} \
+            --port 3000 \
+            --platform managed \
+            --allow-unauthenticated \
+            --memory 256Mi \
+            --cpu 1 \
+            --project ${{ env.GCP_PROJECT }} \
+            --quiet
+
+      - name: Smoke test
+        run: |
+          URL=$(gcloud run services describe ${{ env.SERVICE }} \
+            --region ${{ env.GCP_REGION }} --format 'value(status.url)')
+          echo "Smoke test: ${URL}/"
+          for i in 1 2 3; do
+            HTTP=$(curl -sf -o /dev/null -w "%{http_code}" --max-time 15 "${URL}/") && break || sleep 5
+          done
+          [ "$HTTP" = "200" ] || { echo "Frontend /  returned ${HTTP}"; exit 1; }
+          echo "Frontend serving OK"
+
+      - name: Slack notify
+        if: always()
+        run: |
+          STATUS="${{ job.status }}"
+          COLOR="good"; [ "$STATUS" != "success" ] && COLOR="danger"
+          curl -X POST -H 'Content-type: application/json' \
+            --data "{\"text\":\"Frontend deploy ${STATUS} (SHA: ${{ github.sha }})\"}" \
+            ${{ secrets.SLACK_WEBHOOK_URL }} || true

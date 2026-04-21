@@ -238,3 +238,89 @@ jobs:
 
           print(f'Dependency check passed. Verified pins: {must_pin}')
           "
+
+  # ── Deploy — upload fresh source to GCS and trigger GCE VM startup rerun ──
+  # The wildfire-test-vm instance's startup script fetches
+  #   gs://wildfire-mlops-123/deploy/wildfire-pipeline.tar.gz
+  # on boot and runs `docker compose up -d --build`. Resetting the VM
+  # (or starting it from TERMINATED) re-runs the startup script → pulls
+  # new source → rebuilds + restarts Airflow containers in one step.
+  deploy-airflow:
+    name: "Deploy Airflow to GCE"
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master' && vars.ENABLE_GCP_DEPLOY == 'true'
+    env:
+      GCP_PROJECT: "wildfire-mlops-123"
+      GCP_REGION: "us-central1"
+      GCP_ZONE: "us-central1-a"
+      VM_NAME: "wildfire-test-vm"
+      DEPLOY_BUCKET: "wildfire-mlops-123"
+      DEPLOY_OBJECT: "deploy/wildfire-pipeline.tar.gz"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      # Tar the Data-Pipeline subtree + any root-level infra files that
+      # gce_startup.sh expects. Matches what deploy_gce_test.sh produces.
+      - name: Package source tarball
+        run: |
+          tar -czf /tmp/wildfire-pipeline.tar.gz \
+            Data-Pipeline/dags Data-Pipeline/scripts Data-Pipeline/configs \
+            Data-Pipeline/tests Data-Pipeline/docker Data-Pipeline/cloud \
+            Data-Pipeline/requirements.txt Data-Pipeline/constraints.txt \
+            Data-Pipeline/dvc.yaml Data-Pipeline/dvc.lock \
+            Data-Pipeline/docker-compose.yaml Data-Pipeline/.env.example
+          ls -lh /tmp/wildfire-pipeline.tar.gz
+
+      - name: Upload tarball to GCS
+        run: |
+          gsutil cp /tmp/wildfire-pipeline.tar.gz \
+            gs://${{ env.DEPLOY_BUCKET }}/${{ env.DEPLOY_OBJECT }}
+
+      # The VM's startup script fires every time the instance boots.
+      # If stopped → start (runs startup). If running → reset (reboot + rerun).
+      - name: Restart GCE VM to pick up new source
+        run: |
+          STATE=$(gcloud compute instances describe ${{ env.VM_NAME }} \
+            --zone=${{ env.GCP_ZONE }} --project=${{ env.GCP_PROJECT }} \
+            --format='value(status)')
+          echo "Current VM state: $STATE"
+          if [ "$STATE" = "TERMINATED" ]; then
+            gcloud compute instances start ${{ env.VM_NAME }} \
+              --zone=${{ env.GCP_ZONE }} --project=${{ env.GCP_PROJECT }}
+          else
+            gcloud compute instances reset ${{ env.VM_NAME }} \
+              --zone=${{ env.GCP_ZONE }} --project=${{ env.GCP_PROJECT }}
+          fi
+
+      - name: Wait for Airflow webserver health
+        run: |
+          EXTERNAL_IP=$(gcloud compute instances describe ${{ env.VM_NAME }} \
+            --zone=${{ env.GCP_ZONE }} --project=${{ env.GCP_PROJECT }} \
+            --format='value(networkInterfaces[0].accessConfigs[0].natIP)')
+          echo "Waiting for http://${EXTERNAL_IP}:8080/health ..."
+          for i in $(seq 1 40); do
+            HTTP=$(curl -sf -o /dev/null -w "%{http_code}" --max-time 5 \
+              "http://${EXTERNAL_IP}:8080/health" || echo "000")
+            [ "$HTTP" = "200" ] && { echo "Airflow healthy after ${i} attempts"; exit 0; }
+            sleep 15
+          done
+          echo "Airflow did not become healthy within ~10 min"
+          exit 1
+
+      - name: Slack notify
+        if: always()
+        run: |
+          STATUS="${{ job.status }}"
+          curl -X POST -H 'Content-type: application/json' \
+            --data "{\"text\":\"Airflow (GCE VM) deploy ${STATUS} (SHA: ${{ github.sha }})\"}" \
+            ${{ secrets.SLACK_WEBHOOK_URL }} || true
