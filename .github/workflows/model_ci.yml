@@ -214,9 +214,12 @@ jobs:
           gcloud run deploy wildfire-inference \
             --image gcr.io/wildfire-mlops-123/model-pipeline:${{ github.sha }} \
             --region ${{ env.GCP_REGION }} \
-            --set-env-vars GCS_BUCKET_NAME=${{ env.GCS_BUCKET }} \
-            --set-env-vars MLFLOW_TRACKING_URI=${{ secrets.MLFLOW_TRACKING_URI }} \
-            --no-allow-unauthenticated \
+            --port 8000 \
+            --memory 4Gi \
+            --cpu 2 \
+            --timeout 600 \
+            --allow-unauthenticated \
+            --set-env-vars=GOOGLE_CLOUD_PROJECT=wildfire-mlops-123,GCS_BUCKET_NAME=${{ env.GCS_BUCKET }},GOOGLE_API_KEY=${{ secrets.GOOGLE_API_KEY }},GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }},MLFLOW_TRACKING_URI=${{ secrets.MLFLOW_TRACKING_URI }} \
             --quiet
 
       - name: Smoke test — verify /health endpoint
@@ -224,10 +227,8 @@ jobs:
           CLOUD_RUN_URL=$(gcloud run services describe wildfire-inference \
             --region ${{ env.GCP_REGION }} --format "value(status.url)")
           echo "Smoke testing: ${CLOUD_RUN_URL}/health"
-          TOKEN=$(gcloud auth print-identity-token)
           for i in 1 2 3; do
             HTTP_STATUS=$(curl -sf -o /dev/null -w "%{http_code}" \
-              -H "Authorization: Bearer ${TOKEN}" \
               --max-time 10 "${CLOUD_RUN_URL}/health") && break || sleep 10
           done
           if [ "$HTTP_STATUS" != "200" ]; then
@@ -279,7 +280,7 @@ jobs:
             --schedule "0 */6 * * *" \
             --uri "${CLOUD_RUN_URL}/monitor" \
             --message-body '{"baseline_run_id":"latest"}' \
-            --headers "Content-Type=application/json" \
+            --update-headers "Content-Type=application/json" \
             --oidc-service-account-email ${{ secrets.GCP_SA_EMAIL }} \
           || gcloud scheduler jobs create http wildfire-monitor \
             --location ${{ env.GCP_REGION }} \
