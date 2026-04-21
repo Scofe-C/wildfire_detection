@@ -255,8 +255,11 @@ jobs:
       GCP_REGION: "us-central1"
       GCP_ZONE: "us-central1-a"
       VM_NAME: "wildfire-test-vm"
+      # Matches paths the VM's instance metadata sets (gcs-bucket + gcs-staging-prefix)
+      # and what Data-Pipeline/cloud/gce_startup.sh line 97 fetches on boot.
       DEPLOY_BUCKET: "wildfire-mlops-123"
-      DEPLOY_OBJECT: "deploy/wildfire-pipeline.tar.gz"
+      DEPLOY_PREFIX: "gce-test"
+      DEPLOY_OBJECT: "gce-test/pipeline.tar.gz"
 
     steps:
       - uses: actions/checkout@v4
@@ -271,20 +274,31 @@ jobs:
 
       # Tar the Data-Pipeline subtree + any root-level infra files that
       # gce_startup.sh expects. Matches what deploy_gce_test.sh produces.
+      # gce_startup.sh expects a tarball whose contents extract directly into
+      # /opt/wildfire (so Data-Pipeline/, model-pipeline/, Frontend/, root files).
+      # Mirror what deploy_gce_test.sh does: tar the repo root, excluding junk.
       - name: Package source tarball
         run: |
-          tar -czf /tmp/wildfire-pipeline.tar.gz \
-            Data-Pipeline/dags Data-Pipeline/scripts Data-Pipeline/configs \
-            Data-Pipeline/tests Data-Pipeline/docker Data-Pipeline/cloud \
-            Data-Pipeline/requirements.txt Data-Pipeline/constraints.txt \
-            Data-Pipeline/dvc.yaml Data-Pipeline/dvc.lock \
-            Data-Pipeline/docker-compose.yaml Data-Pipeline/.env.example
-          ls -lh /tmp/wildfire-pipeline.tar.gz
+          tar -czf /tmp/pipeline.tar.gz \
+            --exclude='.git' --exclude='node_modules' --exclude='__pycache__' \
+            --exclude='.venv' --exclude='*.log' --exclude='dist' --exclude='build' \
+            Data-Pipeline model-pipeline Frontend docker-compose.yaml start.sh 2>/dev/null || \
+          tar -czf /tmp/pipeline.tar.gz \
+            --exclude='.git' --exclude='node_modules' --exclude='__pycache__' \
+            --exclude='.venv' --exclude='*.log' \
+            Data-Pipeline model-pipeline Frontend
+          ls -lh /tmp/pipeline.tar.gz
 
-      - name: Upload tarball to GCS
+      - name: Upload tarball + .env to GCS (paths gce_startup.sh reads on boot)
         run: |
-          gsutil cp /tmp/wildfire-pipeline.tar.gz \
+          gsutil cp /tmp/pipeline.tar.gz \
             gs://${{ env.DEPLOY_BUCKET }}/${{ env.DEPLOY_OBJECT }}
+          # If an .env template exists in the repo, mirror it too — gce_startup.sh
+          # also fetches .env from the same prefix.
+          if [ -f Data-Pipeline/.env.example ]; then
+            gsutil cp Data-Pipeline/.env.example \
+              gs://${{ env.DEPLOY_BUCKET }}/${{ env.DEPLOY_PREFIX }}/.env.example
+          fi
 
       # The VM's startup script fires every time the instance boots.
       # If stopped → start (runs startup). If running → reset (reboot + rerun).
