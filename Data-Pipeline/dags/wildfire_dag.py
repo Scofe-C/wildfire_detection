@@ -59,7 +59,7 @@ from dags.utils.slack_notify import (
 # DAG-level configuration
 # ---------------------------------------------------------------------------
 DAG_ID = "wildfire_data_pipeline"
-SCHEDULE_INTERVAL = "*/30 * * * *"  # Every 30 minutes; also triggered externally by Cloud Scheduler via dag-trigger Cloud Function
+SCHEDULE_INTERVAL = None  # Triggered externally by Cloud Scheduler (dag-trigger Cloud Function) every 30 min
 
 # Resolution tiers (watchdog escalation):
 #   quiet mode:  64 km (H3 res 2) — coarse default scan, ~200 cells CA+TX

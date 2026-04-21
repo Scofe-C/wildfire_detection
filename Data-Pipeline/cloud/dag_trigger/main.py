@@ -27,7 +27,7 @@ def trigger_wildfire_dag(request):  # noqa: ARG001
     user = os.environ.get("AIRFLOW_USER", "admin")
     password = os.environ.get("AIRFLOW_PASS", "admin")
 
-    run_id = f"scheduled__{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')}"
+    run_id = f"cloudscheduler__{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')}"
     payload = json.dumps(
         {"dag_run_id": run_id, "conf": {"trigger_source": "cloud_scheduler"}}
     ).encode()

@@ -56,16 +56,22 @@ export default function Sidebar({ activeView, onNavigate }) {
       className="min-h-screen bg-sidebar flex flex-col flex-shrink-0 transition-[width] duration-[250ms]"
       style={{ width: collapsed ? 58 : 240 }}
     >
-      {/* Logo */}
+      {/* Logo + collapse toggle */}
       <div className="px-4 py-4 border-b border-sidebar-border">
         <div className="flex items-center gap-2.5">
-          <img
-            src="/gemini-svg.svg"
-            alt="PyroWatch"
-            className="w-[42px] h-[42px] rounded-[10px] flex-shrink-0 object-cover"
-          />
+          <button
+            onClick={() => setCollapsed(v => !v)}
+            className="flex-shrink-0 hover:opacity-80 transition-opacity"
+            title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          >
+            <img
+              src="/gemini-svg.svg"
+              alt="PyroWatch"
+              className="w-[42px] h-[42px] rounded-[10px] object-cover"
+            />
+          </button>
           {!collapsed && (
-            <div className="overflow-hidden">
+            <div className="flex-1 overflow-hidden">
               <div className="font-display text-[20px] font-bold text-white leading-tight whitespace-nowrap">
                 PyroWatch
               </div>

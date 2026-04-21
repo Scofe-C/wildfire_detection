@@ -568,7 +568,46 @@ async def get_notifications() -> JSONResponse:
                 except Exception:
                     pass
 
-        # ── OBJ-3: most recent reports from disk ───────────────────────────
+        # ── OBJ-3: most recent reports from GCS + disk ────────────────────
+        seen_obj3: set[str] = set()
+
+        # GCS reports (source of truth on Cloud Run)
+        try:
+            gcs_blobs = sorted(
+                (b for b in bkt.list_blobs(prefix="reports/obj3/")
+                 if b.name.endswith(".json") and "/latest/" not in b.name
+                 and "review_manifest" not in b.name and "incident_state" not in b.name),
+                key=lambda b: b.updated,
+                reverse=True,
+            )[:6]
+            for blob in gcs_blobs:
+                try:
+                    d = json.loads(blob.download_as_bytes())
+                    stem   = blob.name.rsplit("/", 1)[-1].replace(".json", "")
+                    ts     = d.get("generated_at", "")
+                    risk   = d.get("risk_level", "?")
+                    # Extract region from GCS path (reports/obj3/{region}/...) or JSON
+                    path_parts = blob.name.split("/")
+                    reg = d.get("region") or (path_parts[2] if len(path_parts) > 3 else "unknown")
+                    rtype  = d.get("report_type", "report").replace("_", " ").title()
+                    ntype  = "warning" if risk in ("CRITICAL", "HIGH") else "success"
+                    iname  = d.get("incident_name", "")
+                    events.append({
+                        "id":        f"obj3_{stem}",
+                        "type":      ntype,
+                        "source":    "OBJ-3",
+                        "title":     f"OBJ-3 Report — {iname or reg.title()}",
+                        "message":   f"{rtype} · Risk level: {risk}",
+                        "timestamp": ts,
+                        "region":    reg,
+                    })
+                    seen_obj3.add(stem)
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+        # Local disk (supplements GCS — for reports not yet uploaded)
         reports_dir = _ROOT / "reports" / "disaster_reports"
         if reports_dir.exists():
             report_files = sorted(
@@ -578,21 +617,24 @@ async def get_notifications() -> JSONResponse:
                 reverse=True,
             )[:6]
             for json_file in report_files:
+                if json_file.stem in seen_obj3:
+                    continue
                 try:
                     d = json.loads(json_file.read_text(encoding="utf-8"))
                     ts     = d.get("generated_at", "")
                     risk   = d.get("risk_level", "?")
-                    reg    = d.get("region", "unknown").title()
+                    reg    = d.get("region", "unknown")
                     rtype  = d.get("report_type", "report").replace("_", " ").title()
                     ntype  = "warning" if risk in ("CRITICAL", "HIGH") else "success"
+                    iname  = d.get("incident_name", "")
                     events.append({
                         "id":        f"obj3_{json_file.stem}",
                         "type":      ntype,
                         "source":    "OBJ-3",
-                        "title":     f"OBJ-3 Report Generated — {reg}",
+                        "title":     f"OBJ-3 Report — {iname or reg.title()}",
                         "message":   f"{rtype} · Risk level: {risk}",
                         "timestamp": ts,
-                        "region":    d.get("region", ""),
+                        "region":    reg,
                     })
                 except Exception:
                     continue
@@ -642,6 +684,7 @@ async def list_reports(limit: int = 50) -> JSONResponse:
                     data = json.loads(blob.download_as_bytes())
                     _append({
                         "id": stem,
+                        "title": data.get("incident_name") or data.get("title") or data.get("report_type", "Report"),
                         "report_type": data.get("report_type", "unknown"),
                         "risk_level": data.get("risk_level", "?"),
                         "incident_id": data.get("incident_id", "?"),
@@ -649,6 +692,7 @@ async def list_reports(limit: int = 50) -> JSONResponse:
                         "confidence": data.get("report_confidence"),
                         "human_review_required": data.get("human_review_required", False),
                         "review_status": data.get("review_status", "?"),
+                        "operating_mode": data.get("operating_mode"),
                         "json_path": blob.name,
                         "rendered_path": None,
                     })
@@ -675,6 +719,7 @@ async def list_reports(limit: int = 50) -> JSONResponse:
                         break
                 _append({
                     "id": stem,
+                    "title": data.get("incident_name") or data.get("title") or data.get("report_type", "Report"),
                     "report_type": data.get("report_type", "unknown"),
                     "risk_level": data.get("risk_level", "?"),
                     "incident_id": data.get("incident_id", "?"),
@@ -682,6 +727,7 @@ async def list_reports(limit: int = 50) -> JSONResponse:
                     "confidence": data.get("report_confidence"),
                     "human_review_required": data.get("human_review_required", False),
                     "review_status": data.get("review_status", "?"),
+                    "operating_mode": data.get("operating_mode"),
                     "json_path": str(json_file.relative_to(_ROOT)),
                     "rendered_path": rendered,
                 })
@@ -772,12 +818,31 @@ async def render_report_on_demand(report_id: str, format: str = "auto") -> HTMLR
     from src.models.obj3_gemini.renderer import render_html, render_markdown, markdown_to_html  # noqa
     from src.models.obj3_gemini.schemas import SCHEMA_MAP  # noqa
 
+    # ── Try local disk first ────────────────────────────────────────────
+    data: dict | None = None
     reports_dir = _ROOT / "reports" / "disaster_reports"
     matches = list(reports_dir.rglob(f"{report_id}.json"))
-    if not matches:
+    if matches:
+        data = json.loads(matches[0].read_text(encoding="utf-8"))
+
+    # ── GCS fallback ─────────────────────────────────────────────────────
+    if data is None:
+        gcs_bucket = os.getenv("GCS_BUCKET_NAME")
+        if gcs_bucket:
+            try:
+                from google.cloud import storage as _gcs
+                _client = _gcs.Client()
+                blobs = list(_client.list_blobs(gcs_bucket, prefix="reports/obj3/"))
+                for blob in blobs:
+                    if blob.name.endswith(f"{report_id}.json"):
+                        data = json.loads(blob.download_as_bytes())
+                        break
+            except Exception as exc:
+                logger.warning("GCS report fetch for render failed: %s", exc)
+
+    if data is None:
         raise HTTPException(status_code=404, detail=f"Report {report_id} not found")
 
-    data = json.loads(matches[0].read_text(encoding="utf-8"))
     report_type = data.get("report_type", "daily")
 
     schema_cls = SCHEMA_MAP.get(report_type)
@@ -1522,10 +1587,10 @@ async def generate_from_pipeline(request: Request) -> JSONResponse:
 
         # ── Step 0: OBJ-1 — Run inference for all regions before per-region loop ──
         logger.info("[pipeline] Step 0: running OBJ-1 inference for regions: %s", regions)
+        import io as _io
         import yaml as _yaml
         import pandas as _pd
         import xgboost as _xgb
-        import lightgbm as _lgb
         from src.preprocessing.feature_engineering import full_pipeline as _full_pipeline
         from src.tracking.vertex_registry import VertexRegistry as _VertexRegistry
 
@@ -1620,12 +1685,20 @@ async def generate_from_pipeline(request: Request) -> JSONResponse:
                 # Score with model-type-specific API
                 if isinstance(_model, _xgb.Booster):
                     _y_prob = _model.predict(_xgb.DMatrix(_X))
-                elif isinstance(_model, _lgb.Booster):
-                    _y_prob = _model.predict(_X)
-                elif hasattr(_model, "predict_proba"):
-                    _y_prob = _model.predict_proba(_X)[:, 1]
                 else:
-                    _y_prob = _model.predict(_X)
+                    try:
+                        import lightgbm as _lgb
+                        if isinstance(_model, _lgb.Booster):
+                            _y_prob = _model.predict(_X)
+                        elif hasattr(_model, "predict_proba"):
+                            _y_prob = _model.predict_proba(_X)[:, 1]
+                        else:
+                            _y_prob = _model.predict(_X)
+                    except ImportError:
+                        if hasattr(_model, "predict_proba"):
+                            _y_prob = _model.predict_proba(_X)[:, 1]
+                        else:
+                            _y_prob = _model.predict(_X)
 
                 # Build scored dataframe
                 _id_cols = ["grid_id", "region"]

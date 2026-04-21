@@ -192,7 +192,8 @@ export default function RiskMonitor() {
       if (!cancelled) setLoadingCells(false);
     }
     fetchLive();
-    return () => { cancelled = true; };
+    const id = setInterval(fetchLive, 60_000); // refresh every 60s
+    return () => { cancelled = true; clearInterval(id); };
   }, []);
 
   const allCells = liveCells || (loadingCells ? [] : [
