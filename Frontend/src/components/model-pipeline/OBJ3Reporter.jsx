@@ -718,7 +718,7 @@ export default function OBJ3Reporter() {
   const [tab, setTab] = useState('reports');
   const [pipelineRunning, setPipelineRunning] = useState(false);
   const { data: status, loading: statusLoading, refresh: refreshStatus } = useAPI('/api/status', { interval: 30000 });
-  const { data: reports, loading: reportsLoading, refresh: refreshReports } = useAPI('/api/reports?limit=500');
+  const { data: reports, loading: reportsLoading, refresh: refreshReports } = useAPI('/api/reports?limit=100');
 
   function handleGenerated() { refreshReports(); refreshStatus(); }
 
