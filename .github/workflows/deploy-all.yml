@@ -1,0 +1,56 @@
+# =============================================================================
+# Deploy everything — orchestrator workflow
+# =============================================================================
+# Fires all three pipeline workflows (Data-Pipeline CI, Frontend CI/CD,
+# Model Pipeline CI/CD) via workflow_dispatch so they run in parallel.
+#
+# Trigger options:
+#   A. gh workflow run "Deploy everything"
+#   B. Touch the sentinel file DEPLOY_ALL at the repo root and push:
+#        date > DEPLOY_ALL && git add DEPLOY_ALL && git commit -m "deploy" && git push
+#
+# Each downstream workflow still respects its own gates:
+#   - vars.ENABLE_GCP_DEPLOY must be 'true' for Stages 3-9 in model_ci
+#   - vars.ENABLE_GCP_DEPLOY must be 'true' for deploy-airflow + frontend deploy
+#   - Workflows run on master by default (--ref master)
+# =============================================================================
+
+name: Deploy everything
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - 'DEPLOY_ALL'
+      - '.github/workflows/deploy-all.yml'
+
+jobs:
+  trigger-all:
+    name: "Fan out to ci.yaml + frontend-ci + model_ci"
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Trigger Data-Pipeline CI (Airflow)
+        run: gh workflow run ci.yaml --ref master
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Trigger Frontend CI/CD
+        run: gh workflow run frontend-ci.yml --ref master
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Trigger Model Pipeline CI/CD
+        run: gh workflow run model_ci.yml --ref master -f triggered_by=manual
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Summary
+        run: |
+          echo "Dispatched all three workflows on branch master."
+          echo "Monitor progress: https://github.com/${{ github.repository }}/actions"
